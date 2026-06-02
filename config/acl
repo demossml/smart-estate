@@ -1,0 +1,17 @@
+# MQTT ACL — restrict topic access
+# Умная Усадьба Hermes
+
+# Zigbee2MQTT bridge: full access
+user zigbee2mqtt
+topic readwrite zigbee2mqtt/#
+topic readwrite $SYS/#
+
+# Smart Estate backend: read telemetry, send commands
+user smartestate
+topic read zigbee2mqtt/#
+topic write zigbee2mqtt/+/set
+
+# Home Assistant (optional)
+user homeassistant
+topic readwrite zigbee2mqtt/#
+topic readwrite homeassistant/#
