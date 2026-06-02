@@ -1,6 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { BarChart3 } from 'lucide-react';
-import { Skeleton } from '../components/ui/Skeleton';
 
 type Period = 'day' | 'week' | 'month';
 
@@ -18,14 +17,7 @@ const CHART_HEIGHTS: Record<Period, number[]> = {
 
 export default function Analytics() {
   const [period, setPeriod] = useState<Period>('day');
-  const [loading, setLoading] = useState(true);
-  const timerRef = useRef(0);
   const data = ENERGY_DATA[period];
-
-  useEffect(() => {
-    timerRef.current = window.setTimeout(() => setLoading(false), 500);
-    return () => window.clearTimeout(timerRef.current);
-  }, []);
 
   return (
     <div className="p-4 pb-24 animate-fade-in">
@@ -52,50 +44,41 @@ export default function Analytics() {
         ))}
       </div>
 
-      {loading ? (
-        <Skeleton className="h-48 w-full" />
-      ) : (
-        <>
-          {/* Chart area */}
-          <div className="bg-surface rounded-card p-4 mb-4" style={{ minHeight: 200 }}>
-            {/* Simulated line chart */}
-            <div className="flex items-end gap-0.5 h-24 mb-4" aria-hidden="true">
-              {CHART_HEIGHTS[period].map((h, i) => {
-                return (
-                  <div key={i} className="flex-1 bg-blue/30 rounded-sm"
-                       style={{ height: `${h}%` }} />
-                );
-              })}
-            </div>
-            <div className="text-center">
-              <span className="font-mono text-3xl font-bold text-text">{data.total}</span>
-              <span className="text-text-dim ml-1">кВт·ч</span>
-            </div>
-            <p className="text-center text-sm text-green mt-1">{data.trend}</p>
-          </div>
+      {/* Chart area */}
+      <div className="bg-surface rounded-card p-4 mb-4 animate-fade-in" style={{ minHeight: 200 }}>
+        <div className="flex items-end gap-0.5 h-24 mb-4" aria-hidden="true">
+          {CHART_HEIGHTS[period].map((h, i) => (
+            <div key={i} className="flex-1 bg-blue/30 rounded-sm"
+                 style={{ height: `${h}%` }} />
+          ))}
+        </div>
+        <div className="text-center">
+          <span className="font-mono text-3xl font-bold text-text">{data.total}</span>
+          <span className="text-text-dim ml-1">кВт·ч</span>
+        </div>
+        <p className="text-center text-sm text-green mt-1">{data.trend}</p>
+      </div>
 
-          {/* Per-room breakdown */}
-          <h2 className="text-sm font-semibold text-text-dim uppercase tracking-wider mb-2 px-1">
-            По комнатам
-          </h2>
-          <div className="space-y-2">
-            {Object.entries(data.rooms).map(([room, val]) => {
-              const pct = (val / data.total) * 100;
-              return (
-                <div key={room}
-                     className="bg-surface rounded-card p-3 flex items-center gap-3 min-h-[56px]">
-                  <span className="text-sm font-medium text-text w-24">{room}</span>
-                  <div className="flex-1 bg-surface-hover rounded-full h-2 overflow-hidden">
-                    <div className="h-full bg-blue rounded-full transition-all duration-500"
-                         style={{ width: `${pct}%` }} />
-                  </div>
-                  <span className="font-mono text-sm text-text w-20 text-right">{val} кВт·ч</span>
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
+      {/* Per-room breakdown */}
+      <h2 className="text-sm font-semibold text-text-dim uppercase tracking-wider mb-2 px-1">
+        По комнатам
+      </h2>
+      <div className="space-y-2">
+        {Object.entries(data.rooms).map(([room, val]) => {
+          const pct = (val / data.total) * 100;
+          return (
+            <div key={room}
+                 className="bg-surface rounded-card p-3 flex items-center gap-3 min-h-[56px]">
+              <span className="text-sm font-medium text-text w-24">{room}</span>
+              <div className="flex-1 bg-surface-hover rounded-full h-2 overflow-hidden">
+                <div className="h-full bg-blue rounded-full transition-all duration-500"
+                     style={{ width: `${pct}%` }} />
+              </div>
+              <span className="font-mono text-sm text-text w-20 text-right">{val} кВт·ч</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

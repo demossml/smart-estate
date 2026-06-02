@@ -122,7 +122,11 @@ export default function Dashboard() {
       return {
         ...prev,
         rooms: prev.rooms.map(r =>
-          r.id === roomId ? { ...r, lightOn: !r.lightOn, status: r.status === 'auto' ? 'override' as const : 'auto' as const } : r
+          r.id === roomId ? {
+            ...r,
+            lightOn: !r.lightOn,
+            status: r.status === 'auto' ? 'override' as const : r.status === 'error' ? 'override' as const : 'auto' as const
+          } : r
         ),
       };
     });
@@ -134,9 +138,15 @@ export default function Dashboard() {
   const handleOverride = (roomId: string, minutes: number) => {
     setData(prev => {
       if (!prev) return prev;
-      const until = minutes === 0
-        ? new Date(new Date().setHours(7, 0, 0, 0) + (new Date().getHours() >= 7 ? 24 * 60 * 60000 : 0))
-        : new Date(Date.now() + minutes * 60000);
+      let until: Date;
+      if (minutes === 0) {
+        // До утра (7:00)
+        until = new Date();
+        until.setDate(until.getDate() + 1);
+        until.setHours(7, 0, 0, 0);
+      } else {
+        until = new Date(Date.now() + minutes * 60000);
+      }
       return {
         ...prev,
         rooms: prev.rooms.map(r =>

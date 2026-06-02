@@ -10,13 +10,18 @@ export function useMode() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetch('/api/mode')
+    const controller = new AbortController();
+    fetch('/api/mode', { signal: controller.signal })
       .then(r => {
         if (!r.ok) throw new Error(`mode API: ${r.status}`);
         return r.json();
       })
       .then(d => { if (d.ok) setMode(d.mode); })
-      .catch(error => logClient('warn', 'Не удалось получить режим', error instanceof Error ? error.message : String(error)));
+      .catch(error => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        logClient('warn', 'Не удалось получить режим', error instanceof Error ? error.message : String(error));
+      });
+    return () => controller.abort();
   }, []);
 
   const toggle = useCallback(async () => {

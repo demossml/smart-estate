@@ -35,6 +35,7 @@ export default function Welcome() {
 
   // Check backend status
   useEffect(() => {
+    let mounted = true;
     const controller = new AbortController();
     const { signal } = controller;
 
@@ -43,7 +44,7 @@ export default function Welcome() {
         const res = await fetch('/api/status', { signal });
         if (res.ok) {
           const d = await res.json();
-          if (d.ok) {
+          if (d.ok && mounted) {
             setStatus('online');
             setDevices(d.devices?.total || 0);
           }
@@ -51,15 +52,16 @@ export default function Welcome() {
         const modeRes = await fetch('/api/mode', { signal });
         if (modeRes.ok) {
           const m = await modeRes.json();
-          setMode(m.mode || '—');
+          if (mounted) setMode(m.mode || '—');
         }
       } catch (err) {
-        if (!signal.aborted) setStatus('offline');
+        if (!signal.aborted && mounted) setStatus('offline');
       }
     };
     check();
     const interval = setInterval(check, 5000);
     return () => {
+      mounted = false;
       clearInterval(interval);
       controller.abort();
     };

@@ -8,7 +8,7 @@ export interface Room {
   power?: number;       // current watts
   lightOn?: boolean;
   status: 'auto' | 'override' | 'error';
-  overrideUntil?: string; // ISO timestamp
+  overrideUntil?: string; // time in HH:MM format (e.g., "22:30")
   nextEvent?: string;
 }
 
