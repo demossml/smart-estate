@@ -21,6 +21,7 @@ export default function Scenarios() {
     const timer = window.setTimeout(async () => {
       try {
         setScenarios(await api.getScenarios());
+        setOffline(false);
       } catch (error) {
         setOffline(true);
         setScenarios(MOCK_SCENARIOS);

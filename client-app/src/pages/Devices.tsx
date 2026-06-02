@@ -24,6 +24,7 @@ export default function Devices() {
     const timer = window.setTimeout(async () => {
       try {
         setDevices(await api.getDevices());
+        setOffline(false);
       } catch (error) {
         setOffline(true);
         setDevices(MOCK_DEVICES);

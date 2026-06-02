@@ -31,6 +31,7 @@ export default function Events() {
     const timer = window.setTimeout(async () => {
       try {
         setEvents(await api.getEvents());
+        setOffline(false);
       } catch (error) {
         setOffline(true);
         setEvents(MOCK_EVENTS);

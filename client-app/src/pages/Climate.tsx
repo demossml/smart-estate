@@ -24,6 +24,7 @@ export default function Climate() {
     const timer = window.setTimeout(async () => {
       try {
         setItems(await api.getClimate());
+        setOffline(false);
       } catch (error) {
         setOffline(true);
         setItems(MOCK_CLIMATE);
@@ -36,19 +37,27 @@ export default function Climate() {
   }, []);
 
   const updateTarget = (id: string, targetTemp: number) => {
-    setItems(prev => prev.map(item => item.id === id ? { ...item, targetTemp } : item));
-    const item = items.find(value => value.id === id);
+    let prevMode: ClimateSetpoint['mode'] = 'auto';
+    setItems(prev => {
+      const item = prev.find(v => v.id === id);
+      if (item) prevMode = item.mode;
+      return prev.map(item => item.id === id ? { ...item, targetTemp } : item);
+    });
     window.setTimeout(() => {
-      api.updateClimate(id, targetTemp, item?.mode || 'auto').catch(error => {
+      api.updateClimate(id, targetTemp, prevMode).catch(error => {
         logClient('warn', 'Не удалось обновить климат', error instanceof Error ? error.message : String(error));
       });
     }, 400);
   };
 
   const setMode = (id: string, mode: ClimateSetpoint['mode']) => {
-    setItems(prev => prev.map(item => item.id === id ? { ...item, mode } : item));
-    const item = items.find(value => value.id === id);
-    api.updateClimate(id, item?.targetTemp || 21, mode).catch(error => {
+    let prevTemp = 21;
+    setItems(prev => {
+      const item = prev.find(v => v.id === id);
+      if (item) prevTemp = item.targetTemp;
+      return prev.map(item => item.id === id ? { ...item, mode } : item);
+    });
+    api.updateClimate(id, prevTemp, mode).catch(error => {
       logClient('warn', 'Не удалось сменить режим климата', error instanceof Error ? error.message : String(error));
     });
   };

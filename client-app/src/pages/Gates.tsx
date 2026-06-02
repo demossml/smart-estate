@@ -27,6 +27,7 @@ export default function Gates() {
     const timer = window.setTimeout(async () => {
       try {
         setGates(await api.getGates());
+        setOffline(false);
       } catch (error) {
         setOffline(true);
         setGates(MOCK_GATES);

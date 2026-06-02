@@ -52,14 +52,16 @@ export function logClient(level: LogLevel, message: string, details?: string) {
   writeLogs(logs);
 }
 
-export function installClientLogger() {
-  window.addEventListener('error', event => {
+export function installClientLogger(): () => void {
+  const onError = (event: ErrorEvent) => {
     logClient('error', event.message, event.filename ? `${event.filename}:${event.lineno}` : undefined);
-  });
+  };
+  window.addEventListener('error', onError);
 
-  window.addEventListener('unhandledrejection', event => {
+  const onRejection = (event: PromiseRejectionEvent) => {
     logClient('error', 'Unhandled promise rejection', String(event.reason));
-  });
+  };
+  window.addEventListener('unhandledrejection', onRejection);
 
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
@@ -77,6 +79,7 @@ export function installClientLogger() {
     }
   };
 
+  let rafId = 0;
   let lastFrame = performance.now();
   const watchFrame = (now: number) => {
     const delta = now - lastFrame;
@@ -84,7 +87,14 @@ export function installClientLogger() {
       logClient('warn', 'Long frame detected', `${Math.round(delta)} ms`);
     }
     lastFrame = now;
-    requestAnimationFrame(watchFrame);
+    rafId = requestAnimationFrame(watchFrame);
   };
-  requestAnimationFrame(watchFrame);
+  rafId = requestAnimationFrame(watchFrame);
+
+  return () => {
+    cancelAnimationFrame(rafId);
+    window.removeEventListener('error', onError);
+    window.removeEventListener('unhandledrejection', onRejection);
+    window.fetch = originalFetch;
+  };
 }

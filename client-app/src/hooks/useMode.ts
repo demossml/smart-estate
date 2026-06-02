@@ -11,7 +11,10 @@ export function useMode() {
 
   useEffect(() => {
     fetch('/api/mode')
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`mode API: ${r.status}`);
+        return r.json();
+      })
       .then(d => { if (d.ok) setMode(d.mode); })
       .catch(error => logClient('warn', 'Не удалось получить режим', error instanceof Error ? error.message : String(error)));
   }, []);

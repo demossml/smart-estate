@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Home, Wifi, WifiOff, Database, Activity,
@@ -35,10 +35,12 @@ export default function Welcome() {
 
   // Check backend status
   useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+
     const check = async () => {
       try {
-        // Check API
-        const res = await fetch('/api/status');
+        const res = await fetch('/api/status', { signal });
         if (res.ok) {
           const d = await res.json();
           if (d.ok) {
@@ -46,19 +48,21 @@ export default function Welcome() {
             setDevices(d.devices?.total || 0);
           }
         }
-        // Check mode
-        const modeRes = await fetch('/api/mode');
+        const modeRes = await fetch('/api/mode', { signal });
         if (modeRes.ok) {
           const m = await modeRes.json();
           setMode(m.mode || '—');
         }
-      } catch {
-        setStatus('offline');
+      } catch (err) {
+        if (!signal.aborted) setStatus('offline');
       }
     };
     check();
     const interval = setInterval(check, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
   }, []);
 
   const handleInstall = async () => {

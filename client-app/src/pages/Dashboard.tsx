@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { SmartCard } from '../components/ui/SmartCard';
 import { SecurityCard } from '../components/ui/SecurityCard';
 import { VoiceFAB } from '../components/ui/VoiceFAB';
@@ -41,10 +41,11 @@ export default function Dashboard() {
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceListening, setVoiceListening] = useState(false);
   const [voiceText, setVoiceText] = useState('');
+  const [lastMessage, setLastMessage] = useState('');
+  const voiceTimerRef = useRef(0);
 
   const loadData = useCallback(async (showSpinner = false) => {
     if (showSpinner) setLoading(true);
-    setLoading(true);
     setError(false);
     try {
       setData(await api.getDashboard());
@@ -61,10 +62,17 @@ export default function Dashboard() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void loadData();
+      void loadData(true);
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadData]);
+
+  // Cleanup voice timer on unmount
+  useEffect(() => {
+    return () => {
+      if (voiceTimerRef.current) window.clearTimeout(voiceTimerRef.current);
+    };
+  }, []);
 
   // Reload data when mode changes
   useEffect(() => {
@@ -82,7 +90,7 @@ export default function Dashboard() {
       setVoiceOpen(true);
       setVoiceListening(true);
       // Simulate voice recognition
-      setTimeout(() => {
+      voiceTimerRef.current = window.setTimeout(() => {
         setVoiceListening(false);
         setVoiceText('Включила свет в коридоре');
       }, 1500);
@@ -94,10 +102,18 @@ export default function Dashboard() {
     setVoiceText('');
   };
 
-  const handleVoiceClose = () => {
+  const handleVoiceClose = async () => {
+    const text = voiceText;
     setVoiceOpen(false);
     setVoiceText('');
-    // Here: send command to API
+    try {
+      const result = await api.voiceCommand(text);
+      setLastMessage(`✅ ${result.text || result.action || 'Готово'}`);
+    } catch (error) {
+      logClient('warn', 'Голосовая команда не выполнена', error instanceof Error ? error.message : String(error));
+      setLastMessage('⚠️ Команда не отправлена');
+    }
+    window.setTimeout(() => setLastMessage(''), 3000);
   };
 
   const handleToggleRoom = (roomId: string) => {
@@ -182,6 +198,13 @@ export default function Dashboard() {
           </span>
         )}
       </div>
+
+      {/* ===== VOICE RESULT TOAST ===== */}
+      {lastMessage && (
+        <div className="mb-3 px-3 py-2 bg-surface rounded-card border border-blue/20 text-sm text-text animate-fade-in">
+          {lastMessage}
+        </div>
+      )}
 
       {/* ===== AUTO STATUS CARD ===== */}
       <div className="bg-surface rounded-card p-4 mb-3 border border-auto/20" style={{ minHeight: 72 }}>

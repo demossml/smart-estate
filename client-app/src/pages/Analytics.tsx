@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { BarChart3 } from 'lucide-react';
 import { Skeleton } from '../components/ui/Skeleton';
 
@@ -19,10 +19,12 @@ const CHART_HEIGHTS: Record<Period, number[]> = {
 export default function Analytics() {
   const [period, setPeriod] = useState<Period>('day');
   const [loading, setLoading] = useState(true);
+  const timerRef = useRef(0);
   const data = ENERGY_DATA[period];
 
   useEffect(() => {
-    setTimeout(() => setLoading(false), 500);
+    timerRef.current = window.setTimeout(() => setLoading(false), 500);
+    return () => window.clearTimeout(timerRef.current);
   }, []);
 
   return (

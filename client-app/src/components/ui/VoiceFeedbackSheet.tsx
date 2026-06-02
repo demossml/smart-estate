@@ -4,8 +4,8 @@ interface VoiceFeedbackSheetProps {
   open: boolean;
   text?: string;
   listening?: boolean;
-  onCancel?: () => void;
-  onClose?: () => void;
+  onCancel: () => void;
+  onClose: () => void;
 }
 
 /**
