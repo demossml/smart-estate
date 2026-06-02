@@ -17,12 +17,28 @@ connectMQTT();
 // Time-based scheduler
 startScheduler().catch(e => console.error('Scheduler start failed:', e.message));
 
-server.listen(PORT, '127.0.0.1', () => {
+// Detect local network IP for mobile access
+function getLocalIP(): string {
+  const { networkInterfaces } = require('os');
+  const nets = networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal) return net.address;
+    }
+  }
+  return 'localhost';
+}
+
+const HOST = process.env.SMART_ESTATE_HOST || '0.0.0.0';
+const localIP = getLocalIP();
+
+server.listen(PORT, HOST, () => {
   console.log('═'.repeat(55));
   console.log('🏠  УМНАЯ УСАДЬБА — сервер запущен');
   console.log('═'.repeat(55));
   console.log(`   REST API:  http://localhost:${PORT}/api`);
   console.log(`   WebSocket: ws://localhost:${PORT}/ws`);
+  console.log(`   📱 Телефон: http://${localIP}:${PORT}/start`);
   console.log(`   DuckDB:    ${DB_PATH}`);
   console.log(`   MQTT:      ${process.env.MQTT_URL || 'mqtt://localhost:1883'}`);
   console.log(`   Scheduler: ⏰ active`);
