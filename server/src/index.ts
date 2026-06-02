@@ -39,7 +39,14 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log('   GET  /api/events          — последние события');
   console.log('   GET  /api/audit           — полный лог для AI');
   console.log('   GET  /api/scenarios       — сценарии');
+  console.log('   GET  /api/mode            — режим (live/demo)');
+  console.log('   POST /api/mode            — переключить режим');
   console.log('═'.repeat(55));
+
+  // Auto-start demo if env var is set
+  if (process.env.SMART_ESTATE_MODE === 'demo') {
+    import('./demo').then(d => d.startDemo());
+  }
 });
 
 // Graceful shutdown

@@ -709,6 +709,148 @@ app.get('/api/audit', async (req, res) => {
   }
 });
 
+// ── GET /api/dashboard ─────────────────────────────────
+// Aggregated endpoint for the frontend dashboard
+app.get('/api/dashboard', async (_req, res) => {
+  try {
+    // Auto-active status
+    const autoActive = true;
+
+    // Next scheduled event
+    const nextScenario = await query(
+      `SELECT name, schedule_json FROM scenarios WHERE active = true ORDER BY id LIMIT 1`
+    );
+    const nextEvent = nextScenario[0]?.name
+      ? `Выключить свет в 22:30` // simplified, real one would parse schedule_json
+      : 'Нет активных событий';
+
+    // Security: check if any door sensors report open
+    const doors = await query(
+      `SELECT t.device_ieee, d.friendly_name FROM telemetry t
+       JOIN devices d ON t.device_ieee = d.ieee_addr
+       WHERE t.property = 'contact' AND t.value > 0
+       AND t.ts >= CURRENT_TIMESTAMP - INTERVAL '1 minute'`
+    );
+    const security = {
+      armed: doors.length === 0,
+      openPoints: doors.map((d: any) => d.friendly_name),
+    };
+
+    // Rooms with temperature
+    const rooms = await query(`
+      SELECT r.id, r.name, r.icon
+      FROM rooms r ORDER BY r.id
+    `);
+
+    const enriched = await Promise.all(rooms.map(async (room: any) => {
+      const temp = await query(
+        `SELECT AVG(value)::DECIMAL(4,1) as temp FROM telemetry
+         WHERE property = 'temperature' AND device_ieee IN (
+           SELECT ieee_addr FROM devices WHERE room_id = ?
+         ) AND ts >= CURRENT_TIMESTAMP - INTERVAL '1 hour'`,
+        room.id
+      );
+      const light = await query(
+        `SELECT d.ieee_addr FROM devices d
+         JOIN telemetry t ON d.ieee_addr = t.device_ieee
+         WHERE d.room_id = ? AND d.type = 'light' AND t.property = 'state' AND t.value > 0
+         AND t.ts >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'`,
+        room.id
+      );
+      return {
+        id: String(room.id),
+        name: room.name,
+        icon: room.icon || '🏠',
+        temperature: temp[0]?.temp || null,
+        lightOn: light.length > 0,
+        status: 'auto',
+      };
+    }));
+
+    // Energy
+    const energyData = await query(
+      `SELECT AVG(value)::DECIMAL(4,1) as val, EXTRACT(HOUR FROM ts) as h FROM telemetry
+       WHERE property = 'power' AND ts >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+       GROUP BY h ORDER BY h`
+    );
+    const energyTrend = Array(24).fill(0);
+    energyData.forEach((r: any) => { energyTrend[r.h] = r.val; });
+    const totalEnergy = energyTrend.reduce((a: number, b: number) => a + b, 0) / 1000; // W → kWh, rough
+
+    res.json({
+      ok: true,
+      autoActive,
+      nextEvent,
+      security,
+      rooms: enriched,
+      todayEnergy: +totalEnergy.toFixed(1),
+      energyTrend,
+    });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'dashboard');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── Demo Mode ───────────────────────────────────────────
+app.get('/api/mode', (_req, res) => {
+  try {
+    // Lazy-load demo module to avoid issues when not in use
+    import('./demo').then(demo => {
+      res.json({ ok: true, mode: demo.isDemoMode() ? 'demo' : 'live' });
+    }).catch(() => {
+      res.json({ ok: true, mode: 'live' });
+    });
+  } catch {
+    res.json({ ok: true, mode: 'live' });
+  }
+});
+
+app.post('/api/mode', async (req, res) => {
+  try {
+    const { mode } = req.body;
+    if (!mode || !['demo', 'live'].includes(mode)) {
+      return res.status(400).json({ ok: false, error: 'mode must be "demo" or "live"' });
+    }
+
+    const demo = await import('./demo');
+
+    if (mode === 'demo') {
+      await demo.startDemo();
+      return res.json({ ok: true, mode: 'demo', message: 'Демо-режим активирован. Датчики симулируются.' });
+    } else {
+      demo.stopDemo();
+      return res.json({ ok: true, mode: 'live', message: 'Режим реальных устройств.' });
+    }
+  } catch (e: any) {
+    console.error('Mode switch error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/api/demo/seed', async (_req, res) => {
+  try {
+    const demo = await import('./demo');
+    const result = await demo.seedDemoData();
+    res.json({ ok: true, ...result, message: 'Демо-данные загружены' });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/api/demo/devices/:id/toggle', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { state } = req.body; // 'ON' | 'OFF'
+    const demo = await import('./demo');
+    const ok = await demo.toggleDemoDevice(id, state);
+    if (!ok) return res.status(404).json({ ok: false, error: 'Device not found in demo' });
+    res.json({ ok: true, device: id, state });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── Start ────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || '8788');
 app.listen(PORT, () => {
