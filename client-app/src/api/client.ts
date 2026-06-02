@@ -259,8 +259,8 @@ export const api = {
     return data.gates.map(mapGate);
   },
 
-  openGate: (id: string) => request(`/gates/${id}/open`, { method: 'POST' }),
-  closeGate: (id: string) => request(`/gates/${id}/close`, { method: 'POST' }),
+  openGate: (id: string) => request<{ ok: boolean; device: string; state: string; command_id: number }>(`/gates/${id}/open`, { method: 'POST' }),
+  closeGate: (id: string) => request<{ ok: boolean; device: string; state: string; command_id: number }>(`/gates/${id}/close`, { method: 'POST' }),
 
   getEvents: async () => {
     const data = await request<{

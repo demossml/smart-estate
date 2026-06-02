@@ -39,10 +39,20 @@ export default function Gates() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  const command = (id: string, action: 'open' | 'close') => {
+  const command = async (id: string, action: 'open' | 'close') => {
+    // Optimistic update
     setGates(prev => prev.map(gate => gate.id === id ? { ...gate, status: action === 'open' ? 'open' : 'closed', lastAction: `${action === 'open' ? 'Открыто' : 'Закрыто'} сейчас` } : gate));
-    const request = action === 'open' ? api.openGate(id) : api.closeGate(id);
-    request.catch(error => logClient('warn', 'Команда ворот не выполнена', error instanceof Error ? error.message : String(error)));
+    try {
+      const result = await (action === 'open' ? api.openGate(id) : api.closeGate(id));
+      setGates(prev => prev.map(gate => gate.id === id ? {
+        ...gate,
+        status: result.state as Gate['status'],
+        lastAction: `${action === 'open' ? 'Открыто' : 'Закрыто'} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+      } : gate));
+    } catch (error) {
+      logClient('warn', 'Команда ворот не выполнена', error instanceof Error ? error.message : String(error));
+      setGates(prev => prev.map(gate => gate.id === id ? { ...gate, lastAction: '⚠️ Ошибка' } : gate));
+    }
   };
 
   return (
