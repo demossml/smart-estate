@@ -1,39 +1,43 @@
-import { Component, type ReactNode } from 'react';
-import { logInfo } from './logger';
+import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { RotateCcw } from 'lucide-react';
+import { logClient } from './logger';
 
-interface Props { children: ReactNode; fallback?: ReactNode; }
-interface State { hasError: boolean; error: Error | null; }
+interface Props {
+  children: ReactNode;
+}
+
+interface State {
+  error?: Error;
+}
 
 export class ErrorBoundary extends Component<Props, State> {
-  state: State = { hasError: false, error: null };
+  state: State = {};
 
   static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error };
+    return { error };
   }
 
-  componentDidCatch(error: Error, info: { componentStack: string }) {
-    // This will be captured by our logger (console.error is overridden)
-    console.error(`[ErrorBoundary] ${error.message}`, error);
-    logInfo('ErrorBoundary caught render error', `${error.message}\n${info.componentStack?.slice(0, 300)}`);
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    logClient('error', error.message, info.componentStack || undefined);
   }
 
   render() {
-    if (this.state.hasError) {
-      return this.props.fallback || (
-        <div className="flex flex-col items-center justify-center h-full bg-[#0D1117] text-center px-6">
-          <div className="text-5xl mb-4">💥</div>
-          <h2 className="text-lg font-bold text-[#E6EDF3] mb-2">Что-то сломалось</h2>
-          <p className="text-xs text-[#8B949E] mb-3 max-w-xs">{this.state.error?.message}</p>
+    if (!this.state.error) return this.props.children;
+
+    return (
+      <div className="min-h-screen bg-bg text-text flex items-center justify-center p-6">
+        <div className="bg-surface rounded-card p-5 border border-red/30 w-full max-w-sm">
+          <h1 className="text-lg font-bold text-red mb-2">Ошибка интерфейса</h1>
+          <p className="text-sm text-text-dim mb-4">{this.state.error.message}</p>
           <button
-            onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }}
-            className="px-6 py-2.5 bg-[#00B4FF] text-[#0D1117] font-semibold rounded-xl text-sm active:scale-[0.97] transition-transform"
+            onClick={() => window.location.reload()}
+            className="w-full min-h-[48px] rounded-btn bg-blue text-white font-semibold flex items-center justify-center gap-2 tap-active"
           >
+            <RotateCcw size={18} />
             Перезагрузить
           </button>
         </div>
-      );
-    }
-
-    return this.props.children;
+      </div>
+    );
   }
 }
