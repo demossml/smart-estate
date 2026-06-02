@@ -2,14 +2,32 @@ import mqtt from 'mqtt';
 import { stmt, logError, logStateChange, query, DB_PATH } from './db';
 
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
-let client: mqtt.MqttClient;
+let client: mqtt.MqttClient | null = null;
+let reconnectAttempts = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+const MAX_RECONNECT_DELAY = 60_000; // 1 minute max
+const BASE_DELAY = 5_000;
 
 export function connectMQTT() {
-  client = mqtt.connect(MQTT_URL);
+  // Don't stack connections — destroy previous if exists
+  if (client) {
+    try { client.end(true); } catch {}
+    client = null;
+  }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  client = mqtt.connect(MQTT_URL, {
+    reconnectPeriod: 0, // We handle reconnection ourselves
+    connectTimeout: 10_000,
+  });
 
   client.on('connect', () => {
+    reconnectAttempts = 0;
     console.log(`📡 MQTT connected: ${MQTT_URL}`);
-    client.subscribe('zigbee2mqtt/#', (err) => {
+    client!.subscribe('zigbee2mqtt/#', (err) => {
       if (err) {
         logError(null, 'mqtt_subscribe_error', err.message, MQTT_URL);
       } else {
@@ -19,13 +37,25 @@ export function connectMQTT() {
   });
 
   client.on('error', (err) => {
-    logError(null, 'mqtt_connection_error', err.message, MQTT_URL);
-    setTimeout(() => connectMQTT(), 5000);
+    // Don't spam logs for connection refused (expected when MQTT is down)
+    if (reconnectAttempts < 5) {
+      logError(null, 'mqtt_error', err.message, MQTT_URL);
+    }
   });
 
   client.on('close', () => {
-    console.log('📡 MQTT disconnected — reconnecting in 5s...');
-    setTimeout(() => connectMQTT(), 5000);
+    const delay = Math.min(BASE_DELAY * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY);
+    reconnectAttempts++;
+    
+    if (reconnectAttempts <= 3) {
+      console.log(`📡 MQTT disconnected — reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts})...`);
+    } else if (reconnectAttempts === 4) {
+      console.log('📡 MQTT still down — switching to silent retry mode (log every 10th attempt)');
+    } else if (reconnectAttempts % 10 === 0) {
+      console.log(`📡 MQTT reconnecting... (attempt ${reconnectAttempts}, next delay ${delay / 1000}s)`);
+    }
+    
+    reconnectTimer = setTimeout(() => connectMQTT(), delay);
   });
 
   client.on('message', (topic: string, payload: Buffer) => {
@@ -136,7 +166,6 @@ function handleTelemetry(friendlyName: string, data: any) {
 
   // Track state changes
   if (data.state !== undefined) {
-    // Get previous state
     query(
       `SELECT value FROM telemetry WHERE device_ieee = ? AND property = 'state' ORDER BY ts DESC LIMIT 1`,
       ieee
@@ -184,7 +213,12 @@ function handleTelemetry(friendlyName: string, data: any) {
 import { Server as WebSocketServer } from 'ws';
 import { Server as HTTPServer } from 'http';
 
+let wsAttached = false;
+
 export function attachWebSocket(server: HTTPServer) {
+  if (wsAttached) return; // Prevent double attachment
+  wsAttached = true;
+  
   const wss = new WebSocketServer({ server, path: '/ws' });
 
   wss.on('connection', (ws) => {
@@ -199,10 +233,8 @@ export function attachWebSocket(server: HTTPServer) {
   });
 
   // Hook into MQTT to forward to all WebSocket clients
-  const origOnMessage = client?.listeners('message')[0];
   if (client) {
     client.on('message', (topic: string, payload: Buffer) => {
-      // Forward to all connected WS clients
       wss.clients.forEach((c) => {
         if (c.readyState === 1) {
           try {

@@ -11,8 +11,12 @@ const server = http.createServer(app);
 // WebSocket
 attachWebSocket(server);
 
-// MQTT
-connectMQTT();
+// MQTT — skip in demo mode
+if (process.env.SMART_ESTATE_MODE !== 'demo') {
+  connectMQTT();
+} else {
+  console.log('🎭 DEMO MODE: MQTT skipped (not needed)');
+}
 
 // Time-based scheduler
 startScheduler().catch(e => console.error('Scheduler start failed:', e.message));
@@ -59,9 +63,12 @@ server.listen(PORT, HOST, () => {
   console.log('   POST /api/mode            — переключить режим');
   console.log('═'.repeat(55));
 
-  // Auto-start demo if env var is set
+  // Auto-start demo if env var is set (delayed to avoid DB race)
   if (process.env.SMART_ESTATE_MODE === 'demo') {
-    import('./demo').then(d => d.startDemo());
+    setTimeout(() => {
+      import('./demo').then(d => d.startDemo()).catch(e =>
+        console.error('Demo start error:', e.message));
+    }, 2000);
   }
 });
 

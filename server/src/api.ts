@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import { join } from 'path';
 import rateLimit from 'express-rate-limit';
 import { stmt, query, logError, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
@@ -19,9 +20,15 @@ app.use(helmet({
 // ── CORS ─────────────────────────────────────────────────
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow localhost on any port, t.me, and configured origins
+    // Allow same-origin (no Origin header) and any private/local address
     if (!origin) return callback(null, true);
-    if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')) return callback(null, true);
+    const host = origin.replace(/^https?:\/\//, '').split(':')[0];
+    // localhost, 127.x, 192.168.x, 10.x, 172.16-31.x, 0.0.0.0
+    if (
+      host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' ||
+      host.startsWith('192.168.') || host.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+    ) return callback(null, true);
     if (origin === 'https://t.me' || origin === 'https://web.telegram.org') return callback(null, true);
     const extra = (process.env.CORS_ORIGIN || '').split(',').map(o => o.trim()).filter(Boolean);
     if (extra.includes(origin)) return callback(null, true);
@@ -35,7 +42,7 @@ app.use(cors({
 // ── Rate Limiting ────────────────────────────────────────
 const limiter = rateLimit({
   windowMs: 60_000,       // 1 minute
-  max: 120,               // 120 requests per minute
+  max: 500,               // 8 polls/min × 5s intervals + user actions
   standardHeaders: true,
   legacyHeaders: false,
   message: { ok: false, error: 'Too many requests, slow down' },
@@ -851,11 +858,79 @@ app.post('/api/demo/devices/:id/toggle', async (req, res) => {
   }
 });
 
-// ── Start ────────────────────────────────────────────────
-const PORT = parseInt(process.env.PORT || '8788');
-app.listen(PORT, () => {
-  console.log(`🚀 Smart Estate API: http://localhost:${PORT}`);
-  console.log(`   Endpoints: /api/status /api/devices /api/telemetry /api/rooms /api/energy /api/events /api/audit`);
+// ── GET /start — React SPA from Vite build ───────────────
+const clientDist = join(__dirname, '..', '..', 'client-app', 'dist');
+app.use('/assets', express.static(join(clientDist, 'assets'), { maxAge: '365d', immutable: true }));
+app.use('/icons', express.static(join(clientDist, 'icons'), { maxAge: '365d', immutable: true }));
+app.get('/start', (_req, res) => {
+  res.set('Cache-Control', 'no-store, must-revalidate');
+  res.sendFile(join(clientDist, 'index.html'));
 });
+app.get('/manifest.json', (_req, res) => {
+  res.set('Cache-Control', 'no-store, must-revalidate');
+  res.sendFile(join(clientDist, 'manifest.json'));
+});
+app.get('/sw.js', (_req, res) => {
+  res.set('Cache-Control', 'no-store, must-revalidate');
+  res.sendFile(join(clientDist, 'sw.js'));
+});
+
+// ── Design prototype ────────────────────────────────────
+app.get('/design', (_req, res) => {
+  res.sendFile(join(__dirname, '..', '..', 'design', 'prototype.html'));
+});
+
+// ── Client debug logs ────────────────────────────────────
+// Ring buffer — stores last 2000 log entries from all clients
+const clientLogBuffer: any[] = [];
+const MAX_CLIENT_LOGS = 2000;
+
+// POST /api/client-logs — receive logs from the PWA
+app.post('/api/client-logs', (req, res) => {
+  try {
+    const { logs, ua, screen, dpr } = req.body;
+    if (!Array.isArray(logs)) {
+      return res.status(400).json({ ok: false, error: 'logs array required' });
+    }
+    const batch = {
+      received: new Date().toISOString(),
+      client_ip: req.ip || req.socket.remoteAddress,
+      ua: ua || 'unknown',
+      screen: screen || 'unknown',
+      dpr: dpr || 1,
+      logs: logs.slice(-500),
+    };
+    clientLogBuffer.push(batch);
+    if (clientLogBuffer.length > MAX_CLIENT_LOGS) clientLogBuffer.shift();
+
+    // Print errors/warnings to server console for quick debugging
+    const errors = logs.filter((l: any) => l.level === 'error');
+    const warns = logs.filter((l: any) => l.level === 'warn');
+    if (errors.length > 0) {
+      console.log(`🐛 [CLIENT] ${errors.length} errors, ${warns.length} warnings from ${ua?.slice(0, 60) || 'unknown'}`);
+      for (const e of errors.slice(0, 5)) {
+        console.log(`   ❌ ${e.message}${e.detail ? ' — ' + e.detail : ''}`);
+      }
+    }
+    if (warns.length > 0) {
+      for (const w of warns.slice(0, 3)) {
+        console.log(`   ⚠️ ${w.message}${w.detail ? ' — ' + w.detail : ''}`);
+      }
+    }
+
+    res.json({ ok: true, count: logs.length, stored: clientLogBuffer.length });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/client-logs — read stored client logs (for debugging)
+app.get('/api/client-logs', (req, res) => {
+  const limit = parseInt(req.query.limit as string) || 10;
+  const recent = clientLogBuffer.slice(-limit);
+  res.json({ ok: true, batches: recent, total: clientLogBuffer.length });
+});
+
+// ── Export (server started by index.ts) ──────────────────
 
 export default app;

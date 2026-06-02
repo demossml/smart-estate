@@ -1,0 +1,11 @@
+{
+  "name": "Умная Усадьба",
+  "short_name": "Усадьба",
+  "description": "Smart home control panel",
+  "start_url": "/start",
+  "display": "standalone",
+  "background_color": "#0a0e17",
+  "theme_color": "#0a0e17",
+  "orientation": "portrait",
+  "icons": []
+}

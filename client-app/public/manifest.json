@@ -1,0 +1,21 @@
+{
+  "name": "Умная Усадьба",
+  "short_name": "Усадьба",
+  "description": "Управление умным домом — свет, климат, ворота, охрана",
+  "start_url": "/start?pwa=1",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#0D1117",
+  "theme_color": "#0D1117",
+  "categories": ["utilities", "lifestyle"],
+  "lang": "ru",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "screenshots": [],
+  "prefer_related_applications": false
+}

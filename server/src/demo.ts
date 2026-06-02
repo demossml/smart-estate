@@ -45,6 +45,7 @@ const DEMO_ROOMS = [
   { id: 102, name: 'Спальня', icon: '🛏️' },
   { id: 103, name: 'Ванная', icon: '🛁' },
   { id: 104, name: 'Коридор', icon: '🚪' },
+  { id: 105, name: 'Улица', icon: '🌿' },
 ];
 
 const DEMO_DEVICES: DemoDevice[] = [
@@ -171,6 +172,21 @@ const DEMO_DEVICES: DemoDevice[] = [
     room: 'Коридор',
     properties: [{ property: 'contact', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
+  // Ворота и калитка
+  {
+    ieee_addr: 'demo:main_gate',
+    name: 'Въездные ворота',
+    type: 'gate',
+    room: 'Улица',
+    properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
+  },
+  {
+    ieee_addr: 'demo:side_gate',
+    name: 'Калитка',
+    type: 'gate',
+    room: 'Улица',
+    properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
+  },
 ];
 
 // ═══════════════════════════════════════════════════════
@@ -186,34 +202,56 @@ export function isDemoMode(): boolean {
  * Only inserts if rooms/devices don't already exist.
  */
 export async function seedDemoData(): Promise<{ rooms: number; devices: number }> {
-  // Rooms
+  // Clean up old data
+  await query("DELETE FROM devices WHERE ieee_addr LIKE 'demo:%'");
+  await query('DELETE FROM telemetry');
+
+  // Rooms — find by name, create if missing, delete extras
   let roomCount = 0;
+  const roomIdByName = new Map<string, number>();
   for (const r of DEMO_ROOMS) {
-    const existing = await query('SELECT COUNT(*) as cnt FROM rooms WHERE id = ?', r.id);
-    if (existing[0]?.cnt === 0) {
+    const existing = await query('SELECT id FROM rooms WHERE name = ?', r.name);
+    if (existing.length > 0) {
+      roomIdByName.set(r.name, Number(existing[0].id));
+    } else {
       await query('INSERT INTO rooms (id, name, icon) VALUES (?, ?, ?)', r.id, r.name, r.icon);
+      roomIdByName.set(r.name, r.id);
       roomCount++;
     }
   }
-
-  // Devices
+  // Delete rooms not in DEMO_ROOMS
+  const demoIds = DEMO_ROOMS.map(r => r.id).join(',');
+  const demoRoomIds = [...roomIdByName.values()].map(String);
+  if (demoRoomIds.length) {
+    await query(`DELETE FROM rooms WHERE id NOT IN (${demoRoomIds.join(',')})`);
+  }
   let deviceCount = 0;
   for (const d of DEMO_DEVICES) {
-    const existing = await query('SELECT COUNT(*) as cnt FROM devices WHERE ieee_addr = ?', d.ieee_addr);
-    if (existing[0]?.cnt === 0) {
-      const room = DEMO_ROOMS.find(r => r.name === d.room);
-      await query(
-        `INSERT INTO devices (ieee_addr, friendly_name, type, room_id, status, last_seen)
-         VALUES (?, ?, ?, ?, 'online', CURRENT_TIMESTAMP)`,
-        d.ieee_addr, d.name, d.type, room?.id || null
-      );
-      deviceCount++;
-    }
+    const roomId = roomIdByName.get(d.room) || null;
+    await query(
+      `INSERT INTO devices (ieee_addr, friendly_name, type, room_id, status, last_seen)
+       VALUES (?, ?, ?, ?, 'online', CURRENT_TIMESTAMP)`,
+      d.ieee_addr, d.name, d.type, roomId
+    );
+    deviceCount++;
   }
 
   // Init telemetry sequence
   const maxSeq = await query('SELECT COALESCE(MAX(id), 0) as mx FROM telemetry');
   _telemetrySeq = BigInt(maxSeq[0]?.mx || 100000) + BigInt(1);
+
+  // Init climate setpoints for temp sensors
+  const tempSensors = DEMO_DEVICES.filter(d => d.properties.some(p => p.property === 'temperature'));
+  for (const d of tempSensors) {
+    const existing = await query('SELECT COUNT(*) as cnt FROM climate_setpoints WHERE device_ieee = ?', d.ieee_addr);
+    if (Number(existing[0]?.cnt || 0) === 0) {
+      await query(
+        `INSERT INTO climate_setpoints (device_ieee, target_temp, mode, hysteresis, min_temp, max_temp)
+         VALUES (?, 22, 'auto', 1, 16, 30)`,
+        d.ieee_addr
+      );
+    }
+  }
 
   console.log(`🌱 Demo seed: ${roomCount} rooms, ${deviceCount} devices`);
   return { rooms: roomCount, devices: deviceCount };

@@ -290,7 +290,7 @@ function updateSunTimes(): void {
     sunsetTime = times.sunset;
     sunriseTime = times.sunrise;
 
-    if (sunsetTime) {
+    if (sunsetTime && sunriseTime) {
       console.log(`🌅 Sunrise: ${sunriseTime.toLocaleTimeString('ru-RU')} | Sunset: ${sunsetTime.toLocaleTimeString('ru-RU')}`);
     }
   } catch {
