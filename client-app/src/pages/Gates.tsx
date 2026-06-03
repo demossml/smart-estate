@@ -95,21 +95,22 @@ export default function Gates() {
             const isBusy = isClosing || isOpening;
 
             // Tile background
-            let tileBg = 'bg-green/10 border-green/20';
-            if (opened) tileBg = 'bg-yellow/10 border-yellow/20';
+            let tileBg = 'bg-amber-950/20 border-amber-900/20';
+            if (opened) tileBg = 'bg-green/10 border-green/20';
             if (isClosing) tileBg = 'bg-amber-950/40 border-amber-900/30';
             if (isOpening) tileBg = 'bg-green/20 border-green/30';
 
             // Icon color
-            let iconColor = 'text-green';
-            if (opened) iconColor = 'text-yellow';
-            if (isClosing) iconColor = 'text-amber-400';
+            let iconColor = 'text-amber-400';
+            if (opened) iconColor = 'text-green';
+            if (isClosing) iconColor = 'text-amber-300';
             if (isOpening) iconColor = 'text-green';
 
             // Status text
             let statusText = statusLabel[gate.status] || gate.status;
-            let statusColor = opened ? 'text-yellow' : 'text-green';
-            if (isClosing) { statusText = 'Закрывается…'; statusColor = 'text-amber-300'; }
+            let statusColor = 'text-amber-300';
+            if (opened) statusColor = 'text-green';
+            if (isClosing) { statusText = 'Закрывается…'; statusColor = 'text-amber-200'; }
             if (isOpening) { statusText = 'Открывается…'; statusColor = 'text-green'; }
 
             // Button styles: only ONE colored at a time
