@@ -1,10 +1,9 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Plug, Wand2, Thermometer, DoorOpen, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, Plug, Wand2, DoorOpen, ShieldCheck } from 'lucide-react';
 
 const tabs = [
   { to: '/', icon: LayoutDashboard, label: 'Дом' },
   { to: '/devices', icon: Plug, label: 'Устр.' },
-  { to: '/climate', icon: Thermometer, label: 'Климат' },
   { to: '/gates', icon: DoorOpen, label: 'Ворота' },
   { to: '/scenarios', icon: Wand2, label: 'Сценарии' },
   { to: '/events', icon: ShieldCheck, label: 'События' },

@@ -81,7 +81,7 @@ export default function Welcome() {
     <div className="app-shell min-h-screen bg-bg text-text p-6 flex flex-col items-center justify-center">
       {/* Header */}
       <div className="text-center mb-8">
-        <div className="text-6xl mb-4">🏠</div>
+        <Home size={64} className="text-blue mx-auto mb-4" />
         <h1 className="text-2xl font-extrabold text-text mb-1">Умная Усадьба</h1>
         <p className="text-text-dim text-sm">Автономный умный дом</p>
       </div>

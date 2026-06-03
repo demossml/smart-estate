@@ -490,6 +490,112 @@ app.get('/api/rooms', async (_req, res) => {
   }
 });
 
+// ── POST /api/rooms (create) ──────────────────────────────
+app.post('/api/rooms', csrfProtect, async (req, res) => {
+  try {
+    const { name, icon } = req.body;
+    if (!name?.trim()) return res.status(400).json({ ok: false, error: 'name required' });
+    const iconKey = icon || 'home';
+    // Check duplicate
+    const dup = await query('SELECT id FROM rooms WHERE name = ?', name.trim());
+    if (dup.length) return res.status(409).json({ ok: false, error: 'Room already exists' });
+    // Generate ID
+    const max = await query('SELECT COALESCE(MAX(id),0)+1 as next_id FROM rooms');
+    const id = Number(max[0].next_id);
+    await query('INSERT INTO rooms (id, name, icon) VALUES (?, ?, ?)', id, name.trim(), iconKey);
+    const room = await query('SELECT * FROM rooms WHERE id = ?', id);
+    res.json({ ok: true, room: room[0] });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'rooms_create');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── DELETE /api/rooms/:id ─────────────────────────────────
+app.delete('/api/rooms/:id', csrfProtect, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const existing = await query('SELECT * FROM rooms WHERE id = ?', id);
+    if (!existing.length) return res.status(404).json({ ok: false, error: 'Room not found' });
+    // Move devices to room 1 (default) before deleting
+    await query('UPDATE devices SET room_id = 1 WHERE room_id = ?', id);
+    await query('DELETE FROM rooms WHERE id = ?', id);
+    res.json({ ok: true, deleted: id });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'rooms_delete');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── GET /api/rooms/:id/devices ────────────────────────────
+app.get('/api/rooms/:id/devices', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const devices = await query(`
+      SELECT d.*, r.name as room_name, r.icon as room_icon,
+        (SELECT COALESCE(json_group_array(
+          json_object('property', t.property, 'value', t.value, 'unit', t.unit)
+        ), '[]')
+         FROM (SELECT property, value, unit FROM telemetry
+               WHERE device_ieee = d.ieee_addr ORDER BY ts DESC LIMIT 3) t
+        ) as latest_telemetry
+      FROM devices d LEFT JOIN rooms r ON d.room_id = r.id
+      WHERE d.room_id = ?
+      ORDER BY d.type, d.ieee_addr
+    `, id);
+
+    const parsed = devices.map((row: any) => ({
+      ...row,
+      latest_telemetry: typeof row.latest_telemetry === 'string'
+        ? JSON.parse(row.latest_telemetry)
+        : row.latest_telemetry || [],
+    }));
+
+    res.json({ ok: true, devices: parsed });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'room_devices');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── GET /api/rooms/:id/climate ────────────────────────────
+app.get('/api/rooms/:id/climate', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const setpoints = await query(`
+      SELECT cs.* FROM climate_setpoints cs
+      JOIN devices d ON cs.device_ieee = d.ieee_addr
+      WHERE d.room_id = ?
+      ORDER BY cs.device_ieee
+    `, id);
+
+    const enriched = await Promise.all(setpoints.map(async (sp: any) => {
+      const temp = await query(
+        `SELECT value FROM telemetry WHERE device_ieee = ? AND property = 'temperature'
+         ORDER BY ts DESC LIMIT 1`, sp.device_ieee
+      );
+      const humidity = await query(
+        `SELECT value FROM telemetry WHERE device_ieee = ? AND property = 'humidity'
+         ORDER BY ts DESC LIMIT 1`, sp.device_ieee
+      );
+      const currentTemp = temp[0]?.value || null;
+      const needsHeat = currentTemp !== null && currentTemp < sp.target_temp - (sp.hysteresis || 1);
+      const needsCool = currentTemp !== null && currentTemp > sp.target_temp + (sp.hysteresis || 1);
+      return {
+        ...sp,
+        current_temp: currentTemp,
+        needs_heat: needsHeat,
+        needs_cool: needsCool,
+        action: needsHeat ? 'heat' : needsCool ? 'cool' : 'idle',
+      };
+    }));
+    res.json({ ok: true, climate: enriched });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'room_climate');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── GET /api/energy ─────────────────────────────────────
 app.get('/api/energy', async (_req, res) => {
   try {

@@ -40,12 +40,12 @@ let _telemetrySeq = BigInt(100000);
 // ═══════════════════════════════════════════════════════
 
 const DEMO_ROOMS = [
-  { id: 100, name: 'Гостиная', icon: '🛋️' },
-  { id: 101, name: 'Кухня', icon: '🍳' },
-  { id: 102, name: 'Спальня', icon: '🛏️' },
-  { id: 103, name: 'Ванная', icon: '🛁' },
-  { id: 104, name: 'Коридор', icon: '🚪' },
-  { id: 105, name: 'Улица', icon: '🌿' },
+  { id: 100, name: 'Гостиная', icon: 'armchair' },
+  { id: 101, name: 'Кухня', icon: 'cooking-pot' },
+  { id: 102, name: 'Спальня', icon: 'bed' },
+  { id: 103, name: 'Ванная', icon: 'bath' },
+  { id: 104, name: 'Коридор', icon: 'door-open' },
+  { id: 105, name: 'Улица', icon: 'tree-pine' },
 ];
 
 const DEMO_DEVICES: DemoDevice[] = [
@@ -206,13 +206,17 @@ export async function seedDemoData(): Promise<{ rooms: number; devices: number }
   await query("DELETE FROM devices WHERE ieee_addr LIKE 'demo:%'");
   await query('DELETE FROM telemetry');
 
-  // Rooms — find by name, create if missing, delete extras
+  // Rooms — find by name, create if missing, update icon, delete extras
   let roomCount = 0;
   const roomIdByName = new Map<string, number>();
   for (const r of DEMO_ROOMS) {
-    const existing = await query('SELECT id FROM rooms WHERE name = ?', r.name);
+    const existing = await query('SELECT id, icon FROM rooms WHERE name = ?', r.name);
     if (existing.length > 0) {
       roomIdByName.set(r.name, Number(existing[0].id));
+      // Update icon if changed
+      if (existing[0].icon !== r.icon) {
+        await query('UPDATE rooms SET icon = ? WHERE id = ?', r.icon, Number(existing[0].id));
+      }
     } else {
       await query('INSERT INTO rooms (id, name, icon) VALUES (?, ?, ?)', r.id, r.name, r.icon);
       roomIdByName.set(r.name, r.id);

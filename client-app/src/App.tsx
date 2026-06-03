@@ -8,7 +8,6 @@ import Devices from './pages/Devices';
 import Scenarios from './pages/Scenarios';
 import Analytics from './pages/Analytics';
 import Welcome from './pages/Welcome';
-import Climate from './pages/Climate';
 import Gates from './pages/Gates';
 import Events from './pages/Events';
 
@@ -39,7 +38,6 @@ export default function App() {
           <Route path="/start" element={<Welcome />} />
           <Route path="/" element={<AppLayout><Dashboard /></AppLayout>} />
           <Route path="/devices" element={<AppLayout><Devices /></AppLayout>} />
-          <Route path="/climate" element={<AppLayout><Climate /></AppLayout>} />
           <Route path="/gates" element={<AppLayout><Gates /></AppLayout>} />
           <Route path="/scenarios" element={<AppLayout><Scenarios /></AppLayout>} />
           <Route path="/events" element={<AppLayout><Events /></AppLayout>} />

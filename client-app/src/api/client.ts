@@ -322,6 +322,12 @@ export const api = {
   toggleLight: (roomId: string) =>
     request(`/rooms/${roomId}/light/toggle`, { method: 'POST' }),
 
+  deviceOn: (id: string) =>
+    request(`/devices/${id}/on`, { method: 'POST' }),
+
+  deviceOff: (id: string) =>
+    request(`/devices/${id}/off`, { method: 'POST' }),
+
   overrideRoom: (roomId: string, duration: number) =>
     request(`/rooms/${roomId}/override`, {
       method: 'POST',
@@ -347,6 +353,23 @@ export const api = {
 
   getRooms: () =>
     request<{ ok: boolean; rooms: { id: number; name: string; icon: string }[] }>('/rooms'),
+
+  getRoomDevices: (roomId: string) =>
+    request<{ ok: boolean; devices: any[] }>(`/rooms/${roomId}/devices`),
+
+  getRoomClimate: (roomId: string) =>
+    request<{ ok: boolean; climate: any[] }>(`/rooms/${roomId}/climate`),
+
+  createRoom: (name: string, icon: string) =>
+    request<{ ok: boolean; room: any }>('/rooms', {
+      method: 'POST',
+      body: JSON.stringify({ name, icon }),
+    }),
+
+  deleteRoom: (id: number) =>
+    request<{ ok: boolean; deleted: any }>(`/rooms/${id}`, {
+      method: 'DELETE',
+    }),
 
   updateDevice: (id: string, updates: { friendly_name?: string; type?: string; room_id?: number }) =>
     request<{ ok: boolean; device: any }>(`/devices/${id}`, {
