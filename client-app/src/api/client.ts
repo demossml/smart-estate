@@ -333,4 +333,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text }),
     }),
+
+  createDevice: (ieee_addr: string, friendly_name: string, type: string, room_id?: number) =>
+    request<{ ok: boolean; device: any }>('/devices', {
+      method: 'POST',
+      body: JSON.stringify({ ieee_addr, friendly_name, type, room_id }),
+    }),
+
+  deleteDevice: (id: string) =>
+    request<{ ok: boolean; deleted: string }>(`/devices/${id}`, {
+      method: 'DELETE',
+    }),
+
+  getRooms: () =>
+    request<{ ok: boolean; rooms: { id: number; name: string; icon: string }[] }>('/rooms'),
 };

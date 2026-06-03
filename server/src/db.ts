@@ -248,6 +248,8 @@ export const stmt = {
 
   setDeviceStatus: db.prepare(`UPDATE devices SET status = ?, last_seen = CURRENT_TIMESTAMP WHERE ieee_addr = ?`),
 
+  deleteDevice: db.prepare(`DELETE FROM devices WHERE ieee_addr = ?`),
+
   // Telemetry
   insertTelemetry: db.prepare(`
     INSERT INTO telemetry (id, device_ieee, property, value, unit, raw_json, ts)

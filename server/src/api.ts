@@ -233,6 +233,75 @@ app.post('/api/devices/:id/off', csrfProtect, commandLimiter, async (req, res) =
   }
 });
 
+// ── POST /api/devices (create) ────────────────────────────
+app.post('/api/devices', csrfProtect, async (req, res) => {
+  try {
+    const { ieee_addr, friendly_name, type, room_id } = req.body;
+    if (!ieee_addr || !friendly_name || !type) {
+      return res.status(400).json({ ok: false, error: 'ieee_addr, friendly_name, type are required' });
+    }
+    // Valid types
+    const validTypes = ['light', 'sensor', 'plug', 'gate', 'climate', 'lock'];
+    if (!validTypes.includes(type)) {
+      return res.status(400).json({ ok: false, error: `type must be one of: ${validTypes.join(', ')}` });
+    }
+    // Validate room exists
+    if (room_id) {
+      const rooms = await query('SELECT id FROM rooms WHERE id = ?', room_id);
+      if (!rooms.length) {
+        return res.status(400).json({ ok: false, error: 'Room not found' });
+      }
+    }
+    await query(
+      `INSERT INTO devices (ieee_addr, friendly_name, type, room_id, status, last_seen)
+       VALUES (?, ?, ?, ?, 'online', NOW())
+       ON CONFLICT(ieee_addr) DO UPDATE SET
+         friendly_name = EXCLUDED.friendly_name,
+         type = EXCLUDED.type,
+         room_id = EXCLUDED.room_id,
+         last_seen = NOW()`,
+      ieee_addr, friendly_name, type, room_id || 1
+    );
+    res.json({ ok: true, device: { ieee_addr, friendly_name, type, room_id: room_id || 1, status: 'online' } });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'devices_create');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── DELETE /api/devices/:id ──────────────────────────────
+app.delete('/api/devices/:id', csrfProtect, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const existing = await query('SELECT * FROM devices WHERE ieee_addr = ?', id);
+    if (!existing.length) {
+      return res.status(404).json({ ok: false, error: 'Device not found' });
+    }
+    // Delete related data
+    await query('DELETE FROM telemetry WHERE device_ieee = ?', id);
+    await query('DELETE FROM commands WHERE device_ieee = ?', id);
+    await query('DELETE FROM state_changes WHERE device_ieee = ?', id);
+    await query('DELETE FROM climate_setpoints WHERE device_ieee = ?', id);
+    await query('DELETE FROM device_group_members WHERE device_ieee = ?', id);
+    stmt.deleteDevice.run(id);
+    res.json({ ok: true, deleted: id });
+  } catch (e: any) {
+    logError(id, 'api_error', e.message, 'devices_delete');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── GET /api/rooms (for device creation) ─────────────────
+app.get('/api/rooms', async (_req, res) => {
+  try {
+    const rooms = await query('SELECT id, name, icon FROM rooms ORDER BY id');
+    res.json({ ok: true, rooms });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'rooms');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── GET /api/telemetry ──────────────────────────────────
 app.get('/api/telemetry', async (req, res) => {
   try {
