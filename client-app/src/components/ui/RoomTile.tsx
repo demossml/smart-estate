@@ -128,10 +128,16 @@ function ClimateCard({ sp, onUpdate }: { sp: ClimateSetpoint; onUpdate: (temp: n
         </div>
       </div>
 
-      {/* Slider */}
-      <input type="range" min={16} max={28} step={0.5} value={localTemp}
-        onChange={e => handleTempChange(Number(e.target.value))}
-        className="w-full accent-blue mb-3" aria-label="Температура" />
+      {/* Slider — big touch target */}
+      <div className="py-3">
+        <input type="range" min={16} max={28} step={0.5} value={localTemp}
+          onChange={e => handleTempChange(Number(e.target.value))}
+          className="w-full h-10 accent-blue cursor-pointer" aria-label="Температура" />
+        <div className="flex justify-between mt-1">
+          <span className="text-[10px] text-text-dim">16°</span>
+          <span className="text-[10px] text-text-dim">28°</span>
+        </div>
+      </div>
 
       {/* Mode buttons */}
       <div className="grid grid-cols-4 gap-2">
@@ -140,7 +146,7 @@ function ClimateCard({ sp, onUpdate }: { sp: ClimateSetpoint; onUpdate: (temp: n
           const active = sp.mode === mode;
           return (
             <button key={mode} onClick={() => onUpdate(sp.target_temp, mode)}
-              className={`min-h-[40px] rounded-btn text-xs font-semibold flex flex-col items-center justify-center gap-0.5
+              className={`min-h-[48px] rounded-btn text-xs font-semibold flex flex-col items-center justify-center gap-0.5
                 ${active ? 'bg-blue text-white' : 'bg-surface-hover text-text-dim hover:text-text'}`}>
               <Icon size={14} />
               {modeLabels[mode]}
