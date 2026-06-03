@@ -1,6 +1,6 @@
 import mqtt from 'mqtt';
 import { stmt, logError, logStateChange, query, DB_PATH } from './db';
-import { validateApiKey, validateTelegramInitData } from './crypto';
+import { validateApiKey } from './crypto';
 import { validateMqttPayload, type MqttTelemetryPayload } from './schemas';
 
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
@@ -239,14 +239,10 @@ export function attachWebSocket(server: HTTPServer) {
       return;
     }
 
-    // ── AUTH: API Key or Telegram initData REQUIRED ──
+    // ── AUTH: API Key REQUIRED ──
     const apiKey = req.headers['x-api-key'] as string;
-    const initData = req.headers['x-telegram-initdata'] as string;
     
-    const isValid = (apiKey && validateApiKey(apiKey)) ||
-                    (initData && validateTelegramInitData(initData));
-    
-    if (!isValid) {
+    if (!apiKey || !validateApiKey(apiKey)) {
       console.log(`🔌 WebSocket rejected: no valid auth (IP: ${req.socket.remoteAddress})`);
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();

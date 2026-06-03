@@ -78,19 +78,23 @@ body {
   min-height: var(--viewport-height);
   margin: 0 auto;
   padding-top: var(--safe-top);
+  padding-bottom: calc(var(--tabbar-height) + var(--safe-bottom));
   padding-left: var(--safe-left);
   padding-right: var(--safe-right);
+  -webkit-overflow-scrolling: touch;
 }
 
 .app-tabbar {
+  position: fixed;
   left: 50%;
-  right: auto;
+  bottom: 0;
+  transform: translateX(-50%);
   width: min(100%, var(--shell-max-width));
   height: calc(var(--tabbar-height) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
   padding-left: max(8px, var(--safe-left));
   padding-right: max(8px, var(--safe-right));
-  transform: translateX(-50%);
+  z-index: 30;
 }
 
 .safe-fab {
