@@ -94,28 +94,50 @@ app.get('/api/status', async (_req, res) => {
 // ── GET /api/devices ────────────────────────────────────
 app.get('/api/devices', async (req, res) => {
   try {
-    const filter = req.query.filter as string; // 'online' | 'offline' | undefined
-    let sql = `
-      SELECT d.*, r.name as room_name, r.icon as room_icon
+    const rawFilter = req.query.filter as string;
+    
+    // Only allow 'online' and 'offline'; treat anything else (empty, SQL injection, etc.) as no filter
+    const filter = (rawFilter === 'online' || rawFilter === 'offline') ? rawFilter : undefined;
+
+    // Pagination: limit (max 100, default 50), offset (default 0)
+    const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 100);
+    const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
+
+    // Build WHERE clause for filtering
+    let whereClause = '';
+    if (filter === 'online') whereClause = " WHERE d.status = 'online'";
+    else if (filter === 'offline') whereClause = " WHERE d.status = 'offline'";
+
+    // Total count (before pagination)
+    const countResult = await query(`SELECT COUNT(*) as total FROM devices d${whereClause}`);
+    const total = countResult[0]?.total || 0;
+
+    // Single query with correlated subquery — no N+1
+    const sql = `
+      SELECT d.*, r.name as room_name, r.icon as room_icon,
+        (SELECT COALESCE(json_group_array(
+          json_object('property', t.property, 'value', t.value, 'unit', t.unit)
+        ), '[]')
+         FROM (SELECT property, value, unit FROM telemetry
+               WHERE device_ieee = d.ieee_addr ORDER BY ts DESC LIMIT 3) t
+        ) as latest_telemetry
       FROM devices d LEFT JOIN rooms r ON d.room_id = r.id
+      ${whereClause}
+      ORDER BY d.status DESC, d.last_seen DESC
+      LIMIT ? OFFSET ?
     `;
-    if (filter === 'online') sql += " WHERE d.status = 'online'";
-    if (filter === 'offline') sql += " WHERE d.status = 'offline'";
-    sql += ' ORDER BY d.status DESC, d.last_seen DESC';
 
-    const rows = await query(sql);
+    const rows = await query(sql, limit, offset);
 
-    // Enrich with latest telemetry
-    const enriched = await Promise.all(rows.map(async (d: any) => {
-      const latest = await query(
-        `SELECT property, value, unit FROM telemetry 
-         WHERE device_ieee = ? ORDER BY ts DESC LIMIT 3`,
-        d.ieee_addr
-      );
-      return { ...d, latest_telemetry: latest };
+    // Parse JSON-encoded telemetry
+    const devices = rows.map((row: any) => ({
+      ...row,
+      latest_telemetry: typeof row.latest_telemetry === 'string'
+        ? JSON.parse(row.latest_telemetry)
+        : row.latest_telemetry || [],
     }));
 
-    res.json({ ok: true, devices: enriched });
+    res.json({ ok: true, devices, total, limit, offset });
   } catch (e: any) {
     logError(null, 'api_error', e.message, 'devices');
     res.status(500).json({ ok: false, error: e.message });

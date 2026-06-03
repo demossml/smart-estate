@@ -5,6 +5,7 @@ import {
   checkAndRecordNonce,
   validateTelegramInitData,
   validateApiKey,
+  hashApiKey,
   logSecurityEvent,
 } from '../crypto';
 
@@ -22,7 +23,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   // Layer 1: API Key
   const apiKey = req.headers['x-api-key'] as string;
   if (apiKey && validateApiKey(apiKey)) {
-    logSecurityEvent({ type: 'auth_success', ip, detail: `api_key:${apiKey.slice(0, 8)}...` });
+    logSecurityEvent({ type: 'auth_success', ip, detail: `api_key_hash:${hashApiKey(apiKey)}` });
     return next();
   }
 

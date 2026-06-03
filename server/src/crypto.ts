@@ -93,6 +93,18 @@ export function validateTelegramInitData(initData: string): boolean {
   }
 }
 
+// ── API Key Hashing ──────────────────────────────────────
+
+/**
+ * Hash an API key with SHA-256 and return first 16 hex chars.
+ * Used for audit logging so raw keys never appear in logs.
+ */
+export function hashApiKey(apiKey: string): string {
+  if (!apiKey) return 'empty';
+  const hash = crypto.createHash('sha256').update(apiKey).digest('hex');
+  return hash.slice(0, 16);
+}
+
 // ── API Key Validation ───────────────────────────────────
 
 export function validateApiKey(key: string): boolean {
