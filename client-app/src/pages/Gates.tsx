@@ -97,18 +97,20 @@ export default function Gates() {
             // Tile background
             let tileBg = 'bg-green/10 border-green/20';
             if (opened) tileBg = 'bg-yellow/10 border-yellow/20';
-            if (isClosing) tileBg = 'bg-surface-hover border-surface-hover opacity-70';
+            if (isClosing) tileBg = 'bg-amber-950/40 border-amber-900/30';
+            if (isOpening) tileBg = 'bg-green/20 border-green/30';
 
             // Icon color
             let iconColor = 'text-green';
             if (opened) iconColor = 'text-yellow';
-            if (isClosing) iconColor = 'text-text-dim';
+            if (isClosing) iconColor = 'text-amber-400';
+            if (isOpening) iconColor = 'text-green';
 
             // Status text
             let statusText = statusLabel[gate.status] || gate.status;
             let statusColor = opened ? 'text-yellow' : 'text-green';
-            if (isClosing) { statusText = 'Закрывается…'; statusColor = 'text-text-dim'; }
-            if (isOpening) { statusText = 'Открывается…'; statusColor = 'text-blue'; }
+            if (isClosing) { statusText = 'Закрывается…'; statusColor = 'text-amber-300'; }
+            if (isOpening) { statusText = 'Открывается…'; statusColor = 'text-green'; }
 
             return (
               <section
@@ -134,7 +136,7 @@ export default function Gates() {
                     disabled={isBusy}
                     className={`min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 tap-active transition-all duration-200
                       ${isOpening
-                        ? 'bg-blue/50 text-white/70'
+                        ? 'bg-blue/60 text-white'
                         : 'bg-blue text-white'
                       }
                       ${isBusy && !isOpening ? 'opacity-40' : ''}
@@ -149,8 +151,8 @@ export default function Gates() {
                     disabled={isBusy}
                     className={`min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 tap-active transition-all duration-200
                       ${isClosing
-                        ? 'bg-surface-hover text-text-dim border border-surface-hover'
-                        : 'bg-surface text-text border border-surface-hover'
+                        ? 'bg-red-700 text-white'
+                        : 'bg-red-600 text-white'
                       }
                       ${isBusy && !isClosing ? 'opacity-40' : ''}
                     `}
