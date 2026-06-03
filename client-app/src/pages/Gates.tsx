@@ -11,7 +11,7 @@ const MOCK_GATES: Gate[] = [
   { id: 'gate-2', name: 'Гараж', status: 'open', online: true, lastAction: 'Открыт Дмитрием' },
 ];
 
-const statusLabel = {
+const statusLabel: Record<string, string> = {
   open: 'Открыто',
   closed: 'Закрыто',
   moving: 'Движение',
@@ -22,6 +22,7 @@ export default function Gates() {
   const [gates, setGates] = useState<Gate[]>([]);
   const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
+  const [busy, setBusy] = useState<Record<string, 'open' | 'close' | null>>({});
 
   useEffect(() => {
     const timer = window.setTimeout(async () => {
@@ -40,18 +41,36 @@ export default function Gates() {
   }, []);
 
   const command = async (id: string, action: 'open' | 'close') => {
+    // Mark busy
+    setBusy(prev => ({ ...prev, [id]: action }));
+
     // Optimistic update
-    setGates(prev => prev.map(gate => gate.id === id ? { ...gate, status: action === 'open' ? 'open' : 'closed', lastAction: `${action === 'open' ? 'Открыто' : 'Закрыто'} сейчас` } : gate));
+    setGates(prev => prev.map(gate =>
+      gate.id === id
+        ? { ...gate, status: action === 'open' ? 'open' : 'closed', lastAction: `${action === 'open' ? 'Открыто' : 'Закрыто'} сейчас` }
+        : gate
+    ));
+
     try {
       const result = await (action === 'open' ? api.openGate(id) : api.closeGate(id));
-      setGates(prev => prev.map(gate => gate.id === id ? {
-        ...gate,
-        status: result.state as Gate['status'],
-        lastAction: `${action === 'open' ? 'Открыто' : 'Закрыто'} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-      } : gate));
-    } catch (error) {
-      logClient('warn', 'Команда ворот не выполнена', error instanceof Error ? error.message : String(error));
-      setGates(prev => prev.map(gate => gate.id === id ? { ...gate, lastAction: '⚠️ Ошибка' } : gate));
+      setGates(prev => prev.map(gate =>
+        gate.id === id
+          ? {
+              ...gate,
+              status: (result.state as Gate['status']) || (action === 'open' ? 'open' : 'closed'),
+              lastAction: `${action === 'open' ? 'Открыто' : 'Закрыто'} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+            }
+          : gate
+      ));
+    } catch {
+      // Silently revert — no error text
+      setGates(prev => prev.map(gate =>
+        gate.id === id
+          ? { ...gate, status: action === 'open' ? 'closed' : 'open', lastAction: gate.lastAction || '' }
+          : gate
+      ));
+    } finally {
+      setBusy(prev => ({ ...prev, [id]: null }));
     }
   };
 
@@ -66,28 +85,76 @@ export default function Gates() {
       </header>
 
       {loading ? (
-        <div className="space-y-3">{Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-32 w-full" />)}</div>
+        <div className="flex flex-col gap-3">{Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-32 w-full" />)}</div>
       ) : (
-        <div className="space-y-3">
+        <div className="flex flex-col gap-3">
           {gates.map(gate => {
             const opened = gate.status === 'open';
+            const isClosing = busy[gate.id] === 'close';
+            const isOpening = busy[gate.id] === 'open';
+            const isBusy = isClosing || isOpening;
+
+            // Tile background
+            let tileBg = 'bg-green/10 border-green/20';
+            if (opened) tileBg = 'bg-yellow/10 border-yellow/20';
+            if (isClosing) tileBg = 'bg-surface-hover border-surface-hover opacity-70';
+
+            // Icon color
+            let iconColor = 'text-green';
+            if (opened) iconColor = 'text-yellow';
+            if (isClosing) iconColor = 'text-text-dim';
+
+            // Status text
+            let statusText = statusLabel[gate.status] || gate.status;
+            let statusColor = opened ? 'text-yellow' : 'text-green';
+            if (isClosing) { statusText = 'Закрывается…'; statusColor = 'text-text-dim'; }
+            if (isOpening) { statusText = 'Открывается…'; statusColor = 'text-blue'; }
+
             return (
-              <section key={gate.id} className={`rounded-card p-4 border ${opened ? 'bg-yellow/10 border-yellow/20' : 'bg-green/10 border-green/20'}`}>
+              <section
+                key={gate.id}
+                className={`rounded-card p-4 border transition-all duration-300 ${tileBg}`}
+              >
                 <div className="flex items-center gap-3 mb-3">
-                  {opened ? <DoorOpen size={34} className="text-yellow" /> : <DoorClosed size={34} className="text-green" />}
+                  {opened
+                    ? <DoorOpen size={34} className={`transition-colors duration-300 ${iconColor}`} />
+                    : <DoorClosed size={34} className={`transition-colors duration-300 ${iconColor}`} />
+                  }
                   <div className="flex-1">
                     <h2 className="font-semibold text-text">{gate.name}</h2>
-                    <p className={`text-sm ${opened ? 'text-yellow' : 'text-green'}`}>{statusLabel[gate.status]}</p>
+                    <p className={`text-sm transition-colors duration-300 ${statusColor}`}>{statusText}</p>
                   </div>
                   <StatusBadge status={gate.online ? 'online' : 'offline'} />
                 </div>
                 <p className="text-xs text-text-dim mb-3">{gate.lastAction || 'Журнал пуст'}</p>
                 <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => command(gate.id, 'open')} className="min-h-[48px] rounded-btn bg-blue text-white font-semibold flex items-center justify-center gap-2 tap-active">
+                  {/* Open button */}
+                  <button
+                    onClick={() => command(gate.id, 'open')}
+                    disabled={isBusy}
+                    className={`min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 tap-active transition-all duration-200
+                      ${isOpening
+                        ? 'bg-blue/50 text-white/70'
+                        : 'bg-blue text-white'
+                      }
+                      ${isBusy && !isOpening ? 'opacity-40' : ''}
+                    `}
+                  >
                     <Unlock size={18} />
                     Открыть
                   </button>
-                  <button onClick={() => command(gate.id, 'close')} className="min-h-[48px] rounded-btn bg-surface text-text font-semibold flex items-center justify-center gap-2 tap-active border border-surface-hover">
+                  {/* Close button */}
+                  <button
+                    onClick={() => command(gate.id, 'close')}
+                    disabled={isBusy}
+                    className={`min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 tap-active transition-all duration-200
+                      ${isClosing
+                        ? 'bg-surface-hover text-text-dim border border-surface-hover'
+                        : 'bg-surface text-text border border-surface-hover'
+                      }
+                      ${isBusy && !isClosing ? 'opacity-40' : ''}
+                    `}
+                  >
                     <Lock size={18} />
                     Закрыть
                   </button>
