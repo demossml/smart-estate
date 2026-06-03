@@ -112,6 +112,18 @@ export default function Gates() {
             if (isClosing) { statusText = 'Закрывается…'; statusColor = 'text-amber-300'; }
             if (isOpening) { statusText = 'Открывается…'; statusColor = 'text-green'; }
 
+            // Button styles: active button = colored, inactive = colorless
+            const openActive = opened || isOpening;
+            const closeActive = !opened || isClosing;
+
+            const openBtnClass = openActive
+              ? 'bg-blue text-white'
+              : 'bg-transparent text-text-dim border border-surface-hover';
+
+            const closeBtnClass = closeActive
+              ? 'bg-red-600 text-white'
+              : 'bg-transparent text-text-dim border border-surface-hover';
+
             return (
               <section
                 key={gate.id}
@@ -134,13 +146,7 @@ export default function Gates() {
                   <button
                     onClick={() => command(gate.id, 'open')}
                     disabled={isBusy}
-                    className={`min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 tap-active transition-all duration-200
-                      ${isOpening
-                        ? 'bg-blue/60 text-white'
-                        : 'bg-blue text-white'
-                      }
-                      ${isBusy && !isOpening ? 'opacity-40' : ''}
-                    `}
+                    className={`min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 tap-active transition-all duration-200 ${openBtnClass} ${isBusy && !isOpening ? 'opacity-50' : ''}`}
                   >
                     <Unlock size={18} />
                     Открыть
@@ -149,13 +155,7 @@ export default function Gates() {
                   <button
                     onClick={() => command(gate.id, 'close')}
                     disabled={isBusy}
-                    className={`min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 tap-active transition-all duration-200
-                      ${isClosing
-                        ? 'bg-red-700 text-white'
-                        : 'bg-red-600 text-white'
-                      }
-                      ${isBusy && !isClosing ? 'opacity-40' : ''}
-                    `}
+                    className={`min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 tap-active transition-all duration-200 ${closeBtnClass} ${isBusy && !isClosing ? 'opacity-50' : ''}`}
                   >
                     <Lock size={18} />
                     Закрыть
