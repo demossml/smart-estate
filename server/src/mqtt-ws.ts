@@ -1,6 +1,7 @@
 import mqtt from 'mqtt';
 import { stmt, logError, logStateChange, query, DB_PATH } from './db';
 import { validateApiKey, validateTelegramInitData } from './crypto';
+import { validateMqttPayload, type MqttTelemetryPayload } from './schemas';
 
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
 let client: mqtt.MqttClient | null = null;
@@ -69,7 +70,11 @@ function handleMessage(topic: string, payload: Buffer) {
   if (topicParts[0] !== 'zigbee2mqtt') return;
 
   try {
-    const data = JSON.parse(payload.toString());
+    const data = validateMqttPayload(payload.toString());
+    if (!data) {
+      logError(null, 'mqtt_validation_error', 'Payload failed Zod validation', topic);
+      return;
+    }
 
     // Bridge events
     if (topicParts[1] === 'bridge') {

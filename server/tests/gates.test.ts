@@ -11,11 +11,14 @@ if (fs.existsSync(TEST_DB + '.wal')) fs.unlinkSync(TEST_DB + '.wal');
 
 let app: any;
 let request: any;
+let csrfToken: string;
 
 beforeAll(async () => {
   const mod = await import('../src/api');
   app = mod.default;
-  request = supertest(app);
+  request = supertest.agent(app);
+  const csrfRes = await request.get('/api/csrf-token');
+  csrfToken = csrfRes.body.token;
 });
 
 afterAll(async () => {
@@ -39,14 +42,18 @@ describe('POST /api/gates/:id/open and close', () => {
   });
 
   it('opens a gate and logs access', async () => {
-    const res = await request.post('/api/gates/0xGATE01/open').send({ reason: 'Guest arrived' });
+    const res = await request.post('/api/gates/0xGATE01/open')
+      .set('X-CSRF-Token', csrfToken)
+      .send({ reason: 'Guest arrived' });
     expect(res.status).toBe(200);
     expect(res.body.state).toBe('open');
     expect(res.body.command_id).toBeGreaterThan(0);
   });
 
   it('closes a gate and logs access', async () => {
-    const res = await request.post('/api/gates/0xGATE01/close').send({ reason: 'Guest left' });
+    const res = await request.post('/api/gates/0xGATE01/close')
+      .set('X-CSRF-Token', csrfToken)
+      .send({ reason: 'Guest left' });
     expect(res.status).toBe(200);
     expect(res.body.state).toBe('closed');
   });

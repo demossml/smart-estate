@@ -17,7 +17,7 @@ import {
  * 2. Telegram initData — for Mini App frontend
  * 3. HMAC signature — anti-tamper for internal requests
  */
-export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
 
   // Layer 1: API Key
@@ -49,7 +49,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
       return;
     }
 
-    if (!checkAndRecordNonce(nonce)) {
+    if (!(await checkAndRecordNonce(nonce))) {
       logSecurityEvent({ type: 'replay_blocked', ip, detail: `duplicate_nonce:${nonce}` });
       res.status(401).json({ ok: false, error: 'Duplicate nonce' });
       return;

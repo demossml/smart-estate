@@ -76,20 +76,20 @@ describe('Timestamp Validation', () => {
 });
 
 describe('Nonce Tracking', () => {
-  it('accepts new nonce', () => {
-    expect(checkAndRecordNonce('fresh-nonce-' + Date.now())).toBe(true);
+  it('accepts new nonce', async () => {
+    expect(await checkAndRecordNonce('fresh-nonce-' + Date.now())).toBe(true);
   });
 
-  it('rejects duplicate nonce', () => {
+  it('rejects duplicate nonce', async () => {
     const nonce = 'dup-nonce-' + Date.now();
-    expect(checkAndRecordNonce(nonce)).toBe(true);
-    expect(checkAndRecordNonce(nonce)).toBe(false);
+    expect(await checkAndRecordNonce(nonce)).toBe(true);
+    expect(await checkAndRecordNonce(nonce)).toBe(false);
   });
 
-  it('accepts different nonces', () => {
-    expect(checkAndRecordNonce('nonce-A-' + Date.now())).toBe(true);
-    expect(checkAndRecordNonce('nonce-B-' + Date.now())).toBe(true);
-    expect(checkAndRecordNonce('nonce-C-' + Date.now())).toBe(true);
+  it('accepts different nonces', async () => {
+    expect(await checkAndRecordNonce('nonce-A-' + Date.now())).toBe(true);
+    expect(await checkAndRecordNonce('nonce-B-' + Date.now())).toBe(true);
+    expect(await checkAndRecordNonce('nonce-C-' + Date.now())).toBe(true);
   });
 });
 
@@ -138,7 +138,7 @@ let request: any;
 beforeAll(async () => {
   const mod = await import('../src/api');
   app = mod.default;
-  request = supertest(app);
+  request = supertest.agent(app);
 });
 
 afterAll(async () => {
@@ -215,16 +215,25 @@ describe('API — Unauthorized commands blocked', () => {
 });
 
 describe('API — Authorized commands work', () => {
+  let csrfToken: string;
+
   beforeAll(async () => {
     const mod = await import('../src/db');
     await mod.query(`INSERT INTO devices (ieee_addr,friendly_name,type,room_id)
       VALUES ('0xSEC001','secure_light','light',1) ON CONFLICT DO NOTHING`);
+    
+    // Get CSRF token with auth
+    const tokenRes = await request
+      .get('/api/csrf-token')
+      .set('X-API-Key', 'test-key-secure-123');
+    csrfToken = tokenRes.body.token;
   });
 
   it('allows device ON with auth', async () => {
     const res = await request
       .post('/api/devices/0xSEC001/on')
-      .set('X-API-Key', 'test-key-secure-123');
+      .set('X-API-Key', 'test-key-secure-123')
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
   });
@@ -232,7 +241,8 @@ describe('API — Authorized commands work', () => {
   it('allows gate open with auth', async () => {
     const res = await request
       .post('/api/gates/0xSEC001/open')
-      .set('X-API-Key', 'test-key-secure-123');
+      .set('X-API-Key', 'test-key-secure-123')
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(200);
   });
 });

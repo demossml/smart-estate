@@ -212,6 +212,14 @@ db.exec(`
   CREATE SEQUENCE IF NOT EXISTS gate_access_seq START 1;
   CREATE INDEX IF NOT EXISTS idx_gate_log_ts ON gate_access_log(ts);
   CREATE INDEX IF NOT EXISTS idx_gate_log_device ON gate_access_log(device_ieee, ts);
+
+  -- Used nonces (anti-replay)
+  CREATE TABLE IF NOT EXISTS used_nonces (
+    nonce VARCHAR PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL 5 minute)
+  );
+  CREATE INDEX IF NOT EXISTS idx_nonces_expires ON used_nonces(expires_at);
 `);
 
 console.log('🦆 DuckDB ready:', DB_PATH);
@@ -334,6 +342,9 @@ export const stmt = {
     FROM telemetry WHERE device_ieee = ? AND ts >= ?
     GROUP BY property
   `),
+
+  // Nonce management
+  insertNonce: db.prepare(`INSERT INTO used_nonces (nonce, expires_at) VALUES (?, CURRENT_TIMESTAMP + INTERVAL 5 minute)`),
 };
 
 // ── Helper Functions ────────────────────────────────────

@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { stmt, query } from './db';
 
 // ── HMAC Signature ───────────────────────────────────────
 
@@ -22,8 +23,8 @@ export function verifySignature(body: string, nonce: string, timestamp: string, 
 // Max age of a request in seconds (prevents replay attacks)
 const MAX_REQUEST_AGE_S = 30;
 
-// Set of used nonces with expiry (cleaned periodically)
-const usedNonces = new Map<string, number>();
+// Counter for periodic cleanup (every ~10% of calls)
+let nonceCallCount = 0;
 
 export function validateTimestamp(timestamp: string): boolean {
   const now = Math.floor(Date.now() / 1000);
@@ -32,18 +33,24 @@ export function validateTimestamp(timestamp: string): boolean {
   return Math.abs(now - ts) <= MAX_REQUEST_AGE_S;
 }
 
-export function checkAndRecordNonce(nonce: string): boolean {
-  const now = Date.now();
-  // Clean expired nonces (older than 5 minutes)
-  const toDelete: string[] = [];
-  usedNonces.forEach((t, n) => {
-    if (now - t > 300_000) toDelete.push(n);
-  });
-  toDelete.forEach(n => usedNonces.delete(n));
+export async function checkAndRecordNonce(nonce: string): Promise<boolean> {
+  try {
+    // DuckDB prepared statements don't throw on duplicate PRIMARY KEY,
+    // so we must check existence explicitly first.
+    const existing = await query('SELECT 1 FROM used_nonces WHERE nonce = ?', nonce);
+    if (existing.length > 0) return false;
 
-  if (usedNonces.has(nonce)) return false;
-  usedNonces.set(nonce, now);
-  return true;
+    stmt.insertNonce.run(nonce);
+    nonceCallCount++;
+    // Clean expired nonces every ~10% of calls (probabilistic)
+    if (nonceCallCount % 10 === 0) {
+      await query(`DELETE FROM used_nonces WHERE expires_at < CURRENT_TIMESTAMP`);
+    }
+    return true;
+  } catch (err: any) {
+    // Return false on any DB error (safety-first)
+    return false;
+  }
 }
 
 // ── Telegram initData Validation ─────────────────────────

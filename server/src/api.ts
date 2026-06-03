@@ -3,6 +3,8 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { join } from 'path';
 import rateLimit from 'express-rate-limit';
+import csrf from 'csurf';
+import cookieParser from 'cookie-parser';
 import { stmt, query, logError, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
 
@@ -35,7 +37,7 @@ app.use(cors({
     callback(null, false);
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'X-API-Key', 'X-Signature', 'X-Timestamp', 'X-Nonce', 'X-Telegram-InitData'],
+  allowedHeaders: ['Content-Type', 'X-API-Key', 'X-Signature', 'X-Timestamp', 'X-Nonce', 'X-Telegram-InitData', 'X-CSRF-Token'],
   maxAge: 86400,
 }));
 
@@ -59,6 +61,10 @@ const commandLimiter = rateLimit({
 
 app.use(express.json());
 
+// ── CSRF Protection ─────────────────────────────────────
+app.use(cookieParser());
+const csrfProtect = csrf({ cookie: true });
+
 // Auth: enforce if API_KEYS is configured, otherwise allow all
 let authLogged = false;
 app.use((req, res, next) => {
@@ -69,6 +75,11 @@ app.use((req, res, next) => {
     authLogged = true;
   }
   return authMiddleware(req, res, next);
+});
+
+// ── GET /api/csrf-token ─────────────────────────────────
+app.get('/api/csrf-token', csrfProtect, (req, res) => {
+  res.json({ ok: true, token: req.csrfToken() });
 });
 
 // ── GET /api/status ─────────────────────────────────────
@@ -187,7 +198,7 @@ app.get('/api/devices/:id', async (req, res) => {
 });
 
 // ── POST /api/devices/:id/on ────────────────────────────
-app.post('/api/devices/:id/on', commandLimiter, async (req, res) => {
+app.post('/api/devices/:id/on', csrfProtect, commandLimiter, async (req, res) => {
   const { id } = req.params;
   try {
     const cmdId = logCommand(id, 'ON', '{}', 'api');
@@ -206,7 +217,7 @@ app.post('/api/devices/:id/on', commandLimiter, async (req, res) => {
 });
 
 // ── POST /api/devices/:id/off ───────────────────────────
-app.post('/api/devices/:id/off', commandLimiter, async (req, res) => {
+app.post('/api/devices/:id/off', csrfProtect, commandLimiter, async (req, res) => {
   const { id } = req.params;
   try {
     const cmdId = logCommand(id, 'OFF', '{}', 'api');
@@ -355,7 +366,7 @@ app.get('/api/climate/:device_ieee', async (req, res) => {
   }
 });
 
-app.put('/api/climate/:device_ieee', async (req, res) => {
+app.put('/api/climate/:device_ieee', csrfProtect, async (req, res) => {
   try {
     const { target_temp, mode, hysteresis, min_temp, max_temp, schedule_json } = req.body;
     const updates: string[] = [];
@@ -393,7 +404,7 @@ app.get('/api/gates', async (_req, res) => {
   } catch { res.json({ ok: true, gates: [] }); }
 });
 
-app.post('/api/gates/:id/open', commandLimiter, async (req, res) => {
+app.post('/api/gates/:id/open', csrfProtect, commandLimiter, async (req, res) => {
   try {
     const cmdId = logCommand(req.params.id, 'OPEN', '{}', 'gate_api');
     await query("INSERT INTO gate_access_log (id,device_ieee,action,source,details) VALUES (nextval('gate_access_seq'),?,?,?,?)",
@@ -407,7 +418,7 @@ app.post('/api/gates/:id/open', commandLimiter, async (req, res) => {
   }
 });
 
-app.post('/api/gates/:id/close', commandLimiter, async (req, res) => {
+app.post('/api/gates/:id/close', csrfProtect, commandLimiter, async (req, res) => {
   try {
     const cmdId = logCommand(req.params.id, 'CLOSE', '{}', 'gate_api');
     await query("INSERT INTO gate_access_log (id,device_ieee,action,source,details) VALUES (nextval('gate_access_seq'),?,?,?,?)",
@@ -464,7 +475,7 @@ app.get('/api/scenarios', async (_req, res) => {
 });
 
 // ── POST /api/scenarios/:id/toggle ──────────────────────
-app.post('/api/scenarios/:id/toggle', commandLimiter, async (req, res) => {
+app.post('/api/scenarios/:id/toggle', csrfProtect, commandLimiter, async (req, res) => {
   try {
     await query(`UPDATE scenarios SET active = NOT active WHERE id = ?`, req.params.id);
     const s = await query(`SELECT * FROM scenarios WHERE id = ?`, req.params.id);
@@ -476,7 +487,7 @@ app.post('/api/scenarios/:id/toggle', commandLimiter, async (req, res) => {
 });
 
 // ── POST /api/scenarios ─────────────────────────────────
-app.post('/api/scenarios', async (req, res) => {
+app.post('/api/scenarios', csrfProtect, async (req, res) => {
   try {
     const { name, description, triggers_json, actions_json, schedule_json, active } = req.body;
     if (!name || !triggers_json || !actions_json) {
@@ -507,7 +518,7 @@ app.post('/api/scenarios', async (req, res) => {
 });
 
 // ── PUT /api/scenarios/:id ──────────────────────────────
-app.put('/api/scenarios/:id', async (req, res) => {
+app.put('/api/scenarios/:id', csrfProtect, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, description, triggers_json, actions_json, schedule_json, active } = req.body;
@@ -542,7 +553,7 @@ app.put('/api/scenarios/:id', async (req, res) => {
 });
 
 // ── DELETE /api/scenarios/:id ────────────────────────────
-app.delete('/api/scenarios/:id', async (req, res) => {
+app.delete('/api/scenarios/:id', csrfProtect, async (req, res) => {
   try {
     const { id } = req.params;
     const existing = await query('SELECT * FROM scenarios WHERE id = ?', id);
@@ -648,7 +659,7 @@ app.post('/api/groups/:id/remove-device', async (req, res) => {
 });
 
 // POST /api/groups/:id/all-on — включить всю группу
-app.post('/api/groups/:id/all-on', commandLimiter, async (req, res) => {
+app.post('/api/groups/:id/all-on', csrfProtect, commandLimiter, async (req, res) => {
   try {
     const members = await query(
       'SELECT device_ieee FROM device_group_members WHERE group_id = ?', req.params.id
@@ -668,7 +679,7 @@ app.post('/api/groups/:id/all-on', commandLimiter, async (req, res) => {
 });
 
 // POST /api/groups/:id/all-off
-app.post('/api/groups/:id/all-off', commandLimiter, async (req, res) => {
+app.post('/api/groups/:id/all-off', csrfProtect, commandLimiter, async (req, res) => {
   try {
     const members = await query(
       'SELECT device_ieee FROM device_group_members WHERE group_id = ?', req.params.id
@@ -835,7 +846,7 @@ app.get('/api/mode', (_req, res) => {
   }
 });
 
-app.post('/api/mode', async (req, res) => {
+app.post('/api/mode', csrfProtect, async (req, res) => {
   try {
     const { mode } = req.body;
     if (!mode || !['demo', 'live'].includes(mode)) {

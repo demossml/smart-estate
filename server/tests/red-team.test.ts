@@ -14,11 +14,15 @@ if (fs.existsSync(TEST_DB + '.wal')) fs.unlinkSync(TEST_DB + '.wal');
 
 let app: any;
 let request: any;
+let csrfToken: string;
 
 beforeAll(async () => {
   const mod = await import('../src/api');
   app = mod.default;
-  request = supertest(app);
+  request = supertest.agent(app);
+  const csrfRes = await request.get('/api/csrf-token')
+    .set('X-API-Key', 'sk-very-secret-key-2026');
+  csrfToken = csrfRes.body.token;
 });
 
 afterAll(async () => {
@@ -104,14 +108,16 @@ describe('🔴 HMAC Signature Attacks', () => {
     const r1 = await request.post('/api/devices/0xTEST/on')
       .set('X-Signature', sig)
       .set('X-Timestamp', ts)
-      .set('X-Nonce', nonce);
+      .set('X-Nonce', nonce)
+      .set('X-CSRF-Token', csrfToken);
     expect(r1.status).toBe(200);
 
     // Second request with SAME nonce — must be blocked
     const r2 = await request.post('/api/devices/0xTEST/on')
       .set('X-Signature', sig)
       .set('X-Timestamp', ts)
-      .set('X-Nonce', nonce);
+      .set('X-Nonce', nonce)
+      .set('X-CSRF-Token', csrfToken);
     expect(r2.status).toBe(401);
   });
 
@@ -127,7 +133,8 @@ describe('🔴 HMAC Signature Attacks', () => {
     const res = await request.post('/api/devices/0xTEST/on')
       .set('X-Signature', sig)
       .set('X-Timestamp', oldTs)
-      .set('X-Nonce', nonce);
+      .set('X-Nonce', nonce)
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(401);
   });
 
@@ -143,7 +150,8 @@ describe('🔴 HMAC Signature Attacks', () => {
     const res = await request.post('/api/devices/0xTEST/on')
       .set('X-Signature', sig)
       .set('X-Timestamp', futureTs)
-      .set('X-Nonce', nonce);
+      .set('X-Nonce', nonce)
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(401);
   });
 
@@ -156,6 +164,7 @@ describe('🔴 HMAC Signature Attacks', () => {
       .set('X-Signature', sig)
       .set('X-Timestamp', ts)
       .set('X-Nonce', nonce)
+      .set('X-CSRF-Token', csrfToken)
       .send({ tampered: 'data' });
     expect(res.status).toBe(401);
   });
@@ -165,7 +174,8 @@ describe('🔴 HMAC Signature Attacks', () => {
     const { ts, sig } = makeHmac('{}');
     const res = await request.post('/api/devices/0xTEST/on')
       .set('X-Signature', sig)
-      .set('X-Timestamp', ts);
+      .set('X-Timestamp', ts)
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(401);
   });
 
@@ -181,7 +191,8 @@ describe('🔴 HMAC Signature Attacks', () => {
     const res = await request.post('/api/devices/0xTEST/on')
       .set('X-Signature', sig)
       .set('X-Timestamp', ts)
-      .set('X-Nonce', nonce);
+      .set('X-Nonce', nonce)
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(401);
   });
 
@@ -196,7 +207,8 @@ describe('🔴 HMAC Signature Attacks', () => {
     const res = await request.post('/api/devices/0xTEST/on')
       .set('X-Signature', sig)
       .set('X-Timestamp', 'NaN')
-      .set('X-Nonce', nonce);
+      .set('X-Nonce', nonce)
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(401);
   });
 
@@ -212,7 +224,8 @@ describe('🔴 HMAC Signature Attacks', () => {
     const res = await request.post('/api/devices/0xTEST/on')
       .set('X-Signature', sig)
       .set('X-Timestamp', ts)
-      .set('X-Nonce', nonce);
+      .set('X-Nonce', nonce)
+      .set('X-CSRF-Token', csrfToken);
     // HMAC checks pass regardless of nonce length (timingSafeEqual handles it)
     // It will pass auth but the huge nonce makes replay protection slightly heavier
     expect(res.status).toBe(200); // Actually passes — nonce length doesn't break crypto
@@ -321,6 +334,7 @@ describe('🔴 Input Injection Attacks', () => {
   it('BLOCKED: invalid JSON in triggers → rejected', async () => {
     const res = await request.post('/api/scenarios')
       .set('X-API-Key', 'sk-very-secret-key-2026')
+      .set('X-CSRF-Token', csrfToken)
       .send({
         name: 'Evil Scenario',
         triggers_json: '{"logic":"ANY","conditions":[{"__proto__":{"isAdmin":true}}]}',
@@ -335,6 +349,7 @@ describe('🔴 Input Injection Attacks', () => {
   it('BLOCKED: __proto__ in request body → ignored', async () => {
     const res = await request.put('/api/scenarios/1')
       .set('X-API-Key', 'sk-very-secret-key-2026')
+      .set('X-CSRF-Token', csrfToken)
       .set('Content-Type', 'application/json')
       .send(JSON.parse('{"name":"test","__proto__":{"isAdmin":true}}'));
     expect(res.status).toBe(200);
@@ -345,6 +360,7 @@ describe('🔴 Input Injection Attacks', () => {
     // First create a scenario to test with
     const create = await request.post('/api/scenarios')
       .set('X-API-Key', 'sk-very-secret-key-2026')
+      .set('X-CSRF-Token', csrfToken)
       .send({
         name: 'Mass Assignment Test', triggers_json: '{"logic":"ANY","conditions":[]}',
         actions_json: '[{"type":"notify","message":"test"}]'
@@ -354,6 +370,7 @@ describe('🔴 Input Injection Attacks', () => {
     // Try to change id via PUT
     await request.put(`/api/scenarios/${createdId}`)
       .set('X-API-Key', 'sk-very-secret-key-2026')
+      .set('X-CSRF-Token', csrfToken)
       .send({ id: 99999 });
 
     // Verify id is unchanged

@@ -16,7 +16,7 @@ let request: any;
 beforeAll(async () => {
   const mod = await import('../src/api');
   app = mod.default;
-  request = supertest(app);
+  request = supertest.agent(app);
 });
 
 afterAll(async () => {
@@ -133,12 +133,20 @@ describe('GET /api/devices/:id', () => {
 });
 
 describe('POST /api/devices/:id/on and /off', () => {
+  let csrfToken: string;
+
+  beforeAll(async () => {
+    const res = await request.get('/api/csrf-token');
+    csrfToken = res.body.token;
+  });
+
   it('turns device ON', async () => {
     const mod = await import('../src/db');
     await mod.query(`INSERT INTO devices (ieee_addr,friendly_name,type,room_id)
       VALUES ('0xSWITCH','test_switch','switch',1) ON CONFLICT DO NOTHING`);
 
-    const res = await request.post('/api/devices/0xSWITCH/on');
+    const res = await request.post('/api/devices/0xSWITCH/on')
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.state).toBe('ON');
@@ -146,7 +154,8 @@ describe('POST /api/devices/:id/on and /off', () => {
   });
 
   it('turns device OFF', async () => {
-    const res = await request.post('/api/devices/0xSWITCH/off');
+    const res = await request.post('/api/devices/0xSWITCH/off')
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.state).toBe('OFF');
@@ -163,7 +172,8 @@ describe('POST /api/devices/:id/on and /off', () => {
   });
 
   it('returns 500 for invalid device', async () => {
-    const res = await request.post('/api/devices/0xINVALID_DEVICE_ZZZZZ/on');
+    const res = await request.post('/api/devices/0xINVALID_DEVICE_ZZZZZ/on')
+      .set('X-CSRF-Token', csrfToken);
     // Should still work — logCommand doesn't validate device existence
     expect(res.status).toBe(200);
   });
@@ -279,17 +289,26 @@ describe('GET /api/scenarios', () => {
 });
 
 describe('POST /api/scenarios/:id/toggle', () => {
+  let csrfToken: string;
+
+  beforeAll(async () => {
+    const res = await request.get('/api/csrf-token');
+    csrfToken = res.body.token;
+  });
+
   it('toggles scenario active state', async () => {
     const before = await request.get('/api/scenarios');
     const wasActive = before.body.scenarios[0].active;
 
-    const toggle = await request.post('/api/scenarios/1/toggle');
+    const toggle = await request.post('/api/scenarios/1/toggle')
+      .set('X-CSRF-Token', csrfToken);
     expect(toggle.status).toBe(200);
     expect(toggle.body.ok).toBe(true);
     expect(toggle.body.scenario.active).toBe(!wasActive);
 
     // Toggle back
-    await request.post('/api/scenarios/1/toggle');
+    await request.post('/api/scenarios/1/toggle')
+      .set('X-CSRF-Token', csrfToken);
   });
 });
 

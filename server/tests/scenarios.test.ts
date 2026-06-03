@@ -11,11 +11,14 @@ if (fs.existsSync(TEST_DB + '.wal')) fs.unlinkSync(TEST_DB + '.wal');
 
 let app: any;
 let request: any;
+let csrfToken: string;
 
 beforeAll(async () => {
   const mod = await import('../src/api');
   app = mod.default;
-  request = supertest(app);
+  request = supertest.agent(app);
+  const csrfRes = await request.get('/api/csrf-token');
+  csrfToken = csrfRes.body.token;
 });
 
 afterAll(async () => {
@@ -35,12 +38,14 @@ const SAMPLE_ACTIONS = JSON.stringify([
 
 describe('POST /api/scenarios', () => {
   it('creates a new scenario', async () => {
-    const res = await request.post('/api/scenarios').send({
-      name: 'Test Scenario',
-      description: 'A test scenario',
-      triggers_json: SAMPLE_TRIGGERS,
-      actions_json: SAMPLE_ACTIONS,
-    });
+    const res = await request.post('/api/scenarios')
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        name: 'Test Scenario',
+        description: 'A test scenario',
+        triggers_json: SAMPLE_TRIGGERS,
+        actions_json: SAMPLE_ACTIONS,
+      });
     expect(res.status).toBe(201);
     expect(res.body.ok).toBe(true);
     expect(res.body.scenario.name).toBe('Test Scenario');
@@ -48,45 +53,55 @@ describe('POST /api/scenarios', () => {
   });
 
   it('returns 400 when required fields missing', async () => {
-    const res = await request.post('/api/scenarios').send({ name: 'No triggers' });
+    const res = await request.post('/api/scenarios')
+      .set('X-CSRF-Token', csrfToken)
+      .send({ name: 'No triggers' });
     expect(res.status).toBe(400);
     expect(res.body.ok).toBe(false);
   });
 
   it('creates scenario with explicit active=false', async () => {
-    const res = await request.post('/api/scenarios').send({
-      name: 'Inactive Scenario',
-      triggers_json: SAMPLE_TRIGGERS,
-      actions_json: SAMPLE_ACTIONS,
-      active: false,
-    });
+    const res = await request.post('/api/scenarios')
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        name: 'Inactive Scenario',
+        triggers_json: SAMPLE_TRIGGERS,
+        actions_json: SAMPLE_ACTIONS,
+        active: false,
+      });
     expect(res.body.scenario.active).toBe(false);
   });
 });
 
 describe('PUT /api/scenarios/:id', () => {
   it('updates scenario name and description', async () => {
-    const res = await request.put('/api/scenarios/1').send({
-      name: 'Updated Ventilation',
-      description: 'Updated description',
-    });
+    const res = await request.put('/api/scenarios/1')
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        name: 'Updated Ventilation',
+        description: 'Updated description',
+      });
     expect(res.status).toBe(200);
     expect(res.body.scenario.name).toBe('Updated Ventilation');
     expect(res.body.scenario.description).toBe('Updated description');
   });
 
   it('updates triggers and actions', async () => {
-    const res = await request.put('/api/scenarios/1').send({
-      triggers_json: SAMPLE_TRIGGERS,
-      actions_json: SAMPLE_ACTIONS,
-    });
+    const res = await request.put('/api/scenarios/1')
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        triggers_json: SAMPLE_TRIGGERS,
+        actions_json: SAMPLE_ACTIONS,
+      });
     expect(res.status).toBe(200);
     expect(res.body.scenario.triggers_json).toBe(SAMPLE_TRIGGERS);
     expect(res.body.scenario.actions_json).toBe(SAMPLE_ACTIONS);
   });
 
   it('returns 404 for unknown scenario', async () => {
-    const res = await request.put('/api/scenarios/999').send({ name: 'Ghost' });
+    const res = await request.put('/api/scenarios/999')
+      .set('X-CSRF-Token', csrfToken)
+      .send({ name: 'Ghost' });
     expect(res.status).toBe(404);
   });
 });
@@ -94,14 +109,17 @@ describe('PUT /api/scenarios/:id', () => {
 describe('DELETE /api/scenarios/:id', () => {
   it('deletes a scenario', async () => {
     // Create first
-    const create = await request.post('/api/scenarios').send({
-      name: 'To Delete',
-      triggers_json: SAMPLE_TRIGGERS,
-      actions_json: SAMPLE_ACTIONS,
-    });
+    const create = await request.post('/api/scenarios')
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        name: 'To Delete',
+        triggers_json: SAMPLE_TRIGGERS,
+        actions_json: SAMPLE_ACTIONS,
+      });
     const id = create.body.scenario.id;
 
-    const res = await request.delete(`/api/scenarios/${id}`);
+    const res = await request.delete(`/api/scenarios/${id}`)
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(200);
     expect(res.body.deleted).toBe(String(id));
 
@@ -111,7 +129,8 @@ describe('DELETE /api/scenarios/:id', () => {
   });
 
   it('returns 404 for unknown scenario', async () => {
-    const res = await request.delete('/api/scenarios/999');
+    const res = await request.delete('/api/scenarios/999')
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(404);
   });
 });

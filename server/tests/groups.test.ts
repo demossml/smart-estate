@@ -11,11 +11,14 @@ if (fs.existsSync(TEST_DB + '.wal')) fs.unlinkSync(TEST_DB + '.wal');
 
 let app: any;
 let request: any;
+let csrfToken: string;
 
 beforeAll(async () => {
   const mod = await import('../src/api');
   app = mod.default;
-  request = supertest(app);
+  request = supertest.agent(app);
+  const csrfRes = await request.get('/api/csrf-token');
+  csrfToken = csrfRes.body.token;
 });
 
 afterAll(async () => {
@@ -64,35 +67,45 @@ describe('POST /api/groups/:id/add-device', () => {
   });
 
   it('adds device to group', async () => {
-    const res = await request.post('/api/groups/1/add-device').send({ device_ieee: '0xGRP001' });
+    const res = await request.post('/api/groups/1/add-device')
+      .set('X-CSRF-Token', csrfToken)
+      .send({ device_ieee: '0xGRP001' });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
   });
 
   it('adds multiple devices to group', async () => {
-    await request.post('/api/groups/1/add-device').send({ device_ieee: '0xGRP002' });
-    await request.post('/api/groups/1/add-device').send({ device_ieee: '0xGRP003' });
+    await request.post('/api/groups/1/add-device')
+      .set('X-CSRF-Token', csrfToken)
+      .send({ device_ieee: '0xGRP002' });
+    await request.post('/api/groups/1/add-device')
+      .set('X-CSRF-Token', csrfToken)
+      .send({ device_ieee: '0xGRP003' });
 
     const res = await request.get('/api/groups/1');
     expect(res.body.count).toBe(3);
   });
 
   it('returns 400 without device_ieee', async () => {
-    const res = await request.post('/api/groups/1/add-device').send({});
+    const res = await request.post('/api/groups/1/add-device')
+      .set('X-CSRF-Token', csrfToken)
+      .send({});
     expect(res.status).toBe(400);
   });
 });
 
 describe('POST /api/groups/:id/all-on', () => {
   it('turns all devices in group ON', async () => {
-    const res = await request.post('/api/groups/1/all-on');
+    const res = await request.post('/api/groups/1/all-on')
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.devices_controlled).toBe(3);
   });
 
   it('works on empty group', async () => {
-    const res = await request.post('/api/groups/3/all-on'); // Climate group — empty
+    const res = await request.post('/api/groups/3/all-on')
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(200);
     expect(res.body.devices_controlled).toBe(0);
   });
@@ -100,7 +113,8 @@ describe('POST /api/groups/:id/all-on', () => {
 
 describe('POST /api/groups/:id/all-off', () => {
   it('turns all devices OFF', async () => {
-    const res = await request.post('/api/groups/1/all-off');
+    const res = await request.post('/api/groups/1/all-off')
+      .set('X-CSRF-Token', csrfToken);
     expect(res.status).toBe(200);
     expect(res.body.devices_controlled).toBe(3);
   });
@@ -108,7 +122,9 @@ describe('POST /api/groups/:id/all-off', () => {
 
 describe('POST /api/groups/:id/remove-device', () => {
   it('removes device from group', async () => {
-    const res = await request.post('/api/groups/1/remove-device').send({ device_ieee: '0xGRP003' });
+    const res = await request.post('/api/groups/1/remove-device')
+      .set('X-CSRF-Token', csrfToken)
+      .send({ device_ieee: '0xGRP003' });
     expect(res.status).toBe(200);
 
     const check = await request.get('/api/groups/1');

@@ -11,11 +11,14 @@ if (fs.existsSync(TEST_DB + '.wal')) fs.unlinkSync(TEST_DB + '.wal');
 
 let app: any;
 let request: any;
+let csrfToken: string;
 
 beforeAll(async () => {
   const mod = await import('../src/api');
   app = mod.default;
-  request = supertest(app);
+  request = supertest.agent(app);
+  const csrfRes = await request.get('/api/csrf-token');
+  csrfToken = csrfRes.body.token;
 });
 
 afterAll(async () => {
@@ -50,28 +53,34 @@ describe('GET /api/climate', () => {
 
 describe('PUT /api/climate/:device_ieee', () => {
   it('updates target temperature', async () => {
-    const res = await request.put('/api/climate/living_thermostat').send({
-      target_temp: 24.0,
-      mode: 'heat',
-    });
+    const res = await request.put('/api/climate/living_thermostat')
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        target_temp: 24.0,
+        mode: 'heat',
+      });
     expect(res.status).toBe(200);
     expect(res.body.setpoint.target_temp).toBe(24.0);
     expect(res.body.setpoint.mode).toBe('heat');
   });
 
   it('updates hysteresis', async () => {
-    const res = await request.put('/api/climate/living_thermostat').send({
-      hysteresis: 1.0,
-    });
+    const res = await request.put('/api/climate/living_thermostat')
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        hysteresis: 1.0,
+      });
     expect(res.body.setpoint.hysteresis).toBe(1.0);
   });
 
   it('restore defaults', async () => {
-    await request.put('/api/climate/living_thermostat').send({
-      target_temp: 22.0,
-      mode: 'auto',
-      hysteresis: 0.5,
-    });
+    await request.put('/api/climate/living_thermostat')
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        target_temp: 22.0,
+        mode: 'auto',
+        hysteresis: 0.5,
+      });
   });
 });
 
