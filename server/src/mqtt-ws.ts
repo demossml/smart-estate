@@ -1,5 +1,6 @@
 import mqtt from 'mqtt';
 import { stmt, logError, logStateChange, query, DB_PATH } from './db';
+import { validateApiKey, validateTelegramInitData } from './crypto';
 
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
 let client: mqtt.MqttClient | null = null;
@@ -210,8 +211,10 @@ function handleTelemetry(friendlyName: string, data: any) {
 }
 
 // ── WebSocket Server ────────────────────────────────────
-import { Server as WebSocketServer } from 'ws';
+import type { Server as WSServer, WebSocket as WSClient } from 'ws';
 import { Server as HTTPServer } from 'http';
+
+const WebSocketServer = require('ws').Server;
 
 let wsAttached = false;
 
@@ -219,9 +222,38 @@ export function attachWebSocket(server: HTTPServer) {
   if (wsAttached) return; // Prevent double attachment
   wsAttached = true;
   
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  // ═══ noServer mode — we handle upgrade manually for auth ═══
+  const wss: WSServer = new WebSocketServer({ noServer: true });
 
-  wss.on('connection', (ws) => {
+  // Manual upgrade handler with AUTH required
+  server.on('upgrade', (req, socket, head) => {
+    // Only handle /ws path
+    const url = new URL(req.url || '/', `http://${req.headers.host}`);
+    if (url.pathname !== '/ws') {
+      socket.destroy();
+      return;
+    }
+
+    // ── AUTH: API Key or Telegram initData REQUIRED ──
+    const apiKey = req.headers['x-api-key'] as string;
+    const initData = req.headers['x-telegram-initdata'] as string;
+    
+    const isValid = (apiKey && validateApiKey(apiKey)) ||
+                    (initData && validateTelegramInitData(initData));
+    
+    if (!isValid) {
+      console.log(`🔌 WebSocket rejected: no valid auth (IP: ${req.socket.remoteAddress})`);
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws: WSClient) => {
+      wss.emit('connection', ws, req);
+    });
+  });
+
+  wss.on('connection', (ws: WSClient) => {
     console.log('🔌 WebSocket client connected');
 
     ws.on('close', () => console.log('🔌 WebSocket client disconnected'));

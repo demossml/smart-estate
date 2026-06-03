@@ -236,3 +236,78 @@ describe('API — Authorized commands work', () => {
     expect(res.status).toBe(200);
   });
 });
+
+// ── WebSocket Auth Tests ──────────────────────────────────
+
+import http from 'http';
+
+describe('WebSocket Auth', () => {
+  let server: http.Server;
+  let port: number;
+  let wsDbPath: string;
+
+  beforeAll(async () => {
+    const { WebSocket } = await import('ws');
+    (globalThis as any).WebSocket = WebSocket;
+    
+    wsDbPath = '/tmp/smart-estate-ws-test.duckdb';
+    process.env.SMART_ESTATE_DB_PATH = wsDbPath;
+    process.env.SMART_ESTATE_MODE = 'demo';
+    port = 18796;
+    
+    const mod = await import('../src/index');
+    server = mod.default;
+    
+    await new Promise<void>((resolve) => {
+      server.listen(port, () => resolve());
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    delete process.env.SMART_ESTATE_MODE;
+    const fs = require('fs');
+    if (fs.existsSync(wsDbPath)) fs.unlinkSync(wsDbPath);
+    if (fs.existsSync(wsDbPath + '.wal')) fs.unlinkSync(wsDbPath + '.wal');
+  });
+
+  it('rejects WebSocket without auth headers', async () => {
+    const { WebSocket } = await import('ws');
+    
+    const ws = new WebSocket(`ws://localhost:${port}/ws`);
+    
+    await expect(
+      new Promise((resolve, reject) => {
+        ws.on('open', () => reject(new Error('Connected without auth!')));
+        ws.on('error', () => {});
+        ws.on('unexpected-response', (_req, res) => {
+          expect(res.statusCode).toBe(401);
+          resolve(true);
+        });
+        setTimeout(() => reject(new Error('Timeout WS1')), 5000);
+      })
+    ).resolves.toBe(true);
+    
+    ws.close();
+  });
+
+  it('accepts WebSocket with valid X-API-Key', async () => {
+    const { WebSocket } = await import('ws');
+    process.env.API_KEYS = 'test-ws-key';
+    
+    const ws = new WebSocket(`ws://localhost:${port}/ws`, {
+      headers: { 'X-API-Key': 'test-ws-key' }
+    });
+    
+    await expect(
+      new Promise((resolve, reject) => {
+        ws.on('open', () => resolve('connected'));
+        ws.on('error', (err) => reject(err));
+        setTimeout(() => reject(new Error('Timeout WS2')), 5000);
+      })
+    ).resolves.toBe('connected');
+    
+    ws.close();
+    delete process.env.API_KEYS;
+  });
+});
