@@ -1,5 +1,5 @@
 {
-  "name": "smart-estate-web",
+  "name": "@smart-estate/web",
   "private": true,
   "version": "0.0.0",
   "type": "module",

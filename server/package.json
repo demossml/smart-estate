@@ -1,5 +1,5 @@
 {
-  "name": "smart-estate",
+  "name": "@smart-estate/server",
   "version": "0.2.0",
   "description": "Умная Усадьба — DuckDB + MQTT + REST API + WebSocket",
   "main": "dist/index.js",
