@@ -1,5 +1,20 @@
 const BASE = '/api';
 
+/* ─── CSRF Token ─── */
+let csrfToken = '';
+
+async function initCSRF(): Promise<void> {
+  try {
+    const res = await fetch('/api/csrf-token');
+    const data = await res.json();
+    csrfToken = data.token || '';
+  } catch {
+    // CSRF token not available — will work if auth is disabled
+  }
+}
+// Fetch on load
+initCSRF();
+
 /* ─── Device lookup cache (for climate setpoints) ─── */
 let deviceCache: import('../types').Device[] | null = null;
 
@@ -25,15 +40,37 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!isOnline) {
     throw new Error('OFFLINE');
   }
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  
   try {
-    return (await res.json()) as T;
-  } catch (cause) {
-    throw new Error(`Invalid JSON from ${path}`, { cause });
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(options?.headers as Record<string, string> || {}),
+    };
+    
+    // Add CSRF token for mutating requests
+    const method = options?.method || 'GET';
+    if (csrfToken && ['POST', 'PUT', 'DELETE'].includes(method)) {
+      headers['X-CSRF-Token'] = csrfToken;
+    }
+    
+    const res = await fetch(`${BASE}${path}`, {
+      ...options,
+      headers,
+      signal: controller.signal,
+      credentials: 'include',
+    });
+    
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    try {
+      return (await res.json()) as T;
+    } catch (cause) {
+      throw new Error(`Invalid JSON from ${path}`, { cause: cause as Error });
+    }
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
