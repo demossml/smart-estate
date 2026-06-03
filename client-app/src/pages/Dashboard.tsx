@@ -264,17 +264,21 @@ export default function Dashboard() {
             {data.todayEnergy} кВт·ч
           </span>
         </div>
-        {/* Simple bar chart */}
-        <div className="flex items-end gap-0.5 h-16" aria-hidden="true">
-          {Array.from({ length: 24 }).map((_, i) => {
-            const val = data.energyTrend[i] ?? FALLBACK_TREND[i] ?? 0;
-            const height = Math.max(4, (val / 3) * 100);
-            return (
-              <div key={i} className="flex-1 bg-blue/30 rounded-sm"
-                   style={{ height: `${height}%` }}
-                   title={`${i}:00 — ${val.toFixed(1)} кВт`} />
-            );
-          })}
+        {/* Chart frame — keeps bars inside bounds */}
+        <div className="bg-bg rounded-card border border-surface-hover overflow-hidden" style={{ padding: 1 }}>
+          <div className="flex items-end gap-px mx-0.5 my-2 h-16" aria-hidden="true">
+            {Array.from({ length: 24 }).map((_, i) => {
+              const val = data.energyTrend[i] ?? FALLBACK_TREND[i] ?? 0;
+              const maxVal = 3.2; // ceiling above max data point
+              const clamped = Math.min(maxVal, Math.max(0, val));
+              const height = Math.max(3, (clamped / maxVal) * 100);
+              return (
+                <div key={i} className="flex-1 bg-blue/30 rounded-sm"
+                     style={{ height: `${height}%`, minHeight: 2 }}
+                     title={`${i}:00 — ${val.toFixed(1)} кВт`} />
+              );
+            })}
+          </div>
         </div>
         <div className="flex justify-between mt-1">
           <span className="text-[10px] text-text-dim">00:00</span>

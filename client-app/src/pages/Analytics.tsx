@@ -46,11 +46,17 @@ export default function Analytics() {
 
       {/* Chart area */}
       <div className="bg-surface rounded-card p-4 mb-4 animate-fade-in" style={{ minHeight: 200 }}>
-        <div className="flex items-end gap-0.5 h-24 mb-4" aria-hidden="true">
-          {CHART_HEIGHTS[period].map((h, i) => (
-            <div key={i} className="flex-1 bg-blue/30 rounded-sm"
-                 style={{ height: `${h}%` }} />
-          ))}
+        {/* Chart frame with bounds */}
+        <div className="bg-bg rounded-card border border-surface-hover overflow-hidden mb-4" style={{ padding: 1 }}>
+          <div className="flex items-end gap-px mx-0.5 my-2 h-24" aria-hidden="true">
+            {CHART_HEIGHTS[period].map((h, i) => {
+              const clamped = Math.min(100, Math.max(0, h));
+              return (
+                <div key={i} className="flex-1 bg-blue/30 rounded-sm"
+                     style={{ height: `${clamped}%`, minHeight: 2 }} />
+              );
+            })}
+          </div>
         </div>
         <div className="text-center">
           <span className="font-mono text-3xl font-bold text-text">{data.total}</span>
