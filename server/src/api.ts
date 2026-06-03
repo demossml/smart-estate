@@ -130,8 +130,11 @@ app.get('/api/devices', async (req, res) => {
         (SELECT COALESCE(json_group_array(
           json_object('property', t.property, 'value', t.value, 'unit', t.unit)
         ), '[]')
-         FROM (SELECT property, value, unit FROM telemetry
-               WHERE device_ieee = d.ieee_addr ORDER BY ts DESC LIMIT 3) t
+         FROM (SELECT property, value, unit FROM (
+               SELECT property, value, unit,
+                 ROW_NUMBER() OVER (PARTITION BY property ORDER BY ts DESC) as rn
+               FROM telemetry WHERE device_ieee = d.ieee_addr
+             ) sub WHERE rn = 1 LIMIT 3) t
         ) as latest_telemetry
       FROM devices d LEFT JOIN rooms r ON d.room_id = r.id
       ${whereClause}
@@ -536,8 +539,11 @@ app.get('/api/rooms/:id/devices', async (req, res) => {
         (SELECT COALESCE(json_group_array(
           json_object('property', t.property, 'value', t.value, 'unit', t.unit)
         ), '[]')
-         FROM (SELECT property, value, unit FROM telemetry
-               WHERE device_ieee = d.ieee_addr ORDER BY ts DESC LIMIT 3) t
+         FROM (SELECT property, value, unit FROM (
+               SELECT property, value, unit,
+                 ROW_NUMBER() OVER (PARTITION BY property ORDER BY ts DESC) as rn
+               FROM telemetry WHERE device_ieee = d.ieee_addr
+             ) sub WHERE rn = 1 LIMIT 3) t
         ) as latest_telemetry
       FROM devices d LEFT JOIN rooms r ON d.room_id = r.id
       WHERE d.room_id = ?

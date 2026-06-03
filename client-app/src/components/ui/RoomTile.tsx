@@ -38,7 +38,10 @@ interface RoomTileProps {
 
 const SENSOR_LABELS: Record<string, string> = {
   temperature: 'Темп.', humidity: 'Влажн.', co2: 'CO₂',
+  voc: 'VOC', formaldehyde: 'CH₂O', pm25: 'PM2.5',
   illuminance: 'Свет', pressure: 'Давл.', soil_moisture: 'Почва',
+  battery: 'Батар.', voltage: 'Вольт.', current: 'Ток', power: 'Мощн.',
+  energy: 'Энерг.', presence: 'Движ.', contact: 'Дверь', water_leak: 'Течь',
 };
 
 function SensorReadings({ telemetry }: { telemetry: { property: string; value: number; unit: string }[] }) {
@@ -50,9 +53,20 @@ function SensorReadings({ telemetry }: { telemetry: { property: string; value: n
         const label = SENSOR_LABELS[t.property] || t.property;
         let display = `${t.value}`;
         if (t.property === 'temperature') display = `${t.value}°`;
-        else if (t.property === 'humidity') display = `${t.value}%`;
+        else if (t.property === 'humidity' || t.property === 'battery' || t.property === 'soil_moisture') display = `${t.value}%`;
+        else if (t.property === 'co2') display = `${t.value} ppm`;
+        else if (t.property === 'pm25') display = `${t.value} µg`;
+        else if (t.property === 'voc') display = `${t.value} ppb`;
         else if (t.property === 'water_leak') display = t.value > 0 ? 'ТЕЧЬ' : 'Сухо';
-        const isAlert = t.property === 'water_leak' && t.value > 0;
+        else if (t.property === 'contact') display = t.value > 0 ? 'Открыто' : 'Закрыто';
+        else if (t.property === 'presence') display = t.value > 0 ? 'Есть' : 'Нет';
+        else if (t.property === 'power') display = `${t.value} Вт`;
+        else if (t.property === 'energy') display = `${t.value} кВт`;
+        else if (t.property === 'voltage') display = `${t.value} В`;
+        else if (t.property === 'current') display = `${t.value} А`;
+        else if (t.property === 'pressure') display = `${t.value} гПа`;
+        else if (t.property === 'illuminance') display = `${t.value} лк`;
+        const isAlert = (t.property === 'water_leak' && t.value > 0) || (t.property === 'contact' && t.value > 0);
         return (
           <div key={t.property} className={`bg-bg rounded-btn px-2 py-2 text-center ${isAlert ? 'border border-red/30' : ''}`}>
             <div className={`font-mono text-sm font-bold ${isAlert ? 'text-red' : 'text-text'}`}>{display}</div>
