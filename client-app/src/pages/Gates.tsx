@@ -112,9 +112,9 @@ export default function Gates() {
             if (isClosing) { statusText = 'Закрывается…'; statusColor = 'text-amber-300'; }
             if (isOpening) { statusText = 'Открывается…'; statusColor = 'text-green'; }
 
-            // Button styles: active button = colored, inactive = colorless
-            const openActive = opened || isOpening;
-            const closeActive = !opened || isClosing;
+            // Button styles: only ONE colored at a time
+            const openActive = isOpening || (opened && !isBusy);
+            const closeActive = isClosing || (!opened && !isBusy);
 
             const openBtnClass = openActive
               ? 'bg-blue text-white'
