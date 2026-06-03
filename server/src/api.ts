@@ -7,6 +7,7 @@ import csrf from 'csurf';
 import cookieParser from 'cookie-parser';
 import { stmt, query, logError, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
+import { get as httpGet } from 'http';
 
 // Fix BigInt serialization for DuckDB
 (BigInt.prototype as any).toJSON = function () { return Number(this); };
@@ -155,6 +156,39 @@ app.get('/api/devices', async (req, res) => {
   }
 });
 
+// ── GET /api/devices/pending (Zigbee devices not in DB) ──
+app.get('/api/devices/pending', async (_req, res) => {
+  try {
+    // Get known IEEEs from our DB
+    const known = await query('SELECT ieee_addr FROM devices');
+    const knownSet = new Set(known.map((r: any) => r.ieee_addr));
+
+    // Query Zigbee2MQTT for all devices
+    let zigbeeDevices: any[] = [];
+    try {
+      zigbeeDevices = await zigbeeRequest('/api/devices');
+    } catch {
+      // Z2M not available — return empty (demo/no-hardware mode)
+      return res.json({ ok: true, pending: [], reason: 'zigbee2mqtt_unavailable' });
+    }
+
+    const pending = zigbeeDevices
+      .filter((d: any) => d.ieee_address && !knownSet.has(d.ieee_address))
+      .map((d: any) => ({
+        ieee_address: d.ieee_address,
+        friendly_name: d.friendly_name || d.ieee_address,
+        model: d.definition?.model || d.model_id || 'unknown',
+        vendor: d.definition?.vendor || 'unknown',
+        type: d.type || 'unknown',
+      }));
+
+    res.json({ ok: true, pending });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'devices_pending');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── GET /api/devices/:id ────────────────────────────────
 app.get('/api/devices/:id', async (req, res) => {
   try {
@@ -287,6 +321,100 @@ app.delete('/api/devices/:id', csrfProtect, async (req, res) => {
     res.json({ ok: true, deleted: id });
   } catch (e: any) {
     logError(id, 'api_error', e.message, 'devices_delete');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── PUT /api/devices/:id (edit) ──────────────────────────
+app.put('/api/devices/:id', csrfProtect, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { friendly_name, type, room_id } = req.body;
+    const existing = await query('SELECT * FROM devices WHERE ieee_addr = ?', id);
+    if (!existing.length) {
+      return res.status(404).json({ ok: false, error: 'Device not found' });
+    }
+    const updates: string[] = [];
+    const params: any[] = [];
+    if (friendly_name !== undefined) { updates.push('friendly_name = ?'); params.push(friendly_name); }
+    if (type !== undefined) {
+      const validTypes = ['light', 'sensor', 'plug', 'gate', 'climate', 'lock'];
+      if (!validTypes.includes(type)) return res.status(400).json({ ok: false, error: `Invalid type: ${type}` });
+      updates.push('type = ?'); params.push(type);
+    }
+    if (room_id !== undefined) {
+      if (room_id) {
+        const rooms = await query('SELECT id FROM rooms WHERE id = ?', room_id);
+        if (!rooms.length) return res.status(400).json({ ok: false, error: 'Room not found' });
+      }
+      updates.push('room_id = ?'); params.push(room_id);
+    }
+    if (!updates.length) return res.status(400).json({ ok: false, error: 'No fields to update' });
+    updates.push('last_seen = NOW()');
+    params.push(id);
+    await query(`UPDATE devices SET ${updates.join(', ')} WHERE ieee_addr = ?`, ...params);
+    const updated = await query('SELECT * FROM devices WHERE ieee_addr = ?', id);
+    res.json({ ok: true, device: updated[0] });
+  } catch (e: any) {
+    logError(id, 'api_error', e.message, 'devices_update');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── Zigbee2MQTT helper ──────────────────────────────────
+const Z2M_URL = process.env.Z2M_URL || 'http://localhost:8080';
+const Z2M_TOKEN = process.env.Z2M_AUTH_TOKEN || '';
+
+function zigbeeRequest(path: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = {};
+    if (Z2M_TOKEN) headers['Authorization'] = `Bearer ${Z2M_TOKEN}`;
+    const req = httpGet(`${Z2M_URL}${path}`, { headers, timeout: 5000 }, (res) => {
+      let body = '';
+      res.on('data', (chunk: Buffer) => body += chunk.toString());
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)); }
+        catch { reject(new Error(`Z2M parse error: ${body.slice(0, 100)}`)); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Z2M timeout')); });
+  });
+}
+
+// ── POST /api/devices/discover (enable permit_join) ──────
+app.post('/api/devices/discover', csrfProtect, async (_req, res) => {
+  try {
+    // Enable permit_join via Zigbee2MQTT API for 120 seconds
+    try {
+      await zigbeeRequest('/api/permit_join');
+    } catch {
+      return res.json({ ok: true, permit_join: false, reason: 'zigbee2mqtt_unavailable' });
+    }
+
+    // Wait 10s for devices to be discovered, then return pending
+    await new Promise(r => setTimeout(r, 10000));
+
+    const known = await query('SELECT ieee_addr FROM devices');
+    const knownSet = new Set(known.map((r: any) => r.ieee_addr));
+
+    let discovered: any[] = [];
+    try {
+      const zigbeeDevices = await zigbeeRequest('/api/devices');
+      discovered = zigbeeDevices
+        .filter((d: any) => d.ieee_address && !knownSet.has(d.ieee_address))
+        .map((d: any) => ({
+          ieee_address: d.ieee_address,
+          friendly_name: d.friendly_name || d.ieee_address,
+          model: d.definition?.model || d.model_id || 'unknown',
+          vendor: d.definition?.vendor || 'unknown',
+          type: d.type || 'unknown',
+        }));
+    } catch {}
+
+    res.json({ ok: true, permit_join: true, discovered });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'devices_discover');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -958,6 +1086,11 @@ app.post('/api/demo/devices/:id/toggle', async (req, res) => {
   } catch (e: any) {
     res.status(500).json({ ok: false, error: e.message });
   }
+});
+
+// ── Redirect root to /start ───────────────────────────────
+app.get('/', (_req, res) => {
+  res.redirect(301, '/start');
 });
 
 // ── GET /start — React SPA from Vite build ───────────────

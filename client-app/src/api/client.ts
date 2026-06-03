@@ -347,4 +347,18 @@ export const api = {
 
   getRooms: () =>
     request<{ ok: boolean; rooms: { id: number; name: string; icon: string }[] }>('/rooms'),
+
+  updateDevice: (id: string, updates: { friendly_name?: string; type?: string; room_id?: number }) =>
+    request<{ ok: boolean; device: any }>(`/devices/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    }),
+
+  getPendingDevices: () =>
+    request<{ ok: boolean; pending: any[]; reason?: string }>('/devices/pending'),
+
+  discoverDevices: () =>
+    request<{ ok: boolean; permit_join: boolean; discovered: any[]; reason?: string }>('/devices/discover', {
+      method: 'POST',
+    }),
 };
