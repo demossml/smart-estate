@@ -12,8 +12,9 @@ interface BeforeInstallPromptEvent extends Event {
 
 /**
  * Страница установки и приветствия.
- * Доступна по /start — показывает статус подключения к бэкенду,
- * предлагает установить PWA на главный экран.
+ * Доступна по /start.
+ * — Если PWA уже установлено (standalone) → сразу на дашборд
+ * — Если в браузере → показывает статус, предлагает установить
  */
 export default function Welcome() {
   const navigate = useNavigate();
@@ -22,6 +23,14 @@ export default function Welcome() {
   const [devices, setDevices] = useState(0);
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [installed, setInstalled] = useState(() => window.matchMedia('(display-mode: standalone)').matches);
+  const [showInstall, setShowInstall] = useState(true);
+
+  // Auto-redirect if already installed as PWA
+  useEffect(() => {
+    if (installed) {
+      navigate('/', { replace: true });
+    }
+  }, [installed, navigate]);
 
   // Listen for install prompt
   useEffect(() => {
@@ -30,8 +39,14 @@ export default function Welcome() {
       setDeferredPrompt(e as BeforeInstallPromptEvent);
     };
     window.addEventListener('beforeinstallprompt', handler);
-    return () => window.removeEventListener('beforeinstallprompt', handler);
-  }, []);
+    // Also detect if installed via appinstalled event
+    const onInstalled = () => { setInstalled(true); navigate('/', { replace: true }); };
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handler);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, [navigate]);
 
   // Check backend status
   useEffect(() => {

@@ -1,23 +1,22 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Plug, Wand2, DoorOpen, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, Plug, Wand2, ShieldCheck } from 'lucide-react';
 
 const tabs = [
-  { to: '/', icon: LayoutDashboard, label: 'Дом' },
-  { to: '/devices', icon: Plug, label: 'Устр.' },
-  { to: '/gates', icon: DoorOpen, label: 'Ворота' },
-  { to: '/scenarios', icon: Wand2, label: 'Сценарии' },
-  { to: '/events', icon: ShieldCheck, label: 'События' },
+  { to: '/', icon: LayoutDashboard, label: 'Дом', sf: 'house.fill' },
+  { to: '/devices', icon: Plug, label: 'Устройства', sf: 'switch.2' },
+  { to: '/scenarios', icon: Wand2, label: 'Сценарии', sf: 'sparkles' },
+  { to: '/events', icon: ShieldCheck, label: 'События', sf: 'bell.fill' },
 ];
 
 /**
- * Bottom tab bar — 56px height, large touch targets.
- * 4 tabs with icons + labels.
+ * iOS-style TabBar — 50px height, SF-like spacing.
+ * Backdrop blur glass effect.
+ * Active tab: filled icon + SF weight.
  */
 export function TabBar() {
   return (
     <nav
-      className="app-tabbar fixed bottom-0 bg-surface border-t border-surface-hover
-                 flex justify-around items-center z-30"
+      className="app-tabbar flex justify-around items-end z-30 select-none"
       role="navigation"
       aria-label="Основная навигация"
     >
@@ -26,15 +25,25 @@ export function TabBar() {
           key={to}
           to={to}
           className={({ isActive }) =>
-            `flex flex-col items-center justify-center gap-0.5 px-1 py-1
-             min-h-[48px] min-w-[52px] rounded-lg transition-colors tap-active
-             ${isActive ? 'text-blue' : 'text-text-dim hover:text-text'}`
+            `flex flex-col items-center justify-end gap-0.5 pt-1 pb-0
+             min-h-[44px] min-w-[48px] rounded-xl transition-all duration-150 tap-active
+             ${isActive ? 'text-blue' : 'text-text-secondary'}`
           }
         >
           {({ isActive }) => (
             <>
-              <Icon size={22} fill={isActive ? 'currentColor' : 'none'} />
-              <span className="text-[10px] leading-none">{label}</span>
+              <Icon
+                size={24}
+                strokeWidth={isActive ? 2.5 : 1.8}
+                className="transition-all duration-150"
+              />
+              <span
+                className={`text-[9px] leading-none tracking-tight transition-all duration-150 ${
+                  isActive ? 'font-semibold opacity-100' : 'font-normal opacity-70'
+                }`}
+              >
+                {label}
+              </span>
             </>
           )}
         </NavLink>

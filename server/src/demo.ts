@@ -9,6 +9,7 @@
  */
 
 import { query, logStateChange, logCommand } from './db';
+import { evaluateTelemetry, reloadScenarios } from './engine';
 
 // ── Types ─────────────────────────────────────────────
 interface DemoDevice {
@@ -60,7 +61,7 @@ const DEMO_DEVICES: DemoDevice[] = [
   {
     ieee_addr: 'demo:living_temp',
     name: 'Датчик температуры',
-    type: 'sensor',
+    type: 'temp_sensor',
     room: 'Гостиная',
     properties: [
       { property: 'temperature', unit: '°C', min: 18, max: 28, current: 21.5, direction: 1 },
@@ -86,13 +87,40 @@ const DEMO_DEVICES: DemoDevice[] = [
   {
     ieee_addr: 'demo:kitchen_temp',
     name: 'Датчик температуры',
-    type: 'sensor',
+    type: 'temp_sensor',
     room: 'Кухня',
     properties: [
       { property: 'temperature', unit: '°C', min: 19, max: 30, current: 22.0, direction: 1 },
       { property: 'humidity', unit: '%', min: 40, max: 75, current: 55, direction: 1 },
-      { property: 'co2', unit: 'ppm', min: 400, max: 1200, current: 680, direction: 1 },
     ],
+  },
+  {
+    ieee_addr: 'demo:kitchen_air',
+    name: 'Монитор воздуха',
+    type: 'air_monitor',
+    room: 'Кухня',
+    properties: [
+      { property: 'co2', unit: 'ppm', min: 400, max: 1200, current: 720, direction: 1 },
+      { property: 'voc', unit: 'ppb', min: 0, max: 300, current: 110, direction: 1 },
+      { property: 'pm25', unit: 'µg/m³', min: 0, max: 60, current: 18, direction: 1 },
+      { property: 'formaldehyde', unit: 'mg/m³', min: 0, max: 0.1, current: 0.02, direction: -1 },
+    ],
+  },
+  {
+    ieee_addr: 'demo:kitchen_window',
+    name: 'Окно левое',
+    type: 'window_sensor',
+    room: 'Кухня',
+    properties: [
+      { property: 'contact', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 },
+    ],
+  },
+  {
+    ieee_addr: 'demo:kitchen_fan',
+    name: 'Вытяжка',
+    type: 'fan',
+    room: 'Кухня',
+    properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
   {
     ieee_addr: 'demo:kitchen_fridge',
@@ -113,7 +141,7 @@ const DEMO_DEVICES: DemoDevice[] = [
   {
     ieee_addr: 'demo:bedroom_temp',
     name: 'Датчик температуры',
-    type: 'sensor',
+    type: 'temp_sensor',
     room: 'Спальня',
     properties: [
       { property: 'temperature', unit: '°C', min: 18, max: 26, current: 20.0, direction: -1 },
@@ -132,7 +160,7 @@ const DEMO_DEVICES: DemoDevice[] = [
   {
     ieee_addr: 'demo:bath_temp',
     name: 'Датчик влажности',
-    type: 'sensor',
+    type: 'temp_sensor',
     room: 'Ванная',
     properties: [
       { property: 'temperature', unit: '°C', min: 18, max: 28, current: 23.0, direction: 1 },
@@ -142,7 +170,7 @@ const DEMO_DEVICES: DemoDevice[] = [
   {
     ieee_addr: 'demo:bath_leak',
     name: 'Датчик протечки',
-    type: 'sensor',
+    type: 'temp_sensor',
     room: 'Ванная',
     properties: [{ property: 'water_leak', unit: 'bool', min: 0, max: 0, current: 0, direction: 0 }],
   },
@@ -158,7 +186,7 @@ const DEMO_DEVICES: DemoDevice[] = [
   {
     ieee_addr: 'demo:hall_motion',
     name: 'Датчик движения',
-    type: 'sensor',
+    type: 'temp_sensor',
     room: 'Коридор',
     properties: [
       { property: 'occupancy', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 },
@@ -168,9 +196,16 @@ const DEMO_DEVICES: DemoDevice[] = [
   {
     ieee_addr: 'demo:main_door',
     name: 'Входная дверь',
-    type: 'sensor',
+    type: 'temp_sensor',
     room: 'Коридор',
     properties: [{ property: 'contact', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
+  },
+  {
+    ieee_addr: 'demo:main_lock',
+    name: 'Замок двери',
+    type: 'lock',
+    room: 'Коридор',
+    properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
   // Ворота и калитка
   {
@@ -244,6 +279,17 @@ export async function seedDemoData(): Promise<{ rooms: number; devices: number }
   const maxSeq = await query('SELECT COALESCE(MAX(id), 0) as mx FROM telemetry');
   _telemetrySeq = BigInt(maxSeq[0]?.mx || 100000) + BigInt(1);
 
+  // Seed initial state=0 for gate/lock devices (so GatesCard sees them as closed)
+  for (const d of DEMO_DEVICES) {
+    if (d.type === 'gate' || d.type === 'lock') {
+      const seq = _telemetrySeq++;
+      await query(
+        `INSERT INTO telemetry (id, device_ieee, property, value, unit, raw_json, ts)
+         VALUES (${seq}, '${d.ieee_addr}', 'state', 0, 'bool', '{}', CURRENT_TIMESTAMP)`
+      ).catch(() => {});
+    }
+  }
+
   // Init climate setpoints for temp sensors
   const tempSensors = DEMO_DEVICES.filter(d => d.properties.some(p => p.property === 'temperature'));
   for (const d of tempSensors) {
@@ -256,6 +302,23 @@ export async function seedDemoData(): Promise<{ rooms: number; devices: number }
       );
     }
   }
+
+  // Seed demo scenarios for air quality → ventilation
+  await query("DELETE FROM scenario_executions");
+  await query("DELETE FROM scenarios WHERE name LIKE 'Демо:%'");
+  const maxScId = await query('SELECT COALESCE(MAX(id), 0) as mx FROM scenarios');
+  let nextScId = Number(maxScId[0]?.mx || 0) + 1;
+  await query(`INSERT INTO scenarios (id, name, triggers_json, actions_json, active)
+    VALUES (?, 'Демо: Плохой воздух → вентиляция',
+      '{"logic":"ANY","conditions":[{"device":"demo:kitchen_air","property":"co2","operator":">","value":800},{"device":"demo:kitchen_air","property":"voc","operator":">","value":200},{"device":"demo:kitchen_air","property":"pm25","operator":">","value":35}]}',
+      '[{"type":"mqtt","device":"demo:kitchen_fan","command":"ON","payload":{}}]',
+      true)`, nextScId++);
+  await query(`INSERT INTO scenarios (id, name, triggers_json, actions_json, active)
+    VALUES (?, 'Демо: Воздух чистый → вентиляция OFF',
+      '{"logic":"ALL","conditions":[{"device":"demo:kitchen_air","property":"co2","operator":"<","value":500},{"device":"demo:kitchen_air","property":"voc","operator":"<","value":60},{"device":"demo:kitchen_air","property":"pm25","operator":"<","value":12}]}',
+      '[{"type":"mqtt","device":"demo:kitchen_fan","command":"OFF","payload":{}}]',
+      true)`, nextScId++);
+  await reloadScenarios();
 
   console.log(`🌱 Demo seed: ${roomCount} rooms, ${deviceCount} devices`);
   return { rooms: roomCount, devices: deviceCount };
@@ -282,12 +345,20 @@ export async function startDemo(): Promise<void> {
 /**
  * Stop the demo simulator.
  */
-export function stopDemo(): void {
+export async function stopDemo(): Promise<void> {
   if (intervalId) {
     clearInterval(intervalId);
     intervalId = null;
   }
   _isDemoActive = false;
+  // Clean up demo telemetry so real devices show clearly
+  try {
+    await query(`DELETE FROM telemetry WHERE device_ieee LIKE 'demo:%'`);
+    await query(`DELETE FROM state_changes WHERE device_ieee LIKE 'demo:%'`);
+    console.log('🧹 DEMO MODE: телеметрия demo-устройств очищена');
+  } catch (e: any) {
+    console.error('🧹 DEMO cleanup error:', e.message);
+  }
   console.log('🎭 DEMO MODE: остановлен');
 }
 
@@ -306,6 +377,13 @@ export async function toggleDemoDevice(ieee_addr: string, state: 'ON' | 'OFF'): 
     // Log to DB
     logCommand(ieee_addr, state, '{}', 'demo');
     logStateChange(ieee_addr, state === 'ON' ? 'OFF' : 'ON', state, 'demo_toggle');
+
+    // Write telemetry so frontend sees state change immediately
+    const seq = _telemetrySeq++;
+    query(
+      `INSERT INTO telemetry (id, device_ieee, property, value, unit, raw_json, ts)
+       VALUES (${seq}, '${ieee_addr}', 'state', ${newVal}, 'bool', '{}', CURRENT_TIMESTAMP)`
+    ).catch(() => {});
   }
 
   return true;
@@ -321,8 +399,9 @@ async function generateTelemetry(): Promise<void> {
 
   for (const device of DEMO_DEVICES) {
     for (const prop of device.properties) {
-      // Skip boolean state — only interesting for lights
-      if (prop.property === 'state' || prop.property === 'contact') continue;
+      // Skip boolean state/contact — these are events, not metrics
+      if (prop.property === 'contact') continue;
+      if (prop.property === 'state') continue;
 
       // Update value with smooth random walk
       const step = (Math.random() - 0.5) * (prop.max - prop.min) * 0.05;
@@ -370,6 +449,62 @@ async function generateTelemetry(): Promise<void> {
       );
     } catch {
       // Ignore insert errors (e.g. if sequence collides)
+    }
+  }
+
+  // Evaluate scenarios after telemetry update (demo mode)
+  const scenarioDevices = new Map<string, Record<string, number>>();
+  for (const device of DEMO_DEVICES) {
+    const props: Record<string, number> = {};
+    for (const prop of device.properties) {
+      if (prop.property === 'state' || prop.property === 'contact') continue;
+      props[prop.property] = prop.current;
+    }
+    if (Object.keys(props).length > 0) {
+      scenarioDevices.set(device.ieee_addr, props);
+    }
+  }
+  for (const [ieee, props] of scenarioDevices) {
+    await evaluateTelemetry(ieee, props).catch(() => {});
+  }
+
+  // Apply scenario-driven commands to demo device state by checking scenario_executions
+  const recentExecs = await query(
+    `SELECT se.*, s.name as scenario_name, s.actions_json FROM scenario_executions se
+     JOIN scenarios s ON s.id = se.scenario_id
+     WHERE se.ts >= CURRENT_TIMESTAMP - INTERVAL '10 seconds'
+       AND s.name LIKE 'Демо:%'
+     ORDER BY se.ts DESC LIMIT 5`
+  ).catch(() => []);
+  for (const exec of recentExecs || []) {
+    try {
+      const actions = JSON.parse(exec.actions_json || '[]');
+      for (const action of actions) {
+        if (action.type === 'mqtt' && action.device) {
+          const dev = DEMO_DEVICES.find(d => d.ieee_addr === action.device);
+          if (!dev) continue;
+          const stateProp = dev.properties.find(p => p.property === 'state');
+          if (stateProp) {
+            const newState = action.command === 'ON' ? 1 : 0;
+            if (stateProp.current !== newState) {
+              stateProp.current = newState;
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // Write fan state to telemetry so frontend sees scenario-driven changes
+  const fan = DEMO_DEVICES.find(d => d.ieee_addr === 'demo:kitchen_fan');
+  if (fan) {
+    const stateProp = fan.properties.find(p => p.property === 'state');
+    if (stateProp) {
+      const seq = _telemetrySeq++;
+      await query(
+        `INSERT INTO telemetry (id, device_ieee, property, value, unit, raw_json, ts)
+         VALUES (${seq}, 'demo:kitchen_fan', 'state', ${stateProp.current}, 'bool', '{}', '${now}')`
+      );
     }
   }
 }

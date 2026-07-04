@@ -15,6 +15,11 @@ async function initCSRF(): Promise<void> {
 // Fetch on load
 initCSRF();
 
+// Track online/offline
+window.addEventListener('online', () => { isOnline = true; });
+window.addEventListener('offline', () => { isOnline = false; });
+isOnline = navigator.onLine;
+
 /* ─── Device lookup cache (for climate setpoints) ─── */
 let deviceCache: import('../types').Device[] | null = null;
 
@@ -194,7 +199,19 @@ function parseTrigger(triggersJson: string): string {
   return '—';
 }
 
-function parseActions(actionsJson: string): string[] {
+function mapScenario(s: RawScenario): import('../types').Scenario {
+  return {
+    id: String(s.id),
+    name: s.name,
+    trigger: parseTrigger(s.triggers_json),
+    actions: parseClientActions(s.actions_json),
+    active: s.active,
+    triggers_json: s.triggers_json,
+    actions_json: s.actions_json,
+  };
+}
+
+function parseClientActions(actionsJson: string): string[] {
   try {
     const arr = JSON.parse(actionsJson) as { type: string; device?: string; command?: string; message?: string }[];
     return arr.map(a => {
@@ -205,16 +222,6 @@ function parseActions(actionsJson: string): string[] {
   } catch {
     return ['—'];
   }
-}
-
-function mapScenario(s: RawScenario): import('../types').Scenario {
-  return {
-    id: String(s.id),
-    name: s.name,
-    trigger: parseTrigger(s.triggers_json),
-    actions: parseActions(s.actions_json),
-    active: s.active,
-  };
 }
 
 function mapGate(g: RawGate): import('../types').Gate {
@@ -275,6 +282,24 @@ export const api = {
     const data = await request<{ ok: boolean; scenarios: RawScenario[] }>('/scenarios');
     return data.scenarios.map(mapScenario);
   },
+
+  createScenario: (name: string, triggers: string, actions: string) =>
+    request<{ ok: boolean; id: number }>('/scenarios', {
+      method: 'POST',
+      body: JSON.stringify({ name, triggers_json: triggers, actions_json: actions, active: true }),
+    }),
+
+  updateScenario: (id: string, name: string, triggers: string, actions: string) =>
+    request<{ ok: boolean }>(`/scenarios/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name, triggers_json: triggers, actions_json: actions }),
+    }),
+
+  deleteScenario: (id: string) =>
+    request<{ ok: boolean }>(`/scenarios/${id}`, { method: 'DELETE' }),
+
+  toggleScenario: (id: string) =>
+    request<{ ok: boolean }>(`/scenarios/${id}/toggle`, { method: 'POST' }),
 
   getClimate: async () => {
     const [setpointsData, devices] = await Promise.all([
@@ -384,4 +409,10 @@ export const api = {
     request<{ ok: boolean; permit_join: boolean; discovered: any[]; reason?: string }>('/devices/discover', {
       method: 'POST',
     }),
+
+  getAirQuality: () =>
+    request<{ ok: boolean; air_quality: any[] }>('/air-quality'),
+
+  getDashboardV2: () =>
+    request<{ ok: boolean; metrics: any; energy_today: number; air_status: string; rooms: any[] }>('/dashboard/v2'),
 };

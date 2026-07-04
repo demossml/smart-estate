@@ -1,27 +1,21 @@
-# Zigbee2MQTT Configuration — hardened
-# Умная Усадьба Hermes
-
-homeassistant: false
-permit_join: false
-
+homeassistant:
+  enabled: false
 mqtt:
   server: mqtt://mosquitto:1883
   base_topic: zigbee2mqtt
-  user: zigbee2mqtt
-  password: "${MQTT_PASSWORD}"
-
 serial:
   port: /dev/ttyUSB0
-  adapter: ezsp
-
+  adapter: ember
+  baudrate: 115200
+  rtscts: false
 frontend:
+  enabled: true
   port: 8080
-  auth_token: "${Z2M_AUTH_TOKEN}"
-
 advanced:
-  log_level: warning
-  pan_id: 0x1A62
+  log_level: info
+  pan_id: 6754
   channel: 11
+  report_payload_formatter: attribute
   network_key:
     - 1
     - 3
@@ -39,12 +33,12 @@ advanced:
     - 10
     - 12
     - 13
-
-device_options:
-  legacy: false
-
-# Whiltelist: only allow known devices
-# After initial pairing, add IEEE addresses here
-# devices:
-#   - 0x00124b001a2b3c4d
-#   - 0x00158d0001a2b3c5
+device_options: {}
+version: 5
+devices:
+  '0xa4c1382e284d2eeb':
+    friendly_name: '0xa4c1382e284d2eeb'
+  '0xa4c13809fbba5246':
+    friendly_name: '0xa4c13809fbba5246'
+  '0xa4c1388e501b0447':
+    friendly_name: '0xa4c1388e501b0447'

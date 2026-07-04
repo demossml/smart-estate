@@ -2,8 +2,11 @@ import { useState, useEffect } from 'react';
 import { Search, Plus, X, Trash2, Radar, Pencil, Loader2, MapPin, RefreshCw } from 'lucide-react';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { Skeleton } from '../components/ui/Skeleton';
+import { RoomPicker } from '../components/ui/RoomPicker';
+import { RoomAddModal } from '../components/ui/RoomAddModal';
 import { api } from '../api/client';
 import { DEVICE_TYPE_ICONS, DEVICE_TYPE_LABELS, CircleDot } from '../lib/icon-map';
+import { useMode } from '../hooks/useMode';
 import type { Device } from '../types';
 
 type ModalKind = 'add' | 'edit' | 'discover' | null;
@@ -31,6 +34,7 @@ export default function Devices() {
   const [formAddr, setFormAddr] = useState('');
 
   const [editDevice, setEditDevice] = useState<Device | null>(null);
+  const [showAddRoom, setShowAddRoom] = useState(false);
 
   const [pendingDevices, setPendingDevices] = useState<PendingDevice[]>([]);
   const [discovering, setDiscovering] = useState(false);
@@ -40,7 +44,27 @@ export default function Devices() {
   useEffect(() => {
     loadDevices();
     api.getRooms().then(r => setRooms(r.rooms)).catch(() => {});
+    // Auto-show pending devices from Zigbee2MQTT on mount
+    api.getPendingDevices()
+      .then(res => {
+        if (res.pending && res.pending.length > 0) {
+          setPendingDevices(res.pending);
+          setSelectedPending(new Set());
+          setModal('discover');
+          setDiscoverMsg(`Доступные устройства из Zigbee (${res.pending.length}):`);
+        }
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Reload devices when mode changes (demo ↔ live)
+  const { mode } = useMode();
+  useEffect(() => {
+    loadDevices();
+    api.getRooms().then(r => setRooms(r.rooms)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
 
   const loadDevices = async () => {
     try { setDevices(await api.getDevices()); setOffline(false); }
@@ -109,6 +133,19 @@ export default function Devices() {
 
   const openEdit = (d: Device) => { setEditDevice({ ...d }); setModal('edit'); };
   const resetAddForm = () => { setFormName(''); setFormType('light'); setFormRoom(1); setFormAddr(''); };
+
+  const handleCreateRoomFromPicker = async (name: string, iconKey: string) => {
+    await api.createRoom(name, iconKey);
+    setShowAddRoom(false);
+    // Обновить список комнат и автоматом выбрать созданную
+    api.getRooms().then(r => {
+      setRooms(r.rooms);
+      const created = r.rooms.find((ro: any) => ro.name === name);
+      if (created) setFormRoom(created.id);
+    }).catch(() => {});
+    // Триггер для Dashboard — диспатчим событие
+    window.dispatchEvent(new Event('room-created'));
+  };
 
   const filtered = devices.filter(d =>
     d.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -203,10 +240,12 @@ export default function Devices() {
           </div>
 
           <label className="block text-xs text-text-dim mb-1">Комната</label>
-          <select value={formRoom} onChange={e => setFormRoom(Number(e.target.value))}
-            className="w-full bg-bg border border-surface-hover rounded-card px-3 py-2.5 text-text text-sm mb-3 outline-none focus:border-blue">
-            {rooms.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
+          <RoomPicker
+            rooms={rooms}
+            value={formRoom}
+            onChange={(roomId) => setFormRoom(roomId)}
+            onCreateRoom={() => setShowAddRoom(true)}
+          />
 
           <label className="block text-xs text-text-dim mb-1">IEEE-адрес (авто)</label>
           <input type="text" value={formAddr} onChange={e => setFormAddr(e.target.value)}
@@ -241,11 +280,14 @@ export default function Devices() {
           </div>
 
           <label className="block text-xs text-text-dim mb-1">Комната</label>
-          <select value={rooms.find(r => r.name === editDevice.room)?.id || ''}
-            onChange={e => { const room = rooms.find(r => r.id === Number(e.target.value)); setEditDevice({ ...editDevice, room: room?.name || editDevice.room }); }}
-            className="w-full bg-bg border border-surface-hover rounded-card px-3 py-2.5 text-text text-sm mb-3 outline-none focus:border-blue">
-            {rooms.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
+          <RoomPicker
+            rooms={rooms}
+            value={rooms.find(r => r.name === editDevice.room)?.id || ''}
+            onChange={(roomId, roomName) => {
+              setEditDevice({ ...editDevice, room: roomName });
+            }}
+            onCreateRoom={() => setShowAddRoom(true)}
+          />
 
           <div className="text-xs text-text-dim mb-4 px-1">
             IEEE: <code className="text-text font-mono">{editDevice.id}</code>
@@ -315,6 +357,11 @@ export default function Devices() {
           )}
         </Modal>
       )}
+
+      {/* ═══ ADD ROOM FROM PICKER ═══ */}
+      {showAddRoom && (
+        <RoomAddModal onClose={() => setShowAddRoom(false)} onCreate={handleCreateRoomFromPicker} />
+      )}
     </div>
   );
 }
@@ -330,9 +377,9 @@ function mapZ2MType(z2mType: string): string {
 
 function Modal({ children, onClose, title }: { children: React.ReactNode; onClose: () => void; title: string }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center sm:items-center pt-8 sm:pt-0" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60" />
-      <div className="relative w-full max-w-md bg-surface border border-surface-hover rounded-t-2xl sm:rounded-2xl p-5 animate-slide-up"
+      <div className="relative w-full max-w-md bg-surface border border-surface-hover rounded-2xl p-5 mx-4 animate-fade-in max-h-[85dvh] overflow-y-auto"
         onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold text-text">{title}</h2>

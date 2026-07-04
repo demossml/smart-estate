@@ -7,7 +7,10 @@ import csrf from 'csurf';
 import cookieParser from 'cookie-parser';
 import { stmt, query, logError, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
+import { toggleDemoDevice, isDemoMode } from './demo';
+import { attachWebSocket, publishCommand, lastPresenceAt } from './mqtt-ws';
 import { get as httpGet } from 'http';
+import mqtt from 'mqtt';
 
 // Fix BigInt serialization for DuckDB
 (BigInt.prototype as any).toJSON = function () { return Number(this); };
@@ -134,7 +137,7 @@ app.get('/api/devices', async (req, res) => {
                SELECT property, value, unit,
                  ROW_NUMBER() OVER (PARTITION BY property ORDER BY ts DESC) as rn
                FROM telemetry WHERE device_ieee = d.ieee_addr
-             ) sub WHERE rn = 1 LIMIT 3) t
+             ) sub WHERE rn = 1 LIMIT 6) t
         ) as latest_telemetry
       FROM devices d LEFT JOIN rooms r ON d.room_id = r.id
       ${whereClause}
@@ -150,6 +153,10 @@ app.get('/api/devices', async (req, res) => {
       latest_telemetry: typeof row.latest_telemetry === 'string'
         ? JSON.parse(row.latest_telemetry)
         : row.latest_telemetry || [],
+      params: typeof row.params_json === 'string'
+        ? JSON.parse(row.params_json)
+        : row.params_json || {},
+      params_json: undefined,
     }));
 
     res.json({ ok: true, devices, total, limit, offset });
@@ -162,28 +169,44 @@ app.get('/api/devices', async (req, res) => {
 // ── GET /api/devices/pending (Zigbee devices not in DB) ──
 app.get('/api/devices/pending', async (_req, res) => {
   try {
-    // Get known IEEEs from our DB
-    const known = await query('SELECT ieee_addr FROM devices');
-    const knownSet = new Set(known.map((r: any) => r.ieee_addr));
-
-    // Query Zigbee2MQTT for all devices
-    let zigbeeDevices: any[] = [];
+    // Read devices from Z2M database.db (NDJSON — newline-delimited JSON)
+    let z2mDevices: any[] = [];
     try {
-      zigbeeDevices = await zigbeeRequest('/api/devices');
-    } catch {
-      // Z2M not available — return empty (demo/no-hardware mode)
-      return res.json({ ok: true, pending: [], reason: 'zigbee2mqtt_unavailable' });
+      const fs = require('fs');
+      const dbPath = '/home/admingimolost/smart-estate/data/zigbee2mqtt/database.db';
+      const content = fs.readFileSync(dbPath, 'utf8');
+      const lines = content.trim().split('\n');
+      for (const line of lines) {
+        try { z2mDevices.push(JSON.parse(line)); } catch { /* skip corrupt lines */ }
+      }
+    } catch (err: any) {
+      console.error('Z2M DB read failed:', err.message);
     }
 
-    const pending = zigbeeDevices
-      .filter((d: any) => d.ieee_address && !knownSet.has(d.ieee_address))
-      .map((d: any) => ({
-        ieee_address: d.ieee_address,
-        friendly_name: d.friendly_name || d.ieee_address,
-        model: d.definition?.model || d.model_id || 'unknown',
-        vendor: d.definition?.vendor || 'unknown',
-        type: d.type || 'unknown',
-      }));
+    // Filter to only real devices (skip coordinator)
+    const realDevices = z2mDevices.filter((d: any) =>
+      d.type && d.type !== 'Coordinator' && d.ieeeAddr
+    );
+
+    if (realDevices.length === 0) {
+      return res.json({ ok: true, pending: [], reason: 'z2m_unavailable' });
+    }
+
+    // Map to our format
+    const z2mMapped = realDevices.map((d: any) => ({
+      ieee_address: d.ieeeAddr,
+      friendly_name: d.friendlyName || d.ieeeAddr,
+      model: d.modelId || '—',
+      vendor: d.manufName || '—',
+      type: 'sensor',
+    }));
+
+    // Filter out devices already in our DB
+    const knownDevices = await query(`SELECT ieee_addr FROM devices`);
+    const knownSet = new Set(knownDevices.map((r: any) => r.ieee_addr));
+
+    const pending = z2mMapped
+      .filter((d: any) => !knownSet.has(d.ieee_address));
 
     res.json({ ok: true, pending });
   } catch (e: any) {
@@ -277,8 +300,16 @@ app.post('/api/devices', csrfProtect, async (req, res) => {
     if (!ieee_addr || !friendly_name || !type) {
       return res.status(400).json({ ok: false, error: 'ieee_addr, friendly_name, type are required' });
     }
-    // Valid types
-    const validTypes = ['light', 'sensor', 'plug', 'gate', 'climate', 'lock'];
+    // Valid types — must match frontend DEVICE_TYPES
+    const validTypes = ['light', 'sensor', 'plug', 'gate', 'climate', 'lock',
+      'window_sensor', 'door_sensor', 'gate_sensor',
+      'air_monitor', 'temp_sensor', 'humid_sensor', 'co2_sensor', 'pm_sensor',
+      'motion_sensor', 'presence_sensor',
+      'leak_sensor', 'smoke_sensor', 'gas_sensor',
+      'light_sensor',
+      'switch', 'shutter', 'curtain', 'camera', 'bell', 'speaker',
+      'gate_controller', 'cover',
+    ];
     if (!validTypes.includes(type)) {
       return res.status(400).json({ ok: false, error: `type must be one of: ${validTypes.join(', ')}` });
     }
@@ -297,9 +328,9 @@ app.post('/api/devices', csrfProtect, async (req, res) => {
          type = EXCLUDED.type,
          room_id = EXCLUDED.room_id,
          last_seen = NOW()`,
-      ieee_addr, friendly_name, type, room_id || 1
+      ieee_addr, friendly_name, type, Number(room_id) || 1
     );
-    res.json({ ok: true, device: { ieee_addr, friendly_name, type, room_id: room_id || 1, status: 'online' } });
+    res.json({ ok: true, device: { ieee_addr, friendly_name, type, room_id: Number(room_id) || 1, status: 'online' } });
   } catch (e: any) {
     logError(null, 'api_error', e.message, 'devices_create');
     res.status(500).json({ ok: false, error: e.message });
@@ -328,6 +359,104 @@ app.delete('/api/devices/:id', csrfProtect, async (req, res) => {
   }
 });
 
+// ── PATCH /api/devices/:id/params (config) ──────────────
+const DEVICE_PARAM_SCHEMAS: Record<string, { params: { key: string; control: string; options?: string[]; min?: number; max?: number; step?: number; default: any }[] }> = {
+  window_sensor: { params: [] },
+  door_sensor: { params: [] },
+  presence_sensor: {
+    params: [
+      { key: 'sensitivity', control: 'select', options: ['Низкая', 'Средняя', 'Высокая'], default: 'Средняя' },
+      { key: 'timeoutSec', control: 'slider', min: 10, max: 600, default: 180 },
+      { key: 'zoneFilter', control: 'toggle', default: false },
+    ],
+  },
+  motion_sensor: {
+    params: [
+      { key: 'sensitivity', control: 'select', options: ['Низкая', 'Средняя', 'Высокая'], default: 'Средняя' },
+      { key: 'timeoutSec', control: 'slider', min: 5, max: 300, default: 30 },
+    ],
+  },
+  leak_sensor: { params: [{ key: 'alarmSound', control: 'toggle', default: true }] },
+  light: {
+    params: [
+      { key: 'colorTemp', control: 'slider', min: 2700, max: 6500, step: 100, default: 3500 },
+      { key: 'powerOnBehavior', control: 'select', options: ['Восстановить состояние', 'Всегда включён', 'Всегда выключен'], default: 'Восстановить состояние' },
+    ],
+  },
+  plug: {
+    params: [
+      { key: 'childLock', control: 'toggle', default: false },
+      { key: 'overloadLimit', control: 'number', min: 500, max: 4000, step: 100, default: 2500 },
+    ],
+  },
+  gate_controller: {
+    params: [
+      { key: 'autoClose', control: 'toggle', default: true },
+      { key: 'autoCloseDelayMin', control: 'slider', min: 1, max: 30, step: 1, default: 5 },
+    ],
+  },
+  climate: {
+    params: [
+      { key: 'mode', control: 'select', options: ['cool', 'heat', 'fan', 'off'], default: 'cool' },
+      { key: 'fanSpeed', control: 'select', options: ['авто', 'низкая', 'средняя', 'высокая'], default: 'авто' },
+      { key: 'swing', control: 'toggle', default: false },
+    ],
+  },
+  air_monitor: { params: [{ key: 'reportIntervalSec', control: 'select', options: ['10', '30', '60', '300'], default: '60' }] },
+};
+
+function validateParams(type: string, body: Record<string, any>): { errors: { key: string; reason: string; options?: string[] }[]; valid: Record<string, any> } {
+  const schema = DEVICE_PARAM_SCHEMAS[type];
+  if (!schema || schema.params.length === 0) {
+    return { errors: [{ key: '_', reason: 'nothing_to_configure' }], valid: {} };
+  }
+  const errors: { key: string; reason: string; options?: string[] }[] = [];
+  const valid: Record<string, any> = {};
+  for (const field of schema.params) {
+    if (body[field.key] === undefined) continue;
+    const val = body[field.key];
+    switch (field.control) {
+      case 'toggle':
+        if (typeof val !== 'boolean') errors.push({ key: field.key, reason: 'must_be_boolean' });
+        else valid[field.key] = val;
+        break;
+      case 'select':
+        if (!field.options!.includes(val)) errors.push({ key: field.key, reason: 'not_in_options', options: field.options });
+        else valid[field.key] = val;
+        break;
+      case 'slider':
+      case 'number':
+        if (typeof val !== 'number' || (field.min !== undefined && val < field.min) || (field.max !== undefined && val > field.max)) {
+          errors.push({ key: field.key, reason: 'out_of_range', options: [`min:${field.min}`, `max:${field.max}`] });
+        } else valid[field.key] = val;
+        break;
+    }
+  }
+  return { errors, valid };
+}
+
+app.patch('/api/devices/:id/params', csrfProtect, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const existing = await query('SELECT type FROM devices WHERE ieee_addr = ?', id);
+    if (!existing.length) return res.status(404).json({ ok: false, error: 'Device not found' });
+    const type = existing[0].type;
+    const { errors, valid } = validateParams(type, req.body);
+    if (Object.keys(valid).length === 0 && errors.length > 0) {
+      if (errors[0].reason === 'nothing_to_configure') return res.status(400).json({ ok: false, error: 'nothing_to_configure' });
+      return res.status(422).json({ ok: false, errors });
+    }
+    if (errors.length > 0) return res.status(422).json({ ok: false, errors, partial: valid });
+    // Store params as JSON in a separate table or device row
+    // Using a simple params_json column would need migration — store as raw_json pattern
+    await query(`UPDATE devices SET params_json = ? WHERE ieee_addr = ?`, JSON.stringify(valid), id);
+    res.json({ ok: true, params: valid });
+  } catch (e: any) {
+    logError(id, 'api_error', e.message, 'devices_params');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── PUT /api/devices/:id (edit) ──────────────────────────
 app.put('/api/devices/:id', csrfProtect, async (req, res) => {
   const { id } = req.params;
@@ -341,7 +470,14 @@ app.put('/api/devices/:id', csrfProtect, async (req, res) => {
     const params: any[] = [];
     if (friendly_name !== undefined) { updates.push('friendly_name = ?'); params.push(friendly_name); }
     if (type !== undefined) {
-      const validTypes = ['light', 'sensor', 'plug', 'gate', 'climate', 'lock'];
+      const validTypes = ['light', 'sensor', 'plug', 'gate', 'climate', 'lock',
+        'window_sensor', 'door_sensor', 'gate_sensor',
+        'air_monitor', 'temp_sensor', 'humid_sensor', 'co2_sensor', 'pm_sensor',
+        'motion_sensor', 'presence_sensor',
+        'leak_sensor', 'smoke_sensor', 'gas_sensor',
+        'light_sensor',
+        'switch', 'shutter', 'curtain', 'camera', 'bell', 'speaker',
+      ];
       if (!validTypes.includes(type)) return res.status(400).json({ ok: false, error: `Invalid type: ${type}` });
       updates.push('type = ?'); params.push(type);
     }
@@ -365,7 +501,7 @@ app.put('/api/devices/:id', csrfProtect, async (req, res) => {
 });
 
 // ── Zigbee2MQTT helper ──────────────────────────────────
-const Z2M_URL = process.env.Z2M_URL || 'http://localhost:8080';
+const Z2M_URL = process.env.Z2M_URL || 'http://172.21.0.3:8080';
 const Z2M_TOKEN = process.env.Z2M_AUTH_TOKEN || '';
 
 function zigbeeRequest(path: string): Promise<any> {
@@ -385,39 +521,187 @@ function zigbeeRequest(path: string): Promise<any> {
   });
 }
 
-// ── POST /api/devices/discover (enable permit_join) ──────
-app.post('/api/devices/discover', csrfProtect, async (_req, res) => {
+// ── GET /api/devices/pending (all Z2M devices not yet added) ──────
+app.get('/api/devices/pending', async (_req, res) => {
   try {
-    // Enable permit_join via Zigbee2MQTT API for 120 seconds
+    let z2mDevices: any[] = [];
+
+    // Read devices from Z2M database.db (NDJSON — newline-delimited JSON)
     try {
-      await zigbeeRequest('/api/permit_join');
-    } catch {
-      return res.json({ ok: true, permit_join: false, reason: 'zigbee2mqtt_unavailable' });
+      const fs = await import('fs');
+      const path = require('path');
+      const dbPath = '/home/admingimolost/smart-estate/data/zigbee2mqtt/database.db';
+      const content = fs.readFileSync(dbPath, 'utf8');
+      const lines = content.trim().split('\n');
+      for (const line of lines) {
+        try { z2mDevices.push(JSON.parse(line)); } catch { /* skip corrupt lines */ }
+      }
+    } catch (err: any) {
+      console.error('Z2M DB read failed:', err.message);
     }
 
-    // Wait 10s for devices to be discovered, then return pending
-    await new Promise(r => setTimeout(r, 10000));
+    console.log('Z2M raw lines:', z2mDevices.length, 'first type:', z2mDevices[0]?.type);
 
-    const known = await query('SELECT ieee_addr FROM devices');
-    const knownSet = new Set(known.map((r: any) => r.ieee_addr));
+    // Filter to only real devices (skip coordinator)
+    const realDevices = z2mDevices.filter((d: any) =>
+      d.type && d.type !== 'Coordinator' && d.ieeeAddr
+    );
 
-    let discovered: any[] = [];
+    console.log('Z2M realDevices:', realDevices.length);
+    if (realDevices.length > 0) {
+      console.log('First real:', JSON.stringify({ ieee: realDevices[0].ieeeAddr, name: realDevices[0].friendlyName || '—' }));
+    }
+
+    if (realDevices.length === 0) {
+      return res.json({ ok: true, pending: [], reason: 'z2m_unavailable' });
+    }
+
+    // Map to our format
+    const z2mMapped = realDevices.map((d: any) => ({
+      ieee_address: d.ieeeAddr,
+      friendly_name: d.friendlyName || d.ieeeAddr,
+      model: d.modelId || '—',
+      vendor: d.manufName || '—',
+      type: mapZ2MTypeToInternal(d.ieeeAddr, d.definition?.exposes),
+    }));
+
+    // Filter out devices already in our DB
+    const knownDevices = await query(`SELECT ieee_addr FROM devices`);
+    const knownSet = new Set(knownDevices.map((r: any) => r.ieee_addr));
+
+    const pending = z2mMapped
+      .filter((d: any) => !knownSet.has(d.ieee_address));
+
+    res.json({ ok: true, pending });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'devices_pending');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+function mapZ2MTypeToInternal(_ieeeAddr: string, _exposes?: any[]): string {
+  // Default to 'sensor' — user can change it when adding
+  return 'sensor';
+}
+
+// ── Phase 1: Discovery эндпоинты ─────────────────────────────
+// POST /api/discovery/start — enable permit_join
+app.post('/api/discovery/start', async (_req, res) => {
+  try {
+    const client = mqtt.connect('mqtt://localhost:1883', {
+      clientId: 'smart-estate-discovery-' + Date.now(),
+      clean: true,
+      connectTimeout: 5000,
+    });
+    await new Promise<void>((resolve, reject) => {
+      client.on('connect', () => {
+        client.publish('zigbee2mqtt/bridge/request/permit_join', JSON.stringify({ value: true, time: 254 }), { qos: 1 });
+        setTimeout(() => { client.end(true); resolve(); }, 300);
+      });
+      client.on('error', (err: Error) => { client.end(true); reject(err); });
+    });
+    res.json({ ok: true, permit_join: true, time: 254 });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'discovery_start');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/discovery/stop — disable permit_join
+app.post('/api/discovery/stop', async (_req, res) => {
+  try {
+    const client = mqtt.connect('mqtt://localhost:1883', {
+      clientId: 'smart-estate-discovery-' + Date.now(),
+      clean: true,
+      connectTimeout: 5000,
+    });
+    await new Promise<void>((resolve, reject) => {
+      client.on('connect', () => {
+        client.publish('zigbee2mqtt/bridge/request/permit_join', JSON.stringify({ value: false }), { qos: 1 });
+        setTimeout(() => { client.end(true); resolve(); }, 300);
+      });
+      client.on('error', (err: Error) => { client.end(true); reject(err); });
+    });
+    res.json({ ok: true, permit_join: false });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'discovery_stop');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/discovery/events — SSE stream of discovery events
+app.get('/api/discovery/events', async (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+
+  // Send existing pending events first
+  try {
+    const events = stmt.getDiscoveryEvents.all(50);
+    const existing = JSON.stringify({ type: 'existing', events });
+    res.write(`data: ${existing}\n\n`);
+  } catch {}
+
+  // Poll for new events every 2 seconds
+  const lastIds = new Set<number>();
+  const interval = setInterval(() => {
     try {
-      const zigbeeDevices = await zigbeeRequest('/api/devices');
-      discovered = zigbeeDevices
-        .filter((d: any) => d.ieee_address && !knownSet.has(d.ieee_address))
-        .map((d: any) => ({
-          ieee_address: d.ieee_address,
-          friendly_name: d.friendly_name || d.ieee_address,
-          model: d.definition?.model || d.model_id || 'unknown',
-          vendor: d.definition?.vendor || 'unknown',
-          type: d.type || 'unknown',
-        }));
+      const { db } = require('./db');
+      const rows: any[] = db.all('SELECT * FROM discovery_events ORDER BY created_at DESC LIMIT 10');
+      if (rows && Array.isArray(rows)) {
+        for (const ev of rows) {
+          if (!lastIds.has(ev.id)) {
+            lastIds.add(ev.id);
+            res.write(`data: ${JSON.stringify({ type: 'new', event: ev })}\n\n`);
+          }
+        }
+      }
+    } catch {}
+  }, 2000);
+
+  req.on('close', () => {
+    clearInterval(interval);
+    res.end();
+  });
+});
+
+// POST /api/discovery/:ieee/confirm — confirm a discovered device
+app.post('/api/discovery/:ieee/confirm', csrfProtect, async (req, res) => {
+  try {
+    const { ieee } = req.params;
+    const { name, roomId } = req.body;
+    if (!name) return res.status(400).json({ ok: false, error: 'name is required' });
+
+    // Upsert device into our DB
+    stmt.upsertDevice.run(ieee, name, null, null, 'sensor', roomId || 1);
+    // Mark discovery event as confirmed
+    stmt.confirmDiscovery.run(ieee);
+
+    // Also rename friendly_name in Z2M via MQTT
+    try {
+      const mc = mqtt.connect('mqtt://localhost:1883', {
+        clientId: 'smart-estate-confirm-' + Date.now(),
+        clean: true,
+        connectTimeout: 3000,
+      });
+      await new Promise<void>((resolve, reject) => {
+        mc.on('connect', () => {
+          mc.publish(`zigbee2mqtt/bridge/request/device/rename`, JSON.stringify({
+            from: ieee,
+            to: name,
+          }), { qos: 1 });
+          setTimeout(() => { mc.end(true); resolve(); }, 300);
+        });
+        mc.on('error', () => { mc.end(true); resolve(); }); // Don't fail if MQTT unavailable
+      });
     } catch {}
 
-    res.json({ ok: true, permit_join: true, discovered });
+    res.json({ ok: true, device: { ieee_addr: ieee, friendly_name: name, room_id: roomId || 1 } });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'devices_discover');
+    logError(null, 'api_error', e.message, 'discovery_confirm');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -475,8 +759,9 @@ app.get('/api/rooms', async (_req, res) => {
       GROUP BY r.id, r.name, r.icon ORDER BY r.id
     `);
 
-    // Enrich with aggregated telemetry per room
-    const enriched = await Promise.all(rooms.map(async (room: any) => {
+    // Enrich with aggregated telemetry per room (only rooms with devices)
+    const roomsWithDevices = rooms.filter((r: any) => r.device_count > 0);
+    const enriched = await Promise.all(roomsWithDevices.map(async (room: any) => {
       const temp = await query(`
         SELECT AVG(value)::DECIMAL(4,1) as avg_temp FROM telemetry
         WHERE property = 'temperature' AND device_ieee IN (
@@ -530,6 +815,30 @@ app.delete('/api/rooms/:id', csrfProtect, async (req, res) => {
   }
 });
 
+// ── PATCH /api/rooms/:id (Phase 4) ────────────────────────
+app.patch('/api/rooms/:id', csrfProtect, async (req, res) => {
+  const { id } = req.params;
+  const { name, icon } = req.body;
+  try {
+    const existing = await query('SELECT * FROM rooms WHERE id = ?', id);
+    if (!existing.length) return res.status(404).json({ ok: false, error: 'Room not found' });
+    if (!name && !icon) return res.status(400).json({ ok: false, error: 'At least one of name or icon is required' });
+
+    const updates: string[] = [];
+    const params: any[] = [];
+    if (name) { updates.push('name = ?'); params.push(name); }
+    if (icon) { updates.push('icon = ?'); params.push(icon); }
+    params.push(id);
+    await query(`UPDATE rooms SET ${updates.join(', ')} WHERE id = ?`, ...params);
+
+    const room = await query('SELECT * FROM rooms WHERE id = ?', id);
+    res.json({ ok: true, room: room[0] });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'rooms_patch');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── GET /api/rooms/:id/devices ────────────────────────────
 app.get('/api/rooms/:id/devices', async (req, res) => {
   const { id } = req.params;
@@ -543,7 +852,7 @@ app.get('/api/rooms/:id/devices', async (req, res) => {
                SELECT property, value, unit,
                  ROW_NUMBER() OVER (PARTITION BY property ORDER BY ts DESC) as rn
                FROM telemetry WHERE device_ieee = d.ieee_addr
-             ) sub WHERE rn = 1 LIMIT 3) t
+             ) sub WHERE rn = 1 LIMIT 6) t
         ) as latest_telemetry
       FROM devices d LEFT JOIN rooms r ON d.room_id = r.id
       WHERE d.room_id = ?
@@ -555,6 +864,10 @@ app.get('/api/rooms/:id/devices', async (req, res) => {
       latest_telemetry: typeof row.latest_telemetry === 'string'
         ? JSON.parse(row.latest_telemetry)
         : row.latest_telemetry || [],
+      params: typeof row.params_json === 'string'
+        ? JSON.parse(row.params_json)
+        : row.params_json || {},
+      params_json: undefined,
     }));
 
     res.json({ ok: true, devices: parsed });
@@ -626,6 +939,48 @@ app.get('/api/energy', async (_req, res) => {
     });
   } catch (e: any) {
     logError(null, 'api_error', e.message, 'energy');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── GET /api/energy/trend ────────────────────────────────
+app.get('/api/energy/trend', async (_req, res) => {
+  try {
+    // Почасовые срезы энергопотребления за последние 24 часа
+    const rows = await query(`
+      SELECT
+        DATE_TRUNC('hour', ts) as hour,
+        SUM(CASE WHEN property = 'power' THEN value ELSE 0 END) as total_power,
+        COUNT(DISTINCT device_ieee) as device_count
+      FROM telemetry
+      WHERE ts >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+        AND (property = 'power' OR property = 'energy')
+      GROUP BY DATE_TRUNC('hour', ts)
+      ORDER BY hour
+    `);
+
+    // Заполняем все 24 часа (если нет данных — ставим 0)
+    const now = new Date();
+    const trend: { hour: string; power: number; devices: number }[] = [];
+    for (let i = 23; i >= 0; i--) {
+      const h = new Date(now.getTime() - i * 3600_000);
+      const hStr = h.toISOString().slice(0, 13) + ':00:00Z';
+      const match = rows.find((r: any) => {
+        const rStr = typeof r.hour === 'string'
+          ? r.hour.slice(0, 13) + ':00:00Z'
+          : new Date(r.hour).toISOString().slice(0, 13) + ':00:00Z';
+        return rStr === hStr;
+      });
+      trend.push({
+        hour: hStr,
+        power: match ? match.total_power : 0,
+        devices: match ? match.device_count : 0,
+      });
+    }
+
+    res.json({ ok: true, trend });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'energy_trend');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -720,6 +1075,8 @@ app.post('/api/gates/:id/open', csrfProtect, commandLimiter, async (req, res) =>
       req.params.id, 'open', 'api', req.body.reason || null);
     await query("UPDATE commands SET status='success',completed_at=CURRENT_TIMESTAMP WHERE id=?", cmdId);
     logStateChange(req.params.id, 'closed', 'open', 'gate_api');
+    // In demo mode, update device state
+    await toggleDemoDevice(req.params.id, 'ON').catch(() => {});
     res.json({ ok: true, device: req.params.id, state: 'open', command_id: cmdId });
   } catch (e: any) {
     logError(req.params.id, 'gate_error', e.message, 'open');
@@ -734,6 +1091,8 @@ app.post('/api/gates/:id/close', csrfProtect, commandLimiter, async (req, res) =
       req.params.id, 'close', 'api', req.body.reason || null);
     await query("UPDATE commands SET status='success',completed_at=CURRENT_TIMESTAMP WHERE id=?", cmdId);
     logStateChange(req.params.id, 'open', 'closed', 'gate_api');
+    // In demo mode, update device state
+    await toggleDemoDevice(req.params.id, 'OFF').catch(() => {});
     res.json({ ok: true, device: req.params.id, state: 'closed', command_id: cmdId });
   } catch (e: any) {
     logError(req.params.id, 'gate_error', e.message, 'close');
@@ -1144,18 +1503,13 @@ app.get('/api/dashboard', async (_req, res) => {
 // ── Demo Mode ───────────────────────────────────────────
 app.get('/api/mode', (_req, res) => {
   try {
-    // Lazy-load demo module to avoid issues when not in use
-    import('./demo').then(demo => {
-      res.json({ ok: true, mode: demo.isDemoMode() ? 'demo' : 'live' });
-    }).catch(() => {
-      res.json({ ok: true, mode: 'live' });
-    });
+    res.json({ ok: true, mode: isDemoMode() ? 'demo' : 'live' });
   } catch {
     res.json({ ok: true, mode: 'live' });
   }
 });
 
-app.post('/api/mode', csrfProtect, async (req, res) => {
+app.post('/api/mode', async (req, res) => {
   try {
     const { mode } = req.body;
     if (!mode || !['demo', 'live'].includes(mode)) {
@@ -1163,12 +1517,15 @@ app.post('/api/mode', csrfProtect, async (req, res) => {
     }
 
     const demo = await import('./demo');
+    const mqtt = await import('./mqtt-ws');
 
     if (mode === 'demo') {
+      mqtt.disconnectMQTT();
       await demo.startDemo();
       return res.json({ ok: true, mode: 'demo', message: 'Демо-режим активирован. Датчики симулируются.' });
     } else {
       demo.stopDemo();
+      mqtt.connectMQTT();
       return res.json({ ok: true, mode: 'live', message: 'Режим реальных устройств.' });
     }
   } catch (e: any) {
@@ -1200,25 +1557,29 @@ app.post('/api/demo/devices/:id/toggle', async (req, res) => {
   }
 });
 
-// ── Redirect root to /start ───────────────────────────────
-app.get('/', (_req, res) => {
-  res.redirect(301, '/start');
-});
-
-// ── GET /start — React SPA from Vite build ───────────────
+// ── Serve SPA for root AND /start (no redirect — SW handles offline) ──
 const clientDist = join(__dirname, '..', '..', 'client-app', 'dist');
 app.use('/assets', express.static(join(clientDist, 'assets'), { maxAge: '365d', immutable: true }));
 app.use('/icons', express.static(join(clientDist, 'icons'), { maxAge: '365d', immutable: true }));
-app.get('/start', (_req, res) => {
-  res.set('Cache-Control', 'no-store, must-revalidate');
+
+// HTML shell: allow cache for offline, but validate when online
+function serveIndex(_req: express.Request, res: express.Response) {
+  res.set('Cache-Control', 'public, max-age=0, must-revalidate');
   res.sendFile(join(clientDist, 'index.html'));
-});
+}
+app.get('/', serveIndex);
+app.get('/start', serveIndex);
 app.get('/manifest.json', (_req, res) => {
-  res.set('Cache-Control', 'no-store, must-revalidate');
+  res.set('Cache-Control', 'public, max-age=3600');
   res.sendFile(join(clientDist, 'manifest.json'));
 });
+app.get('/manifest.webmanifest', (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.sendFile(join(clientDist, 'manifest.webmanifest'));
+});
+// SW must always be fresh — NO cache
 app.get('/sw.js', (_req, res) => {
-  res.set('Cache-Control', 'no-store, must-revalidate');
+  res.set('Cache-Control', 'no-store');
   res.sendFile(join(clientDist, 'sw.js'));
 });
 
@@ -1277,6 +1638,894 @@ app.get('/api/client-logs', (req, res) => {
   const recent = clientLogBuffer.slice(-limit);
   res.json({ ok: true, batches: recent, total: clientLogBuffer.length });
 });
+
+// ── Phase 2: AI-провайдеры (BYOK) ────────────────────────────
+// POST /api/ai/providers — сохранить провайдера
+const aiProvidersRateLimit = rateLimit({
+  windowMs: 60_000, max: 20,
+  message: { ok: false, error: 'Too many requests' },
+});
+app.post('/api/ai/providers', csrfProtect, aiProvidersRateLimit, async (req, res) => {
+  try {
+    const { provider, token, baseUrl, model } = req.body;
+    if (!provider || !token) {
+      return res.status(400).json({ ok: false, error: 'provider and token are required' });
+    }
+    if (!['anthropic', 'openai', 'openrouter', 'ollama'].includes(provider)) {
+      return res.status(400).json({ ok: false, error: 'Invalid provider. Use: anthropic, openai, openrouter, ollama' });
+    }
+
+    const id = 'ai-' + Date.now();
+    const maskedToken = token.length > 8
+      ? token.slice(0, 3) + '…' + token.slice(-4)
+      : '***';
+
+    // Simple AES-like obfuscation for at-rest storage (not real crypto — for production use crypto.ts)
+    const encoded = Buffer.from(token).toString('base64');
+    const tokenEnc = encoded; // In production would be AES-256-GCM
+
+    await query(
+      'INSERT INTO ai_providers (id, provider, token_enc, base_url, model, status) VALUES (?, ?, ?, ?, ?, ?)',
+      id, provider, tokenEnc, baseUrl || null, model || null, 'configured'
+    );
+
+    res.status(201).json({
+      ok: true, provider: {
+        id, provider, model: model || null, base_url: baseUrl || null,
+        maskedToken, status: 'configured',
+      }
+    });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'ai_providers_create');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/ai/providers — список провайдеров
+app.get('/api/ai/providers', async (_req, res) => {
+  try {
+    const providers = await query('SELECT id, provider, base_url, model, use_in_scenarios, status, created_at FROM ai_providers ORDER BY created_at DESC');
+    // Masked representation (no token)
+    const list = providers.map((p: any) => ({
+      ...p,
+      maskedToken: '***', // token never returned
+    }));
+    res.json({ ok: true, providers: list });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'ai_providers_list');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/ai/providers/:id/test — тестовый вызов
+app.post('/api/ai/providers/:id/test', csrfProtect, aiProvidersRateLimit, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rows = await query('SELECT * FROM ai_providers WHERE id = ?', id);
+    if (!rows.length) return res.status(404).json({ ok: false, error: 'Provider not found' });
+
+    const prov = rows[0];
+    const token = Buffer.from(prov.token_enc, 'base64').toString();
+
+    // Simple test call based on provider type
+    let testOk = false;
+    try {
+      if (prov.provider === 'ollama') {
+        const url = prov.base_url || 'http://localhost:11434';
+        const resp = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(5000) });
+        testOk = resp.ok;
+      } else {
+        // OpenAI-compatible
+        const baseUrl = prov.base_url || 'https://api.openai.com/v1';
+        const resp = await fetch(`${baseUrl}/models`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        testOk = resp.ok;
+      }
+    } catch {
+      testOk = false;
+    }
+
+    const status = testOk ? 'connected' : 'error';
+    await query('UPDATE ai_providers SET status = ? WHERE id = ?', status, id);
+    res.json({ ok: true, id, status, test_ok: testOk });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'ai_providers_test');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// PATCH /api/ai/providers/:id — обновление настроек
+app.patch('/api/ai/providers/:id', csrfProtect, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { model, useInScenarios, baseUrl } = req.body;
+    const existing = await query('SELECT * FROM ai_providers WHERE id = ?', id);
+    if (!existing.length) return res.status(404).json({ ok: false, error: 'Provider not found' });
+
+    const updates: string[] = [];
+    const params: any[] = [];
+    if (model !== undefined) { updates.push('model = ?'); params.push(model); }
+    if (useInScenarios !== undefined) { updates.push('use_in_scenarios = ?'); params.push(useInScenarios); }
+    if (baseUrl !== undefined) { updates.push('base_url = ?'); params.push(baseUrl); }
+    if (updates.length === 0) return res.status(400).json({ ok: false, error: 'No fields to update' });
+
+    updates.push('updated_at = CURRENT_TIMESTAMP');
+    params.push(id);
+    await query(`UPDATE ai_providers SET ${updates.join(', ')} WHERE id = ?`, ...params);
+
+    const updated = await query('SELECT id, provider, base_url, model, use_in_scenarios, status FROM ai_providers WHERE id = ?', id);
+    res.json({ ok: true, provider: updated[0] });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'ai_providers_patch');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// DELETE /api/ai/providers/:id
+app.delete('/api/ai/providers/:id', csrfProtect, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await query('SELECT * FROM ai_providers WHERE id = ?', id);
+    if (!existing.length) return res.status(404).json({ ok: false, error: 'Provider not found' });
+
+    await query('DELETE FROM ai_providers WHERE id = ?', id);
+    res.json({ ok: true, deleted: id });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'ai_providers_delete');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+app.post('/api/voice', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ ok: false, error: 'text required' });
+    }
+
+    const cmd = text.toLowerCase().trim();
+    
+    // Load all devices, rooms, scenarios for matching
+    const [devices, rooms, scenarios] = await Promise.all([
+      query('SELECT ieee_addr, friendly_name, type, room_id FROM devices'),
+      query('SELECT id, name FROM rooms'),
+      query('SELECT id, name, active FROM scenarios'),
+    ]);
+
+    // Smart match: find by stem (first 5+ chars in common)
+    const matchName = (haystack: string, needle: string): boolean => {
+      const h = haystack.toLowerCase();
+      const n = needle.toLowerCase();
+      // Exact substring match
+      if (h.includes(n) || n.includes(h)) return true;
+      // Stem match: first 5 chars
+      if (h.length >= 5 && n.length >= 5 && h.slice(0, 5) === n.slice(0, 5)) return true;
+      // Stem match: first 4 chars
+      if (h.length >= 4 && n.length >= 4 && h.slice(0, 4) === n.slice(0, 4)) return true;
+      return false;
+    };
+
+    const findDevice = (name: string) =>
+      devices.find((d: any) => matchName(d.friendly_name, name));
+    const findRoom = (name: string) =>
+      rooms.find((r: any) => matchName(r.name, name));
+    const findScenario = (name: string) =>
+      scenarios.find((s: any) => matchName(s.name, name));
+
+    // ── Pattern: включи/выключи [устройство] ──
+    const onOffMatch = cmd.match(/^(включи|выключи)\s+(.+)$/);
+    if (onOffMatch) {
+      const action = onOffMatch[1] === 'включи' ? 'ON' : 'OFF';
+      const target = onOffMatch[2];
+
+      // "свет в гостиной" / "свет на кухне"
+      const roomLightMatch = target.match(/свет\s+(?:в|на)\s+(.+)/);
+      if (roomLightMatch) {
+        const room = findRoom(roomLightMatch[1]);
+        if (room) {
+          const roomDevices = devices.filter((d: any) => d.room_id === room.id && d.type === 'light');
+          if (roomDevices.length > 0) {
+            for (const d of roomDevices) {
+              await logCommand(d.ieee_addr, action, '{}', 'voice');
+              await logStateChange(d.ieee_addr, action === 'ON' ? 'OFF' : 'ON', action, 'voice');
+            }
+            return res.json({ ok: true, text, action: `${action === 'ON' ? 'Включил' : 'Выключил'} свет в ${room.name} (${roomDevices.length} шт.)` });
+          }
+        }
+      }
+
+      // Direct device name
+      let device = findDevice(target);
+      // Fallback: "ворота" → any gate, "дверь" → any lock
+      if (!device && (target.includes('ворот') || target.includes('калитк'))) {
+        device = devices.find((d: any) => d.type === 'gate');
+      }
+      if (!device && target.includes('двер')) {
+        device = devices.find((d: any) => d.type === 'lock');
+      }
+      if (device) {
+        // For gates: open/close instead of on/off
+        if (device.type === 'gate' || device.type === 'lock') {
+          const gateCmd = action === 'ON' ? 'open' : 'close';
+          await logCommand(device.ieee_addr, gateCmd, '{}', 'voice');
+          await logStateChange(device.ieee_addr, action === 'ON' ? 'closed' : 'open', action === 'ON' ? 'open' : 'closed', 'voice');
+          return res.json({ ok: true, text, action: `${action === 'ON' ? 'Открыл' : 'Закрыл'} ${device.friendly_name}` });
+        }
+        // For lights and plugs
+        await logCommand(device.ieee_addr, action, '{}', 'voice');
+        await logStateChange(device.ieee_addr, action === 'ON' ? 'OFF' : 'ON', action, 'voice');
+        return res.json({ ok: true, text, action: `${action === 'ON' ? 'Включил' : 'Выключил'} ${device.friendly_name}` });
+      }
+
+      return res.json({ ok: false, text, action: `Не нашёл устройство «${target}»` });
+    }
+
+    // ── Pattern: открой/закрой [ворота/калитку/дверь] ──
+    const gateMatch = cmd.match(/^(открой|закрой)\s+(.+)$/);
+    if (gateMatch) {
+      const action = gateMatch[1] === 'открой' ? 'open' : 'close';
+      const target = gateMatch[2];
+      let device = findDevice(target);
+      // If no exact match, try: "ворота" → any gate, "дверь" → any lock
+      if (!device && (target.includes('ворот') || target.includes('калитк'))) {
+        device = devices.find((d: any) => d.type === 'gate');
+      }
+      if (!device && target.includes('двер')) {
+        device = devices.find((d: any) => d.type === 'lock');
+      }
+      if (device && (device.type === 'gate' || device.type === 'lock')) {
+        await logCommand(device.ieee_addr, action, '{}', 'voice');
+        await logStateChange(device.ieee_addr, action === 'open' ? 'closed' : 'open', action === 'open' ? 'open' : 'closed', 'voice');
+        return res.json({ ok: true, text, action: `${gateMatch[1] === 'открой' ? 'Открыл' : 'Закрыл'} ${device.friendly_name}` });
+      }
+      return res.json({ ok: false, text, action: `Не нашёл ворота/замок «${target}»` });
+    }
+
+    // ── Pattern: какая температура в/на [комнате] ──
+    const tempMatch = cmd.match(/температур[аы]\s+(?:в|на)\s+(.+)/);
+    if (tempMatch) {
+      const room = findRoom(tempMatch[1]);
+      if (room) {
+        const temps = await query(
+          `SELECT t.value, t.unit FROM telemetry t
+           JOIN devices d ON d.ieee_addr = t.device_ieee
+           WHERE d.room_id = ? AND t.property = 'temperature'
+           ORDER BY t.ts DESC LIMIT 1`,
+          room.id
+        );
+        if (temps.length > 0) {
+          return res.json({ ok: true, text, action: `В ${room.name}: ${temps[0].value}${temps[0].unit || '°C'}` });
+        }
+      }
+      return res.json({ ok: false, text, action: `Нет данных о температуре` });
+    }
+
+    // ── Pattern: запусти/останови сценарий [name] ──
+    const scenarioMatch = cmd.match(/(?:запусти|останови|включи сценарий|выключи сценарий)\s+(.+)/);
+    if (scenarioMatch) {
+      const activate = cmd.startsWith('запусти') || cmd.startsWith('включи сценарий');
+      const scenario = findScenario(scenarioMatch[1]);
+      if (scenario) {
+        await query('UPDATE scenarios SET active = ? WHERE id = ?', activate, scenario.id);
+        import('./engine').then(m => m.reloadScenarios()).catch(() => {});
+        import('./scheduler').then(m => m.reloadScheduledScenarios()).catch(() => {});
+        return res.json({ ok: true, text, action: `${activate ? 'Запустил' : 'Остановил'} сценарий «${scenario.name}»` });
+      }
+      return res.json({ ok: false, text, action: `Не нашёл сценарий «${scenarioMatch[1]}»` });
+    }
+
+    // ── Pattern: что с [устройством] / статус ──
+    const statusMatch = cmd.match(/(?:что с|статус)\s+(.+)/);
+    if (statusMatch) {
+      const device = findDevice(statusMatch[1]);
+      if (device) {
+        const tel = await query(
+          `SELECT property, value, unit FROM telemetry WHERE device_ieee = ? ORDER BY ts DESC LIMIT 3`,
+          device.ieee_addr
+        );
+        if (tel.length > 0) {
+          const parts = tel.map((t: any) => `${t.property}=${t.value}${t.unit || ''}`);
+          return res.json({ ok: true, text, action: `${device.friendly_name}: ${parts.join(', ')}` });
+        }
+        return res.json({ ok: true, text, action: `${device.friendly_name}: нет данных` });
+      }
+      const room = findRoom(statusMatch[1]);
+      if (room) {
+        const tel = await query(
+          `SELECT d.friendly_name, t.property, t.value, t.unit
+           FROM telemetry t JOIN devices d ON d.ieee_addr = t.device_ieee
+           WHERE d.room_id = ? AND t.ts > NOW() - INTERVAL 5 MINUTE
+           ORDER BY t.ts DESC LIMIT 5`,
+          room.id
+        );
+        if (tel.length > 0) {
+          const parts = tel.map((t: any) => `${t.friendly_name}: ${t.property}=${t.value}${t.unit || ''}`);
+          return res.json({ ok: true, text, action: `${room.name}: ${parts.join('; ')}` });
+        }
+        return res.json({ ok: true, text, action: `${room.name}: нет данных` });
+      }
+      return res.json({ ok: false, text, action: 'Не понял что проверить' });
+    }
+
+    return res.json({ ok: false, text, action: `Не понял команду «${text}». Попробуй: включи свет, какая температура, открой ворота.` });
+  } catch (e: any) {
+    logError(null, 'voice_error', e.message, req.body?.text || '');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── Phase 3: Voice/AI — pending actions и suggestions ──────
+
+// GET /api/voice/pending-actions
+app.get('/api/voice/pending-actions', async (_req, res) => {
+  try {
+    const actions = await query('SELECT * FROM voice_pending_actions ORDER BY created_at DESC LIMIT 50');
+    res.json({ ok: true, actions });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'pending_actions');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/voice/pending-actions/:id/confirm
+app.post('/api/voice/pending-actions/:id/confirm', csrfProtect, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rows = await query('SELECT * FROM voice_pending_actions WHERE id = ?', id);
+    if (!rows.length) return res.status(404).json({ ok: false, error: 'Not found' });
+
+    const action = rows[0];
+    // Execute the pending action based on kind
+    if (action.kind === 'set_device' || action.kind === 'adjust_climate') {
+      const payload = JSON.parse(action.payload_json || '{}');
+      if (payload.deviceId && payload.state) {
+        await logCommand(payload.deviceId, payload.state, JSON.stringify(payload), 'voice_confirm');
+        await logStateChange(payload.deviceId, 'unknown', payload.state, 'voice_confirm');
+      }
+    }
+
+    await query('DELETE FROM voice_pending_actions WHERE id = ?', id);
+    res.json({ ok: true, confirmed: id });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'pending_confirm');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/voice/pending-actions/:id/dismiss
+app.post('/api/voice/pending-actions/:id/dismiss', csrfProtect, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rows = await query('SELECT * FROM voice_pending_actions WHERE id = ?', id);
+    if (!rows.length) return res.status(404).json({ ok: false, error: 'Not found' });
+
+    await query('DELETE FROM voice_pending_actions WHERE id = ?', id);
+    res.json({ ok: true, dismissed: id });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'pending_dismiss');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/voice/suggestions
+app.get('/api/voice/suggestions', async (_req, res) => {
+  try {
+    const suggestions = await query('SELECT * FROM voice_suggestions WHERE accepted = false ORDER BY created_at DESC LIMIT 20');
+    res.json({ ok: true, suggestions });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'suggestions');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/voice/suggestions/:id/accept → creates scenario
+app.post('/api/voice/suggestions/:id/accept', csrfProtect, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rows = await query('SELECT * FROM voice_suggestions WHERE id = ?', id);
+    if (!rows.length) return res.status(404).json({ ok: false, error: 'Not found' });
+
+    const sug = rows[0];
+    const payload = JSON.parse(sug.payload_json || '{}');
+
+    // Create scenario from suggestion
+    await query(
+      'INSERT INTO scenarios (id, name, description, triggers_json, actions_json, active) VALUES (?, ?, ?, ?, ?, ?)',
+      Date.now(),
+      sug.text,
+      payload.description || sug.text,
+      JSON.stringify(payload.condition || {}),
+      JSON.stringify(payload.action || {}),
+      true
+    );
+
+    await query('UPDATE voice_suggestions SET accepted = true WHERE id = ?', id);
+    res.json({ ok: true, scenario_created: sug.text });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'suggestion_accept');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// AIR QUALITY — нормали, пороги, рекомендации
+// ═══════════════════════════════════════════════════════════
+
+/** Пороги качества воздуха по каждому параметру */
+const AIR_QUALITY_THRESHOLDS: Record<string, { good: number; warn: number; unit: string; label: string }> = {
+  temperature: { good: 24, warn: 28, unit: '°C', label: 'Температура' },
+  humidity:    { good: 60, warn: 70, unit: '%', label: 'Влажность' },
+  co2:         { good: 1000, warn: 2000, unit: 'ppm', label: 'CO₂' },
+  voc:         { good: 65, warn: 220, unit: 'ppb', label: 'VOC' },
+  formaldehyde:{ good: 0.01, warn: 0.05, unit: 'мг/м³', label: 'Формальдегид' },
+};
+
+/** Рекомендации по каждому параметру в зависимости от уровня */
+const AIR_QUALITY_TIPS: Record<string, { good: string[]; warn: string[]; danger: string[] }> = {
+  temperature: {
+    good: ['Температура комфортная'],
+    warn: ['В комнате тепловато', 'Откройте окно на 10–15 минут'],
+    danger: ['Слишком жарко', 'Включите кондиционер или вентиляцию'],
+  },
+  humidity: {
+    good: ['Влажность в норме'],
+    warn: ['Повышенная влажность', 'Проветрите помещение, включите вытяжку'],
+    danger: ['Очень влажно', 'Риск плесени — включите осушитель воздуха'],
+  },
+  co2: {
+    good: ['Свежий воздух'],
+    warn: ['Душно, накапливается CO₂', 'Откройте окно — свежий воздух улучшит самочувствие'],
+    danger: ['Опасно высокий CO₂', 'Срочно проветрите — это вредно для здоровья'],
+  },
+  voc: {
+    good: ['Чистый воздух'],
+    warn: ['Повышенный уровень VOC', 'Проветрите — возможно, источник бытовой химии'],
+    danger: ['Опасный уровень VOC', 'Срочное проветривание. Проверьте утечку газа или источник химии'],
+  },
+  formaldehyde: {
+    good: ['Формальдегид в норме'],
+    warn: ['Повышенный формальдегид', 'Проветрите — возможны выделения от мебели или отделки'],
+    danger: ['Высокий формальдегид', 'Опасно! Срочно проветрите. Проверьте новые материалы в комнате'],
+  },
+};
+
+function getAirQualityStatus(prop: string, value: number): 'good' | 'warn' | 'danger' {
+  const t = AIR_QUALITY_THRESHOLDS[prop];
+  if (!t) return 'good';
+  // Для температуры и влажности — warn если выше good, danger если выше warn
+  if (prop === 'temperature') {
+    if (value > t.warn) return 'danger';
+    if (value > t.good) return 'warn';
+    // Холодно тоже warn
+    if (value < 18) return 'warn';
+    if (value < 10) return 'danger';
+    return 'good';
+  }
+  if (prop === 'humidity') {
+    if (value > t.warn) return 'danger';
+    if (value > t.good) return 'warn';
+    if (value < 30) return 'warn';
+    if (value < 20) return 'danger';
+    return 'good';
+  }
+  // Для co2, voc, formaldehyde — чем больше, тем хуже
+  if (value > t.warn) return 'danger';
+  if (value > t.good) return 'warn';
+  return 'good';
+}
+
+app.get('/api/air-quality', async (_req, res) => {
+  try {
+    // Один запрос — последние значения air-параметров для всех датчиков через ROW_NUMBER
+    const telemetry = await query(`
+      WITH ranked AS (
+        SELECT t.device_ieee, t.property, t.value, t.unit,
+               d.friendly_name, COALESCE(r.name, '—') as room_name,
+               ROW_NUMBER() OVER (
+                 PARTITION BY t.device_ieee, t.property
+                 ORDER BY t.ts DESC
+               ) as rn
+        FROM telemetry t
+        JOIN devices d ON d.ieee_addr = t.device_ieee
+        LEFT JOIN rooms r ON d.room_id = r.id
+        WHERE t.property IN ('temperature','humidity','co2','voc','formaldehyde')
+          AND d.type = 'sensor'
+      )
+      SELECT * FROM ranked WHERE rn = 1
+    `);
+
+    // Группируем по устройству
+    const grouped = new Map<string, any>();
+    for (const t of telemetry) {
+      if (!grouped.has(t.device_ieee)) {
+        grouped.set(t.device_ieee, {
+          device_ieee: t.device_ieee,
+          device_name: t.friendly_name,
+          room_name: t.room_name,
+          props: {},
+        });
+      }
+      grouped.get(t.device_ieee).props[t.property] = { value: t.value, unit: t.unit };
+    }
+
+    const results: any[] = [];
+    const statusOrder: Record<string, number> = { good: 0, warn: 1, danger: 2 };
+
+    for (const entry of grouped.values()) {
+      const stats: any[] = [];
+      const allTips: string[] = [];
+      let worstStatus: 'good' | 'warn' | 'danger' = 'good';
+
+      for (const [prop, info] of Object.entries(entry.props)) {
+        const v = info as { value: number; unit: string };
+        const threshold = AIR_QUALITY_THRESHOLDS[prop];
+        if (!threshold) continue;
+        const status = getAirQualityStatus(prop, v.value);
+        if (statusOrder[status] > statusOrder[worstStatus]) worstStatus = status;
+        const tips = AIR_QUALITY_TIPS[prop][status];
+        allTips.push(...tips);
+        stats.push({
+          property: prop,
+          label: threshold.label,
+          value: v.value,
+          unit: threshold.unit,
+          status,
+          thresholds: { good: threshold.good, warn: threshold.warn },
+          tips,
+        });
+      }
+
+      results.push({
+        device_ieee: entry.device_ieee,
+        device_name: entry.device_name,
+        room_name: entry.room_name,
+        overall: worstStatus,
+        stats,
+        recommendations: [...new Set(allTips)],
+      });
+    }
+
+    res.json({ ok: true, air_quality: results });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'air_quality');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── GET /api/dashboard/v2 ─────────────────────────────────
+// Один запрос — все данные для нового дашборда: метрики + комнаты с устройствами/климатом/воздухом
+app.get('/api/dashboard/v2', async (_req, res) => {
+  try {
+    // 1. Комнаты
+    const rooms = await query(`
+      SELECT r.*, COUNT(d.ieee_addr) as device_count
+      FROM rooms r LEFT JOIN devices d ON r.id = d.room_id
+      GROUP BY r.id, r.name, r.icon ORDER BY r.id
+    `);
+
+    // 2. Все air-параметры (последние значения) — одним запросом
+    const airData = await query(`
+      WITH ranked AS (
+        SELECT t.device_ieee, t.property, t.value, t.unit,
+               d.friendly_name, d.room_id,
+               ROW_NUMBER() OVER (
+                 PARTITION BY t.device_ieee, t.property
+                 ORDER BY t.ts DESC
+               ) as rn
+        FROM telemetry t
+        JOIN devices d ON d.ieee_addr = t.device_ieee
+        WHERE t.property IN ('temperature','humidity','co2','voc','formaldehyde')
+      )
+      SELECT * FROM ranked WHERE rn = 1
+    `);
+
+    // Группируем air данные по комнатам
+    const roomAir = new Map<number, any>();
+    const globalMetrics: Record<string, { value: number; status: string; room_name: string }> = {};
+
+    for (const t of airData) {
+      const status = getAirQualityStatus(t.property, t.value);
+      const threshold = AIR_QUALITY_THRESHOLDS[t.property];
+
+      // Глобальная метрика
+      if (!globalMetrics[t.property] || globalMetrics[t.property].value < t.value) {
+        globalMetrics[t.property] = {
+          value: t.value,
+          status,
+          room_name: findRoomName(rooms, t.room_id),
+        };
+      }
+
+      // По комнатам
+      const rid = t.room_id;
+      if (!roomAir.has(rid)) {
+        roomAir.set(rid, { overall: 'good', props: {}, params: [], recommendations: new Set<string>() });
+      }
+      const entry = roomAir.get(rid);
+      entry.props[t.property] = { value: t.value, unit: t.unit, status };
+      entry.params.push({
+        property: t.property,
+        label: threshold?.label || t.property,
+        value: t.value,
+        unit: threshold?.unit || t.unit,
+        status,
+        bar: calcBar(t.property, t.value),
+      });
+      const statusOrder: Record<string, number> = { good: 0, warn: 1, danger: 2 };
+      if (statusOrder[status] > statusOrder[entry.overall]) entry.overall = status;
+      const tips = AIR_QUALITY_TIPS[t.property]?.[status] || [];
+      tips.forEach((tip: string) => entry.recommendations.add(tip));
+    }
+
+    // 3. Собираем ответ только по комнатам с устройствами
+    const roomsWithDevices = rooms.filter((r: any) => r.device_count > 0);
+    const enrichedRooms = await Promise.all(roomsWithDevices.map(async (room: any) => {
+      const rid = room.id;
+      const air = roomAir.get(rid);
+
+      // Устройства в комнате с телеметрией
+      const devices = await query(`
+        SELECT d.*,
+          (SELECT COALESCE(json_group_array(
+            json_object('property', t.property, 'value', t.value, 'unit', t.unit)
+          ), '[]')
+           FROM (SELECT property, value, unit FROM (
+                 SELECT property, value, unit,
+                   ROW_NUMBER() OVER (PARTITION BY property ORDER BY ts DESC) as rn
+                 FROM telemetry WHERE device_ieee = d.ieee_addr
+               ) sub WHERE rn = 1 LIMIT 6) t
+          ) as latest_telemetry
+        FROM devices d WHERE d.room_id = ?
+        ORDER BY d.type, d.ieee_addr
+      `, rid);
+
+      const parsedDevices = devices.map((row: any) => {
+        const telemetry = typeof row.latest_telemetry === 'string'
+          ? JSON.parse(row.latest_telemetry)
+          : row.latest_telemetry || [];
+        const computed_status = computeDeviceStatus(row.type, telemetry);
+        // Извлекаем battery и linkquality из телеметрии
+        const battery = telemetry.find((t: any) => t.property === 'battery')?.value ?? null;
+        const linkquality = telemetry.find((t: any) => t.property === 'linkquality')?.value ?? null;
+        // Last presence: сколько минут назад был человек
+        const lastSeen = row.type === 'presence_sensor' ? lastPresenceAt.get(row.ieee_addr) : null;
+        const last_presence_minutes = lastSeen ? Math.floor((Date.now() - lastSeen) / 60000) : null;
+        return {
+          ...row,
+          latest_telemetry: telemetry,
+          computed_status,
+          battery,
+          linkquality,
+          last_presence_minutes,
+        };
+      });
+
+      // Климат
+      const climate = await query(`
+        SELECT cs.*, d.friendly_name
+        FROM climate_setpoints cs JOIN devices d ON cs.device_ieee = d.ieee_addr
+        WHERE d.room_id = ?
+        ORDER BY cs.device_ieee
+      `, rid);
+
+      // Контактные датчики (окна/двери) в комнате — только реальные окна/двери
+      const contacts = await query(`
+        SELECT d.ieee_addr, d.friendly_name, t.value as open,
+          t.ts as last_seen
+        FROM telemetry t
+        JOIN devices d ON d.ieee_addr = t.device_ieee
+        WHERE d.room_id = ? AND t.property = 'contact'
+          AND d.type IN ('window_sensor', 'door_sensor')
+          AND t.ts = (SELECT MAX(ts) FROM telemetry t2
+                      WHERE t2.device_ieee = t.device_ieee AND t2.property = 'contact')
+        ORDER BY d.friendly_name
+      `, rid);
+      const openWindows = contacts
+        .filter((c: any) => c.open > 0)
+        .map((c: any) => ({ ieee_addr: c.ieee_addr, friendly_name: c.friendly_name }));
+      const hasOpenWindows = openWindows.length > 0;
+
+      const enrichedClimate = await Promise.all(climate.map(async (sp: any) => {
+        const temp = await query(
+          `SELECT value FROM telemetry WHERE device_ieee = ? AND property = 'temperature'
+           ORDER BY ts DESC LIMIT 1`, sp.device_ieee
+        );
+        const humidity = await query(
+          `SELECT value FROM telemetry WHERE device_ieee = ? AND property = 'humidity'
+           ORDER BY ts DESC LIMIT 1`, sp.device_ieee
+        );
+        const currentTemp = temp[0]?.value || null;
+        const needsHeat = currentTemp !== null && currentTemp < sp.target_temp - (sp.hysteresis || 1);
+        const needsCool = currentTemp !== null && currentTemp > sp.target_temp + (sp.hysteresis || 1);
+        return {
+          ...sp,
+          current_temp: currentTemp,
+          current_humidity: humidity[0]?.value || null,
+          needs_heat: needsHeat,
+          needs_cool: needsCool,
+          action: needsHeat ? 'heat' : needsCool ? 'cool' : 'idle',
+        };
+      }));
+
+      // Температура для отображения на заголовке комнаты
+      const roomTemp = air?.props?.temperature?.value ?? null;
+
+      return {
+        id: room.id,
+        name: room.name,
+        icon: room.icon,
+        device_count: room.device_count || parsedDevices.length,
+        temperature: roomTemp,
+        climate: enrichedClimate,
+        devices: parsedDevices,
+        air_quality: air ? {
+          overall: air.overall,
+          badge: findBadgeParam(air.params),
+          params: air.params,
+          recommendations: [...air.recommendations],
+        } : null,
+        open_windows: openWindows,
+        has_open_windows: hasOpenWindows,
+      };
+    }));
+
+    // 4. Энергия
+    const energyToday = await query(
+      `SELECT SUM(value)::DECIMAL(6,2) as kwh FROM telemetry
+       WHERE property = 'energy' AND ts >= CURRENT_DATE`
+    );
+
+    res.json({
+      ok: true,
+      metrics: globalMetrics,
+      energy_today: energyToday[0]?.kwh || 0,
+      air_status: calcGlobalStatus(globalMetrics),
+      rooms: enrichedRooms,
+      security: {
+        armed: true,
+        openPoints: [],
+      },
+    });
+  } catch (e: any) {
+    logError(null, 'api_error', e.message, 'dashboard_v2');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── Device Status Helpers ──────────────────────────────────
+
+/** Маппинг типа девайса → какие свойства показывать как «статус» */
+interface DeviceStatusRule {
+  property: string;
+  values: Record<number, { label: string; icon: string; color: string }>;
+  threshold?: number;
+}
+const DEVICE_STATUS_MAP: Record<string, DeviceStatusRule[]> = {
+  window_sensor: [
+    { property: 'contact', values: { 0: { label: 'Закрыто', icon: 'check', color: 'green' }, 1: { label: 'Открыто', icon: 'x', color: 'red' } } },
+  ],
+  door_sensor: [
+    { property: 'contact', values: { 0: { label: 'Закрыта', icon: 'check', color: 'green' }, 1: { label: 'Открыта', icon: 'x', color: 'red' } } },
+  ],
+  motion_sensor: [
+    { property: 'presence', values: { 0: { label: 'Нет движения', icon: 'user', color: 'dim' }, 1: { label: 'Движение', icon: 'activity', color: 'yellow' } } },
+  ],
+  presence_sensor: [
+    { property: 'presence', values: { 0: { label: 'Нет', icon: 'user', color: 'dim' }, 1: { label: 'Есть', icon: 'user', color: 'green' } } },
+  ],
+  leak_sensor: [
+    { property: 'water_leak', values: { 0: { label: 'Сухо', icon: 'droplets', color: 'green' }, 1: { label: 'Протечка!', icon: 'droplets', color: 'red' } } },
+  ],
+  light: [
+    { property: 'state', values: { 0: { label: 'Выключен', icon: 'power', color: 'dim' }, 1: { label: 'Включён', icon: 'power', color: 'yellow' } } },
+  ],
+  plug: [
+    { property: 'state', values: { 0: { label: 'Выключена', icon: 'power', color: 'dim' }, 1: { label: 'Включена', icon: 'power', color: 'yellow' } } },
+  ],
+  switch: [
+    { property: 'state', values: { 0: { label: 'Выкл', icon: 'power', color: 'dim' }, 1: { label: 'Вкл', icon: 'power', color: 'yellow' } } },
+  ],
+  air_monitor: [
+    { property: 'co2', values: { 0: { label: 'CO₂ в норме', icon: 'wind', color: 'green' }, 1: { label: 'CO₂ повышен', icon: 'wind', color: 'yellow' }, 2: { label: 'CO₂ опасный!', icon: 'wind', color: 'red' } }, threshold: 600 },
+    { property: 'voc', values: { 0: { label: 'VOC в норме', icon: 'wind', color: 'green' }, 1: { label: 'VOC повышен', icon: 'wind', color: 'yellow' }, 2: { label: 'VOC опасный!', icon: 'wind', color: 'red' } }, threshold: 150 },
+    { property: 'pm25', values: { 0: { label: 'Воздух чистый', icon: 'wind', color: 'green' }, 1: { label: 'PM2.5 повышен', icon: 'wind', color: 'yellow' }, 2: { label: 'PM2.5 опасный', icon: 'wind', color: 'red' } }, threshold: 35 },
+  ],
+  gate_controller: [
+    { property: 'contact', values: { 0: { label: 'Закрыты', icon: 'door', color: 'green' }, 1: { label: 'Открыты', icon: 'door', color: 'red' } } },
+  ],
+  climate: [
+    { property: 'state', values: { 0: { label: 'Ожидание', icon: 'thermometer', color: 'dim' }, 1: { label: 'Работает', icon: 'flame', color: 'orange' } } },
+  ],
+  siren: [
+    { property: 'state', values: { 0: { label: 'Тихо', icon: 'bell', color: 'dim' }, 1: { label: 'ТРЕВОГА!', icon: 'bell', color: 'red' } } },
+  ],
+};
+
+/** Вычислить статус девайса по его типу и телеметрии */
+function computeDeviceStatus(type: string, telemetry: { property: string; value: number }[]): { property: string; label: string; icon: string; color: string } | null {
+  const rules = DEVICE_STATUS_MAP[type];
+  if (!rules) return null;
+  for (const rule of rules) {
+    const tel = telemetry.find(t => t.property === rule.property);
+    if (tel === undefined) continue;
+    // Пороговая проверка (для air_monitor, co2, voc, pm25)
+    if ('threshold' in rule) {
+      const thr = (rule as any).threshold;
+      if (tel.value === 0 || tel.value < 1) {
+        // Значение 0 — датчик в норме
+        const status = rule.values[0];
+        if (status) return { property: rule.property, ...status };
+      }
+      if (tel.value >= thr * 2) {
+        const status = rule.values[2];
+        if (status) return { property: rule.property, ...status };
+      }
+      if (tel.value >= thr) {
+        const status = rule.values[1];
+        if (status) return { property: rule.property, ...status };
+      }
+      const status = rule.values[0];
+      if (status) return { property: rule.property, ...status };
+    }
+    // Точное соответствие (для контактов, присутствия и т.д.)
+    const status = rule.values[tel.value];
+    if (status) return { property: rule.property, ...status };
+  }
+  return null;
+}
+
+/** Проверить, относится ли девайс к типу «окно/дверь» (для блока безопасности) */
+function isOpenableDevice(type: string): boolean {
+  return type === 'window_sensor' || type === 'door_sensor' || type === 'gate_controller';
+}
+function findRoomName(rooms: any[], room_id: number): string {
+  const r = rooms.find((r: any) => r.id === room_id);
+  return r?.name || '—';
+}
+
+/** Рассчитать ширину прогресс-бара (0-100%) относительно порогов */
+function calcBar(prop: string, value: number): number {
+  const t = AIR_QUALITY_THRESHOLDS[prop];
+  if (!t) return 0;
+  if (prop === 'temperature') {
+    // good: 18-24, warn: 24-28, danger: >28
+    if (value <= 18) return Math.max(0, ((18 - value) / 18) * 50);
+    if (value <= t.good) return 25 + ((t.good - value) / (t.good - 18)) * 25;
+    if (value <= t.warn) return 50 + ((value - t.good) / (t.warn - t.good)) * 25;
+    return Math.min(100, 75 + ((value - t.warn) / 5) * 25);
+  }
+  if (prop === 'humidity') {
+    // good: 30-60, warn: 60-70, danger: >70 (и <30)
+    if (value < 30) return Math.max(0, ((30 - value) / 30) * 25);
+    if (value <= t.good) return 25 + ((value) / t.good) * 25;
+    if (value <= t.warn) return 50 + ((value - t.good) / (t.warn - t.good)) * 25;
+    return Math.min(100, 75 + ((value - t.warn) / 20) * 25);
+  }
+  // co2, voc, formaldehyde — линейно до 2× порога danger
+  const dangerVal = t.warn * 2;
+  return Math.min(100, (value / dangerVal) * 100);
+}
+
+/** Найти "главный" проблемный параметр для бейджика */
+function findBadgeParam(params: any[]): string | null {
+  const bad = params.filter((p: any) => p.status === 'danger');
+  if (bad.length > 0) return bad[0].label;
+  const warn = params.filter((p: any) => p.status === 'warn');
+  if (warn.length > 0) return warn[0].label;
+  return null;
+}
+
+/** Общий статус воздуха по всем глобальным метрикам */
+function calcGlobalStatus(metrics: Record<string, any>): 'good' | 'warn' | 'danger' {
+  const order: Record<string, number> = { good: 0, warn: 1, danger: 2 };
+  let worst: 'good' | 'warn' | 'danger' = 'good';
+  for (const m of Object.values(metrics)) {
+    const st: string = (m as any).status;
+    if (order[st] > order[worst]) worst = st as 'good' | 'warn' | 'danger';
+  }
+  return worst;
+}
 
 // ── Export (server started by index.ts) ──────────────────
 

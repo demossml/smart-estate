@@ -1,5 +1,5 @@
 import React from "react";
-import { Battery, Signal, DoorClosed, User, Activity, Droplets, Wind, Lightbulb, Plug as PlugIcon, Thermometer } from "lucide-react";
+import { Battery, Signal, DoorClosed, User, Activity, Droplets, Wind, Lightbulb, Plug as PlugIcon, Thermometer, Trash2 } from "lucide-react";
 
 /* ———————————————————————— Constants ———————————————————————— */
 export const DEVICE_TYPES: Record<string, { label: string; category: string; icon: React.FC<{ size?: number; strokeWidth?: number }> }> = {
@@ -63,32 +63,26 @@ export function defaultFieldsFor(type: string): Record<string, any> {
 /* ———————————————————————— DeviceTile ———————————————————————— */
 interface DeviceTileProps {
   device: any;
-  onToggle: (id: string, explicitValue?: string) => void;
-  onAdjustTemp: (id: string, delta: number) => void;
-  onSlider: (id: string, field: string, value: number) => void;
+  onToggle?: (id: string, explicitValue?: string) => void;
+  onAdjustTemp?: (id: string, delta: number) => void;
+  onSlider?: (id: string, field: string, value: number) => void;
+  onOpenDetail?: (device: any) => void;
 }
 
-export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider }: DeviceTileProps) {
+export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, onOpenDetail }: DeviceTileProps) {
   const meta = DEVICE_TYPES[device.type];
   const Icon = meta.icon;
   const interactive = ["light", "plug", "gate_controller", "climate"].includes(device.type);
 
   return (
-    <div className={"se-tile" + (interactive ? " se-tile--interactive" : "")}>
+    <div className={"se-tile" + (interactive ? " se-tile--interactive" : "")} onClick={() => onOpenDetail?.(device)} role="button">
       <div className="se-tile-top">
-        <div className="se-tile-icon">
-          <Icon size={16} strokeWidth={1.6} />
-        </div>
+        <div className="se-tile-icon"><Icon size={16} strokeWidth={1.6} /></div>
         <div className="se-tile-name">{device.name}</div>
         {interactive && device.type !== "climate" && (
           <button
             className={"se-switch" + ((device.type === "gate_controller" ? device.state === "open" : device.state) ? " se-switch--on" : "")}
-            onClick={() =>
-              onToggle(
-                device.id,
-                device.type === "gate_controller" ? (device.state === "open" ? "closed" : "open") : undefined
-              )
-            }
+            onClick={(e) => { e.stopPropagation(); onToggle?.(device.id, device.type === "gate_controller" ? (device.state === "open" ? "closed" : "open") : undefined); }}
             aria-label="переключить"
           >
             <span className="se-switch-knob" />

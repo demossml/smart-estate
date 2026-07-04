@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartEstate — Вариант B: Стек-навигация (как матрешка)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        bg: '#0f1117',
+        surface: '#1a1d28',
+        'surface-hover': '#252836',
+        text: '#e8eaef',
+        'text-dim': '#8b8fa3',
+        green: '#34d399',
+        yellow: '#fbbf24',
+        red: '#f87171',
+        blue: '#60a5fa',
+        auto: '#a78bfa',
+      },
+      borderRadius: { card: '12px' }
+    }
+  }
+}
+</script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1117; color: #e8eaef; -webkit-font-smoothing: antialiased; }
+  .slide-up { overflow: hidden; transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease; }
+  .slide-up > div { overflow: hidden; }
+  .slide-out-enter { animation: slideIn 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+  .slide-out-exit { animation: slideOut 0.25s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+  @keyframes slideIn { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes slideOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(-24px); } }
+  .stack-enter { animation: stackIn 0.35s ease forwards; }
+  @keyframes stackIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+  .sub-grid { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.3s ease; }
+  .sub-grid.open { grid-template-rows: 1fr; }
+  .sub-grid > div { overflow: hidden; }
+</style>
+</head>
+<body>
+  <div class="max-w-md mx-auto p-4 pb-24 stack-enter">
+    <!-- Header with back arrow -->
+    <header class="flex items-center gap-3 mb-4" style="min-height: 64px">
+      <!-- Back button to go from room back to dashboard -->
+      <button class="w-9 h-9 rounded-xl bg-surface border border-surface-hover flex items-center justify-center text-text-dim hover:text-text transition-all">
+        <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <div>
+        <h1 class="font-bold text-lg text-text">Гостиная</h1>
+        <p class="text-xs text-text-dim mt-0.5">3 устройства · 8 показателей</p>
+      </div>
+      <div class="ml-auto flex items-center gap-1">
+        <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-green/10 text-green border border-green/20">онлайн</span>
+      </div>
+    </header>
+
+    <!-- ==== AIR QUALITY CARD (всегда видна, разворачивается) ==== -->
+    <div class="bg-surface rounded-card border border-red/30 overflow-hidden mb-3">
+      <button onclick="this.nextElementSibling.classList.toggle('open')"
+        class="w-full px-4 py-3 flex items-center gap-3 bg-red/5">
+        <div class="w-9 h-9 rounded-xl bg-red/10 border border-red/20 flex items-center justify-center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="1.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+        </div>
+        <div class="flex-1">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold text-sm text-red">Опасно</span>
+            <span class="text-xs text-text-dim">Формальдегид · 1.0 мг/м³</span>
+          </div>
+          <div class="flex items-center gap-2 mt-1">
+            <span class="text-[10px] text-text-dim">Темп 25.8°</span>
+            <span class="w-1 h-1 rounded-full bg-text-dim/30"></span>
+            <span class="text-[10px] text-text-dim">Влажн 59%</span>
+            <span class="w-1 h-1 rounded-full bg-text-dim/30"></span>
+            <span class="text-[10px] text-text-dim">CO₂ 2ppm</span>
+          </div>
+        </div>
+        <svg class="w-4 h-4 text-text-dim shrink-0 transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="sub-grid">
+        <div>
+          <div class="px-4 pb-4 space-y-3">
+            <!-- Detail parameters -->
+            <div class="flex items-center gap-3 px-3 py-2.5 bg-surface-hover/30 rounded-card">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.5"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
+              <div class="flex-1">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-text-dim">Температура</span>
+                  <span class="text-sm font-semibold font-mono text-yellow">25.8°</span>
+                </div>
+                <div class="w-full h-1.5 bg-surface rounded-full mt-1.5 overflow-hidden">
+                  <div class="h-full bg-gradient-to-r from-green via-yellow to-red rounded-full" style="width: 72%"></div>
+                </div>
+                <div class="flex justify-between text-[9px] text-text-dim mt-0.5">
+                  <span>норма &lt;24°</span>
+                  <span>жара &gt;28°</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-3 px-3 py-2.5 bg-surface-hover/30 rounded-card">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="1.5"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>
+              <div class="flex-1">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-text-dim">Влажность</span>
+                  <span class="text-sm font-semibold font-mono text-green">59%</span>
+                </div>
+                <div class="w-full h-1.5 bg-surface rounded-full mt-1.5 overflow-hidden">
+                  <div class="h-full bg-gradient-to-r from-yellow via-green to-yellow rounded-full" style="width: 62%"></div>
+                </div>
+                <div class="flex justify-between text-[9px] text-text-dim mt-0.5">
+                  <span>сухо &lt;30%</span>
+                  <span>сыро &gt;70%</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-3 px-3 py-2.5 bg-surface-hover/30 rounded-card">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+              <div class="flex-1">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-text-dim">CO₂</span>
+                  <span class="text-sm font-semibold font-mono text-green">2 ppm</span>
+                </div>
+                <div class="w-full h-1.5 bg-surface rounded-full mt-1.5 overflow-hidden">
+                  <div class="h-full bg-gradient-to-r from-green via-yellow to-red rounded-full" style="width: 2%"></div>
+                </div>
+                <div class="flex justify-between text-[9px] text-text-dim mt-0.5">
+                  <span>свежий &lt;1000</span>
+                  <span>душно &gt;2000</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-3 px-3 py-2.5 bg-surface-hover/30 rounded-card border border-red/20">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <div class="flex-1">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-text-dim">Формальдегид</span>
+                  <span class="text-sm font-semibold font-mono text-red">1.00 мг/м³</span>
+                </div>
+                <div class="w-full h-1.5 bg-surface rounded-full mt-1.5 overflow-hidden">
+                  <div class="h-full bg-red rounded-full" style="width: 100%"></div>
+                </div>
+                <div class="flex justify-between text-[9px] text-text-dim mt-0.5">
+                  <span>норма &lt;0.01</span>
+                  <span class="text-red">КРИТИЧНО!</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tips -->
+            <div class="bg-red/5 rounded-card px-3 py-2.5 border border-red/10 space-y-1.5">
+              <div class="flex items-start gap-1.5 text-xs">
+                <span>🚨</span>
+                <span class="text-text-dim">Формальдегид в 100× выше нормы. Срочно проветрите!</span>
+              </div>
+              <div class="flex items-start gap-1.5 text-xs">
+                <span>💡</span>
+                <span class="text-text-dim">Возможно, новые материалы (мебель, отделка) выделяют формальдегид</span>
+              </div>
+              <div class="flex items-start gap-1.5 text-xs">
+                <span>💡</span>
+                <span class="text-text-dim">Температура выше нормы — откройте окно на 10-15 минут</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==== CLIMATE CARD (всегда видна) ==== -->
+    <div class="bg-surface rounded-card border border-surface-hover p-4 mb-3">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-xl bg-yellow/10 border border-yellow/20 flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.5"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+          </div>
+          <span class="font-semibold text-sm text-text">Климат</span>
+        </div>
+        <span class="text-xs px-2 py-0.5 rounded-full bg-auto/10 text-auto border border-auto/20">AUTO</span>
+      </div>
+      <div class="flex items-center gap-3">
+        <button class="w-11 h-11 rounded-xl bg-surface border border-surface-hover flex items-center justify-center text-text-dim hover:text-text hover:border-blue/40 transition-all">−</button>
+        <div class="flex-1 flex items-center justify-center">
+          <div class="flex items-baseline gap-1">
+            <span class="text-3xl font-bold text-text font-mono">24</span>
+            <span class="text-sm text-text-dim">°C</span>
+          </div>
+        </div>
+        <button class="w-11 h-11 rounded-xl bg-surface border border-surface-hover flex items-center justify-center text-text-dim hover:text-text hover:border-blue/40 transition-all">+</button>
+      </div>
+      <div class="flex items-center justify-center gap-1 mt-3">
+        <span class="w-2 h-2 rounded-full bg-green"></span>
+        <span class="text-[10px] text-text-dim">Сейчас 25.8° → цель 24° (охлаждается)</span>
+      </div>
+    </div>
+
+    <!-- ==== DEVICES (всегда видны, разворачивается каждое) ==== -->
+    <div class="bg-surface rounded-card border border-surface-hover overflow-hidden mb-3">
+      <div class="px-4 py-3 border-b border-surface-hover">
+        <h3 class="text-sm font-semibold text-text">Устройства</h3>
+      </div>
+      <div class="divide-y divide-surface-hover">
+        <div class="px-4 py-3 flex items-center justify-between">
+          <div class="flex items-center gap-2.5">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.5"><path d="M6 2v20M18 2v20M2 6h20M2 18h20"/></svg>
+            <div>
+              <span class="text-sm text-text">Люстра</span>
+              <span class="text-[10px] text-text-dim block mt-0.5">220 Вт · потолок</span>
+            </div>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" checked class="sr-only peer">
+            <div class="w-11 h-6 bg-surface-hover rounded-full peer peer-checked:bg-yellow/60 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-5"></div>
+          </label>
+        </div>
+        <div class="px-4 py-3 flex items-center justify-between">
+          <div class="flex items-center gap-2.5">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+            <div>
+              <span class="text-sm text-text">Торшер</span>
+              <span class="text-[10px] text-text-dim block mt-0.5">угол у дивана</span>
+            </div>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" class="sr-only peer">
+            <div class="w-11 h-6 bg-surface-hover rounded-full peer peer-checked:bg-yellow/60 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-5"></div>
+          </label>
+        </div>
+        <div class="px-4 py-3 flex items-center justify-between">
+          <div class="flex items-center gap-2.5">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="1.5"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+            <div>
+              <span class="text-sm text-text">Монитор воздуха</span>
+              <span class="text-[10px] text-green block mt-0.5">онлайн</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mini dashboard footer -->
+    <div class="flex gap-2">
+      <div class="flex-1 bg-surface rounded-card px-3 py-2.5 border border-surface-hover text-center">
+        <span class="text-xs text-text-dim">Температура</span>
+        <p class="text-sm font-semibold font-mono text-text mt-0.5">25.8°</p>
+      </div>
+      <div class="flex-1 bg-surface rounded-card px-3 py-2.5 border border-surface-hover text-center">
+        <span class="text-xs text-text-dim">Влажность</span>
+        <p class="text-sm font-semibold font-mono text-text mt-0.5">59%</p>
+      </div>
+      <div class="flex-1 bg-surface rounded-card px-3 py-2.5 border border-surface-hover text-center">
+        <span class="text-xs text-text-dim">Энергия</span>
+        <p class="text-sm font-semibold font-mono text-text mt-0.5">1.2 кВт</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

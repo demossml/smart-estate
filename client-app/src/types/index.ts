@@ -37,6 +37,9 @@ export interface Scenario {
   condition?: string;
   actions: string[];
   active: boolean;
+  /** Raw JSON strings from API — for editing in builder */
+  triggers_json: string;
+  actions_json: string;
 }
 
 /** Climate thermostat/setpoint */

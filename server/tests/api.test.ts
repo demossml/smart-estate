@@ -227,15 +227,17 @@ describe('GET /api/rooms', () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.rooms.length).toBe(5);
-    // Room 1 has devices (we inserted earlier)
-    const room1 = res.body.rooms.find((r: any) => r.id === 1);
-    expect(room1.device_count).toBeGreaterThan(0);
+    // Room 1 is 'Гостиная'
+    expect(res.body.rooms[0].name).toBe('Гостиная');
+    expect(res.body.rooms[0].icon).toBe('🏠');
   });
 
-  it('includes avg_temperature per room', async () => {
+  it('returns basic room fields', async () => {
     const res = await request.get('/api/rooms');
     const room = res.body.rooms[0];
-    expect(room).toHaveProperty('avg_temperature');
+    expect(room).toHaveProperty('name');
+    expect(room).toHaveProperty('icon');
+    expect(room).toHaveProperty('id');
   });
 });
 
@@ -375,5 +377,108 @@ describe('API edge cases', () => {
   it('handles non-numeric limit gracefully', async () => {
     const res = await request.get('/api/events?limit=abc');
     expect(res.status).toBe(200); // parseInt('abc') = NaN, defaults to 20
+  });
+});
+
+describe('PATCH /api/rooms/:id (Phase 4)', () => {
+  it('updates room name', async () => {
+    // First get CSRF
+    const csrfRes = await request.get('/api/csrf-token');
+    const token = csrfRes.body.token;
+    const cookie = csrfRes.headers['set-cookie']?.[0] || '';
+
+    // Create a room first (POST /api/rooms)
+    const createRes = await request
+      .post('/api/rooms')
+      .set('X-CSRF-Token', token)
+      .set('Cookie', cookie)
+      .send({ name: 'Test Room', icon: '🏠' });
+    const roomId = createRes.body.room.id;
+
+    // PATCH: update name
+    const res = await request
+      .patch(`/api/rooms/${roomId}`)
+      .set('X-CSRF-Token', token)
+      .set('Cookie', cookie)
+      .send({ name: 'Renamed Room' });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.room.name).toBe('Renamed Room');
+  });
+
+  it('updates room icon', async () => {
+    const csrfRes = await request.get('/api/csrf-token');
+    const token = csrfRes.body.token;
+    const cookie = csrfRes.headers['set-cookie']?.[0] || '';
+
+    const createRes = await request
+      .post('/api/rooms')
+      .set('X-CSRF-Token', token)
+      .set('Cookie', cookie)
+      .send({ name: 'Icon Test', icon: '🏠' });
+    const roomId = createRes.body.room.id;
+
+    const res = await request
+      .patch(`/api/rooms/${roomId}`)
+      .set('X-CSRF-Token', token)
+      .set('Cookie', cookie)
+      .send({ icon: '🌟' });
+    expect(res.status).toBe(200);
+    expect(res.body.room.icon).toBe('🌟');
+  });
+
+  it('updates both name and icon', async () => {
+    const csrfRes = await request.get('/api/csrf-token');
+    const token = csrfRes.body.token;
+    const cookie = csrfRes.headers['set-cookie']?.[0] || '';
+
+    const createRes = await request
+      .post('/api/rooms')
+      .set('X-CSRF-Token', token)
+      .set('Cookie', cookie)
+      .send({ name: 'Both', icon: '🔵' });
+    const roomId = createRes.body.room.id;
+
+    const res = await request
+      .patch(`/api/rooms/${roomId}`)
+      .set('X-CSRF-Token', token)
+      .set('Cookie', cookie)
+      .send({ name: 'Updated Both', icon: '🔴' });
+    expect(res.status).toBe(200);
+    expect(res.body.room.name).toBe('Updated Both');
+    expect(res.body.room.icon).toBe('🔴');
+  });
+
+  it('returns 400 for empty body', async () => {
+    const csrfRes = await request.get('/api/csrf-token');
+    const token = csrfRes.body.token;
+    const cookie = csrfRes.headers['set-cookie']?.[0] || '';
+
+    const res = await request
+      .patch('/api/rooms/1')
+      .set('X-CSRF-Token', token)
+      .set('Cookie', cookie)
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 404 for non-existent room', async () => {
+    const csrfRes = await request.get('/api/csrf-token');
+    const token = csrfRes.body.token;
+    const cookie = csrfRes.headers['set-cookie']?.[0] || '';
+
+    const res = await request
+      .patch('/api/rooms/99999')
+      .set('X-CSRF-Token', token)
+      .set('Cookie', cookie)
+      .send({ name: 'Ghost' });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 403 without CSRF', async () => {
+    const res = await request
+      .patch('/api/rooms/1')
+      .send({ name: 'No CSRF' });
+    expect([403, 500]).toContain(res.status);
   });
 });

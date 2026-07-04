@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ChevronDown, Thermometer, Flame, Snowflake, Power } from 'lucide-react';
 import { StatusBadge } from './StatusBadge';
+import { AirQualityBadge } from './AirQualityBadge';
 import { DEVICE_TYPE_ICONS, getRoomIcon, CircleDot } from '../../lib/icon-map';
 import { api } from '../../api/client';
 import type { LucideIcon } from 'lucide-react';
@@ -45,10 +46,11 @@ const SENSOR_LABELS: Record<string, string> = {
 };
 
 function SensorReadings({ telemetry }: { telemetry: { property: string; value: number; unit: string }[] }) {
-  const readings = telemetry.filter(t => t.property !== 'state' && t.property !== 'linkquality').slice(0, 3);
+  const readings = telemetry.filter(t => t.property !== 'state' && t.property !== 'linkquality');
   if (!readings.length) return null;
+  const cols = readings.length === 3 ? 'grid-cols-3' : 'grid-cols-2';
   return (
-    <div className="grid grid-cols-3 gap-2 mt-2">
+    <div className={`grid ${cols} gap-2 mt-2`}>
       {readings.map(t => {
         const label = SENSOR_LABELS[t.property] || t.property;
         let display = `${t.value}`;
@@ -84,7 +86,7 @@ function DeviceInlineCard({
   device, onToggle, onEdit,
 }: { device: DeviceWithTelemetry; onToggle?: (id: string) => void; onEdit?: (d: DeviceWithTelemetry) => void }) {
   const Icon = DEVICE_TYPE_ICONS[device.type] || CircleDot;
-  const isToggleable = device.type === 'light' || device.type === 'plug';
+  const isToggleable = device.type === 'light' || device.type === 'plug' || device.type === 'fan';
   const isOn = device.latest_telemetry?.find(t => t.property === 'state')?.value as number > 0;
   const isSensor = device.type === 'sensor';
 
@@ -113,57 +115,103 @@ function DeviceInlineCard({
 
 const modeIcons: Record<string, LucideIcon> = { heat: Flame, cool: Snowflake, auto: Thermometer, off: Power };
 const modeLabels: Record<string, string> = { heat: 'Обогрев', cool: 'Охлажд.', auto: 'Авто', off: 'Выкл' };
+const modeActionColors: Record<string, string> = { 
+  heat: 'bg-orange/20 text-orange border-orange/40', 
+  cool: 'bg-blue/20 text-blue border-blue/40', 
+  idle: 'bg-green/10 text-green', 
+};
 
 function ClimateCard({ sp, onUpdate }: { sp: ClimateSetpoint; onUpdate: (temp: number, mode: string) => void }) {
   const [localTemp, setLocalTemp] = useState(sp.target_temp);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const [justChanged, setJustChanged] = useState(false);
 
   useEffect(() => { setLocalTemp(sp.target_temp); }, [sp.target_temp]);
 
   const handleTempChange = (val: number) => {
     setLocalTemp(val);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => onUpdate(val, sp.mode), 400);
+    debounceRef.current = setTimeout(() => {
+      onUpdate(val, sp.mode);
+      setJustChanged(true);
+      setTimeout(() => setJustChanged(false), 1500);
+    }, 300);
   };
+
+  const handleModeChange = (mode: string) => {
+    onUpdate(sp.target_temp, mode);
+    setJustChanged(true);
+    setTimeout(() => setJustChanged(false), 1500);
+  };
+
+  // Which action is active: 'heat', 'cool', or 'idle'
+  const currentAction = sp.action || 'idle';
+  const isHeating = currentAction === 'heat';
+  const isCooling = currentAction === 'cool';
+  const isIdle = currentAction === 'idle';
 
   return (
     <div className="bg-bg rounded-card px-3 py-3 border border-surface-hover/50 mb-2">
-      <div className="flex items-center justify-between mb-2">
+      {/* Header: current state big and visible */}
+      <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <Thermometer size={16} className="text-blue" />
-          <span className="text-sm font-medium text-text">Термостат</span>
+          <Thermometer size={18} className={isHeating ? 'text-orange' : isCooling ? 'text-blue' : 'text-text-dim'} />
+          <span className="text-sm font-semibold text-text">Термостат</span>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-text-dim">
-            {sp.current_temp != null ? `${sp.current_temp}°` : '—'} → {sp.target_temp}°
-          </span>
-          <StatusBadge status={sp.action === 'idle' ? 'auto' : sp.action === 'heat' ? 'online' : 'online'}
-                       label={sp.action === 'heat' ? 'Греет' : sp.action === 'cool' ? 'Охлаждает' : 'Ожидание'} />
+        {/* Action badge — large and clear */}
+        <div className={`px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 ${modeActionColors[currentAction]}`}>
+          {isHeating && <Flame size={14} />}
+          {isCooling && <Snowflake size={14} />}
+          {isIdle && <span className="w-2 h-2 rounded-full bg-green inline-block" />}
+          {currentAction === 'heat' ? 'Греет' : currentAction === 'cool' ? 'Охлаждает' : 'Ожидание'}
         </div>
       </div>
 
+      {/* Temperature display: current → target */}
+      <div className="flex items-center justify-center gap-3 mb-3">
+        <span className="text-2xl font-bold text-text">
+          {sp.current_temp != null ? `${sp.current_temp}°` : '—'}
+        </span>
+        <span className="text-text-dim text-lg">→</span>
+        <span className={`text-2xl font-bold transition-colors duration-300 ${justChanged ? 'text-blue' : 'text-text'}`}>
+          {sp.target_temp}°
+        </span>
+      </div>
+
       {/* Slider — big touch target */}
-      <div className="py-3">
+      <div className="py-2 mb-2">
         <input type="range" min={16} max={28} step={0.5} value={localTemp}
           onChange={e => handleTempChange(Number(e.target.value))}
-          className="w-full h-10 accent-blue cursor-pointer" aria-label="Температура" />
+          className="w-full h-10 accent-blue cursor-pointer" aria-label="Целевая температура" />
         <div className="flex justify-between mt-1">
           <span className="text-[10px] text-text-dim">16°</span>
           <span className="text-[10px] text-text-dim">28°</span>
         </div>
       </div>
 
-      {/* Mode buttons */}
+      {/* Mode buttons — highlight which action matches */}
       <div className="grid grid-cols-4 gap-2">
         {(['auto', 'heat', 'cool', 'off'] as string[]).map(mode => {
           const Icon = modeIcons[mode];
-          const active = sp.mode === mode;
+          const isSetMode = sp.mode === mode;
+          // In AUTO mode, also highlight the matching action button
+          const isActiveAction = sp.mode === 'auto' && 
+            ((mode === 'heat' && isHeating) || (mode === 'cool' && isCooling));
+          const active = isSetMode || isActiveAction;
+          const isActionMatch = isSetMode ? true : isActiveAction;
+          
           return (
-            <button key={mode} onClick={() => onUpdate(sp.target_temp, mode)}
-              className={`min-h-[48px] rounded-btn text-xs font-semibold flex flex-col items-center justify-center gap-0.5
-                ${active ? 'bg-blue text-white' : 'bg-surface-hover text-text-dim hover:text-text'}`}>
+            <button key={mode} onClick={() => handleModeChange(mode)}
+              className={`min-h-[48px] rounded-btn text-xs font-semibold flex flex-col items-center justify-center gap-0.5 transition-all
+                ${isSetMode ? 'bg-blue text-white shadow-sm' : 
+                  isActiveAction ? 'border-2 border-blue/60 text-blue bg-blue/5' : 
+                  'bg-surface-hover text-text-dim hover:text-text'}`}>
               <Icon size={14} />
               {modeLabels[mode]}
+              {/* Show a dot if this is the active action but not the set mode (auto) */}
+              {isActiveAction && !isSetMode && (
+                <span className="w-1.5 h-1.5 rounded-full bg-blue mt-0.5" />
+              )}
             </button>
           );
         })}
@@ -178,6 +226,7 @@ export function RoomTile({ id, name, iconKey, temperature, lightOn, onEditDevice
   const [open, setOpen] = useState(false);
   const [devices, setDevices] = useState<DeviceWithTelemetry[]>([]);
   const [climate, setClimate] = useState<ClimateSetpoint[]>([]);
+  const [airQuality, setAirQuality] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const RoomIcon = getRoomIcon(iconKey);
 
@@ -187,13 +236,17 @@ export function RoomTile({ id, name, iconKey, temperature, lightOn, onEditDevice
     Promise.all([
       api.getRoomDevices(id).catch(() => ({ ok: false, devices: [] } as any)),
       api.getRoomClimate(id).catch(() => ({ ok: false, climate: [] } as any)),
-    ]).then(([devRes, climRes]) => {
+      api.getAirQuality().catch(() => ({ ok: false, air_quality: [] } as any)),
+    ]).then(([devRes, climRes, airRes]) => {
       setDevices((devRes.devices || []).map((d: any) => ({
         id: d.ieee_addr, name: d.friendly_name, type: d.type,
         room: d.room_name || name, online: d.status === 'online',
         latest_telemetry: d.latest_telemetry || [],
       })));
       setClimate(climRes.climate || []);
+      // Фильтруем качество воздуха для этой комнаты
+      const aq = (airRes.air_quality || []).filter((a: any) => a.room_name === name);
+      setAirQuality(aq);
     }).catch(() => {}).finally(() => setLoading(false));
   }, [open, id, name]);
 
@@ -253,6 +306,15 @@ export function RoomTile({ id, name, iconKey, temperature, lightOn, onEditDevice
               {climate.length > 0 && climate.map(sp => (
                 <ClimateCard key={sp.device_ieee} sp={sp} onUpdate={handleClimateUpdate} />
               ))}
+
+              {/* Air Quality — for rooms with air sensors */}
+              {airQuality.length > 0 && (
+                <div className="mb-3">
+                  {airQuality.map(aq => (
+                    <AirQualityBadge key={aq.device_ieee} data={aq} />
+                  ))}
+                </div>
+              )}
 
               {/* Devices */}
               {devices.length === 0 && climate.length === 0 ? (

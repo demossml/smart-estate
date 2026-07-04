@@ -14,6 +14,7 @@ db.exec(`
     vendor        VARCHAR,
     type          VARCHAR DEFAULT 'unknown',
     room_id       INTEGER,
+    params_json   VARCHAR DEFAULT '{}',
     status        VARCHAR DEFAULT 'online',
     last_seen     TIMESTAMP,
     added_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -74,6 +75,14 @@ db.exec(`
     icon          VARCHAR DEFAULT '🏠'
   );
 
+  -- Default rooms
+  INSERT OR IGNORE INTO rooms (id, name, icon) VALUES
+    (1, 'Гостиная', '🏠'),
+    (2, 'Кухня', '🍳'),
+    (3, 'Спальня', '🛏️'),
+    (4, 'Ванная', '🚿'),
+    (5, 'Улица', '🌳');
+
   -- Сценарии автоматизации
   CREATE TABLE IF NOT EXISTS scenarios (
     id            INTEGER PRIMARY KEY,
@@ -88,6 +97,9 @@ db.exec(`
 
   -- Add schedule_json column if missing (for existing DBs)
   ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS schedule_json VARCHAR;
+
+  -- Add params_json column if missing (for existing DBs)
+  ALTER TABLE devices ADD COLUMN IF NOT EXISTS params_json VARCHAR DEFAULT '{}';
 
   -- История исполнения сценариев
   CREATE TABLE IF NOT EXISTS scenario_executions (
@@ -123,13 +135,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_commands_device ON commands(device_ieee, sent_at);
   CREATE INDEX IF NOT EXISTS idx_errors_ts ON errors(ts);
   CREATE INDEX IF NOT EXISTS idx_state_changes_device ON state_changes(device_ieee, ts);
-
-  -- Дефолтные комнаты
-  INSERT OR IGNORE INTO rooms VALUES (1, 'Гостиная', '🛋️');
-  INSERT OR IGNORE INTO rooms VALUES (2, 'Кухня', '🍳');
-  INSERT OR IGNORE INTO rooms VALUES (3, 'Спальня', '🛏️');
-  INSERT OR IGNORE INTO rooms VALUES (4, 'Гараж', '🚗');
-  INSERT OR IGNORE INTO rooms VALUES (5, 'Улица', '🌿');
 
   -- Дефолтные сценарии
   INSERT OR IGNORE INTO scenarios (id, name, description, triggers_json, actions_json, schedule_json) VALUES
@@ -212,6 +217,50 @@ db.exec(`
   CREATE SEQUENCE IF NOT EXISTS gate_access_seq START 1;
   CREATE INDEX IF NOT EXISTS idx_gate_log_ts ON gate_access_log(ts);
   CREATE INDEX IF NOT EXISTS idx_gate_log_device ON gate_access_log(device_ieee, ts);
+
+  -- Discovery events (for SSE streaming of found devices)
+  CREATE TABLE IF NOT EXISTS discovery_events (
+    id            BIGINT PRIMARY KEY,
+    ieee_address  VARCHAR NOT NULL,
+    friendly_name VARCHAR,
+    model         VARCHAR,
+    vendor        VARCHAR,
+    event_type    VARCHAR DEFAULT 'device_announce',
+    status        VARCHAR DEFAULT 'pending',
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE SEQUENCE IF NOT EXISTS discovery_events_seq START 1;
+
+  -- AI providers (BYOK)
+  CREATE TABLE IF NOT EXISTS ai_providers (
+    id              VARCHAR PRIMARY KEY,
+    provider        VARCHAR NOT NULL,
+    token_enc       VARCHAR NOT NULL,
+    base_url        VARCHAR,
+    model           VARCHAR,
+    use_in_scenarios BOOLEAN DEFAULT false,
+    status          VARCHAR DEFAULT 'disconnected',
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Voice pending actions
+  CREATE TABLE IF NOT EXISTS voice_pending_actions (
+    id            VARCHAR PRIMARY KEY,
+    text          VARCHAR NOT NULL,
+    kind          VARCHAR NOT NULL,
+    payload_json  VARCHAR,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Voice suggestions
+  CREATE TABLE IF NOT EXISTS voice_suggestions (
+    id            VARCHAR PRIMARY KEY,
+    text          VARCHAR NOT NULL,
+    payload_json  VARCHAR,
+    accepted      BOOLEAN DEFAULT false,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
 
   -- Used nonces (anti-replay)
   CREATE TABLE IF NOT EXISTS used_nonces (
@@ -347,6 +396,18 @@ export const stmt = {
 
   // Nonce management
   insertNonce: db.prepare(`INSERT INTO used_nonces (nonce, expires_at) VALUES (?, CURRENT_TIMESTAMP + INTERVAL 5 minute)`),
+
+  // Discovery events
+  insertDiscoveryEvent: db.prepare(`
+    INSERT INTO discovery_events (id, ieee_address, friendly_name, model, vendor, event_type, status)
+    VALUES (nextval('discovery_events_seq'), ?, ?, ?, ?, 'device_announce', 'pending')
+  `),
+  getDiscoveryEvents: db.prepare(`
+    SELECT * FROM discovery_events ORDER BY created_at DESC LIMIT ?
+  `),
+  confirmDiscovery: db.prepare(`
+    UPDATE discovery_events SET status = 'confirmed' WHERE ieee_address = ?
+  `),
 };
 
 // ── Helper Functions ────────────────────────────────────

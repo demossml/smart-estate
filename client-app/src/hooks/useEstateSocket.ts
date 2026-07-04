@@ -1,11 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { logClient } from '../lib/logger';
 
-export function useEstateSocket() {
+type SocketCallback = (topic: string, payload: Record<string, any>) => void;
+
+export function useEstateSocket(onTelemetry?: SocketCallback) {
   const [connected, setConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState('—');
   const retriesRef = useRef(0);
   const timerRef = useRef(0);
+  const cbRef = useRef(onTelemetry);
+  cbRef.current = onTelemetry;
 
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -23,9 +27,13 @@ export function useEstateSocket() {
 
       socket.addEventListener('message', event => {
         setLastMessage(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-        if (typeof event.data === 'string' && event.data.includes('error')) {
-          logClient('warn', 'WS событие с ошибкой', event.data);
-        }
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'mqtt' && msg.payload && cbRef.current) {
+            // Форвард телеметрии в колбэк
+            cbRef.current(msg.topic, msg.payload);
+          }
+        } catch {}
       });
 
       socket.addEventListener('close', () => {

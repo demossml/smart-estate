@@ -1,7 +1,14 @@
-import { useState } from 'react';
-import { X } from 'lucide-react';
-import { ROOM_ICON_OPTIONS, getRoomIcon } from '../../lib/icon-map';
-import type { RoomIconOption } from '../../lib/icon-map';
+import { useState, useCallback } from 'react';
+import { X, Check, DoorOpen, Sofa, Bed, UtensilsCrossed, TreePine } from 'lucide-react';
+
+const ROOM_ICONS: Record<string, { icon: React.FC<{ size?: number; strokeWidth?: number }>; label: string }> = {
+  hallway: { icon: DoorOpen, label: 'Прихожая' },
+  living: { icon: Sofa, label: 'Гостиная' },
+  bedroom: { icon: Bed, label: 'Спальня' },
+  kitchen: { icon: UtensilsCrossed, label: 'Кухня' },
+  yard: { icon: TreePine, label: 'Двор' },
+};
+const ROOM_ICON_KEYS = Object.keys(ROOM_ICONS);
 
 interface RoomAddModalProps {
   onClose: () => void;
@@ -10,95 +17,60 @@ interface RoomAddModalProps {
 
 export function RoomAddModal({ onClose, onCreate }: RoomAddModalProps) {
   const [name, setName] = useState('');
-  const [iconKey, setIconKey] = useState('armchair');
+  const [iconKey, setIconKey] = useState('living');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
 
-  const handleCreate = async () => {
-    if (!name.trim()) return;
+  const handleCreate = useCallback(async () => {
+    if (!name.trim() || busy) return;
     setBusy(true);
-    setError('');
     try {
       await onCreate(name.trim(), iconKey);
-    } catch (e: any) {
-      setError(e.message || 'Ошибка создания');
-      setBusy(false);
-    }
-  };
+    } catch {}
+    setBusy(false);
+  }, [name, iconKey, onCreate, busy]);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
-      onClick={onClose}
-    >
-      <div className="absolute inset-0 bg-black/60" />
-      <div
-        className="relative w-full max-w-md bg-surface border border-surface-hover rounded-t-2xl sm:rounded-2xl p-5 animate-slide-up"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-text">Новая комната</h2>
-          <button onClick={onClose} className="p-2 rounded-lg hover:bg-surface-hover">
-            <X size={20} className="text-text-dim" />
+    <div className="se-modal-overlay" onClick={onClose}>
+      <div className="se-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="se-modal-head">
+          <div className="se-modal-title">Новая комната</div>
+          <button className="se-icon-btn" onClick={onClose}>
+            <X size={16} strokeWidth={1.8} />
           </button>
         </div>
 
-        {/* Name */}
-        <label className="block text-xs text-text-dim mb-1">Название</label>
+        <label className="se-field-label">Название</label>
         <input
-          type="text"
+          className="se-input"
+          placeholder="Например, «Терраса»"
           value={name}
-          onChange={e => setName(e.target.value)}
-          placeholder="Например: Баня, Сад, Гараж"
-          className="w-full bg-bg border border-surface-hover rounded-card px-3 py-2.5 text-text text-sm mb-4 outline-none focus:border-blue"
+          onChange={(e) => setName(e.target.value)}
           autoFocus
         />
 
-        {/* Icon grid 4×4 */}
-        <label className="block text-xs text-text-dim mb-2">Иконка</label>
-        <div className="grid grid-cols-4 gap-2 mb-4">
-          {ROOM_ICON_OPTIONS.map(opt => {
-            const Icon = opt.icon;
-            const selected = iconKey === opt.key;
+        <label className="se-field-label">Иконка</label>
+        <div className="se-icon-picker">
+          {ROOM_ICON_KEYS.map((k) => {
+            const I = ROOM_ICONS[k].icon;
             return (
               <button
-                key={opt.key}
-                onClick={() => setIconKey(opt.key)}
-                className={`flex flex-col items-center gap-1 p-2 rounded-card transition-colors min-h-[56px]
-                  ${selected
-                    ? 'bg-blue/15 border border-blue/40 text-blue'
-                    : 'bg-bg border border-surface-hover text-text-dim hover:border-blue/30'
-                  }`}
-                title={opt.label}
+                key={k}
+                className={'se-icon-pick' + (iconKey === k ? ' se-icon-pick--active' : '')}
+                onClick={() => setIconKey(k)}
+                title={ROOM_ICONS[k].label}
               >
-                <Icon size={22} />
-                <span className="text-[10px] leading-tight text-center">{opt.label}</span>
+                <I size={16} strokeWidth={1.6} />
               </button>
             );
           })}
         </div>
 
-        {error && <p className="text-red text-sm mb-3">{error}</p>}
-
-        {/* Submit */}
         <button
-          onClick={handleCreate}
+          className="se-primary-btn"
           disabled={!name.trim() || busy}
-          className={`w-full min-h-[48px] rounded-btn font-semibold flex items-center justify-center transition-colors
-            ${name.trim()
-              ? 'bg-blue text-white tap-active'
-              : 'bg-surface-hover text-text-dim cursor-not-allowed'
-            }`}
+          onClick={handleCreate}
         >
-          {busy ? 'Создание…' : 'Добавить комнату'}
-        </button>
-
-        {/* Cancel */}
-        <button
-          onClick={onClose}
-          className="w-full mt-2 py-2.5 rounded-btn text-sm text-text-dim hover:text-text transition-colors"
-        >
-          Отмена
+          <Check size={14} strokeWidth={2} /> {busy ? 'Создание…' : 'Создать комнату'}
         </button>
       </div>
     </div>

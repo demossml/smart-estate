@@ -1,6 +1,5 @@
 import mqtt from 'mqtt';
 import { stmt, logError, logStateChange, query, DB_PATH } from './db';
-import { validateApiKey } from './crypto';
 import { validateMqttPayload, type MqttTelemetryPayload } from './schemas';
 
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
@@ -9,6 +8,19 @@ let reconnectAttempts = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const MAX_RECONNECT_DELAY = 60_000; // 1 minute max
 const BASE_DELAY = 5_000;
+
+// WebSocket server — регистрируется в attachWebSocket, используется в handleMessage
+let wss: any = null;
+
+// Track last presence time per device (in-memory)
+const lastPresenceAt = new Map<string, number>();
+
+// Track device type per IEEE (from handleDeviceDiscovery)
+const deviceTypes = new Map<string, string>();
+
+export function setWSServer(wsServer: any) {
+  wss = wsServer;
+}
 
 export function connectMQTT() {
   // Don't stack connections — destroy previous if exists
@@ -70,17 +82,22 @@ function handleMessage(topic: string, payload: Buffer) {
   if (topicParts[0] !== 'zigbee2mqtt') return;
 
   try {
-    const data = validateMqttPayload(payload.toString());
-    if (!data) {
-      logError(null, 'mqtt_validation_error', 'Payload failed Zod validation', topic);
+    // Bridge events (devices list) — may be an array, skip Zod validation
+    if (topicParts[1] === 'bridge') {
+      const event = topicParts.slice(2).join('/');
+      let data: any;
+      try { data = JSON.parse(payload.toString()); } catch { data = null; }
+      if (event === 'devices' && Array.isArray(data)) {
+        handleBridgeDevices(data);
+        return;
+      }
+      console.log(`🌉 Bridge: ${event}`);
       return;
     }
 
-    // Bridge events
-    if (topicParts[1] === 'bridge') {
-      const event = topicParts.slice(2).join('/');
-      if (event === 'devices') return; // Skip full device list dump
-      console.log(`🌉 Bridge: ${event}`);
+    const data = validateMqttPayload(payload.toString());
+    if (!data) {
+      logError(null, 'mqtt_validation_error', 'Payload failed Zod validation', topic);
       return;
     }
 
@@ -100,6 +117,10 @@ function handleMessage(topic: string, payload: Buffer) {
     }
 
     // Regular telemetry
+    // 🔍 RAW log: показываем всё что пришло от Z2M
+    if (friendlyName === 'Окно левое' || data.contact !== undefined) {
+      console.log(`🔍 RAW ${friendlyName}: ${JSON.stringify(data)}`);
+    }
     handleTelemetry(friendlyName, data);
   } catch (e: any) {
     logError(null, 'mqtt_parse_error', e.message, topic);
@@ -109,17 +130,66 @@ function handleMessage(topic: string, payload: Buffer) {
 // ── Device Discovery ────────────────────────────────────
 function handleDeviceDiscovery(friendlyName: string, data: any) {
   const ieee = data.ieee_address || data.ieeeAddr || friendlyName;
+  const name = friendlyName.trim();
   try {
     stmt.upsertDevice.run(
-      ieee, friendlyName,
+      ieee, name,
       data.definition?.model || data.model_id || 'unknown',
       data.definition?.vendor || 'unknown',
       data.type || 'unknown',
       1 // default room
     );
+    // Track device type
+    if (data.type) deviceTypes.set(ieee, data.type);
     console.log(`🔍 Device discovered: ${friendlyName} (${data.definition?.model || 'pairing...'})`);
+
+    // Log discovery event for SSE streaming
+    try {
+      stmt.insertDiscoveryEvent.run(
+        ieee, name,
+        data.definition?.model || data.model_id || null,
+        data.definition?.vendor || null
+      );
+    } catch (e: any) {
+      logError(ieee, 'discovery_event_error', e.message);
+    }
+
+    // Broadcast via WebSocket if connected
+    if (wss) {
+      const event = {
+        type: 'device_discovered',
+        ieee_address: ieee,
+        friendly_name: name,
+        model: data.definition?.model || data.model_id || null,
+        vendor: data.definition?.vendor || null,
+        timestamp: new Date().toISOString(),
+      };
+      const msg = JSON.stringify({ type: 'discovery', data: event });
+      wss.clients.forEach((client: any) => {
+        try { client.send(msg); } catch {}
+      });
+    }
   } catch (e: any) {
     logError(ieee, 'discovery_error', e.message, friendlyName);
+  }
+}
+
+// ── Bridge Devices (process full device list on reconnect) ──
+function handleBridgeDevices(devices: any) {
+  if (!Array.isArray(devices)) return;
+  for (const dev of devices) {
+    if (dev.type === 'Coordinator' || dev.disabled) continue;
+    const ieee = dev.ieee_address || dev.ieeeAddr;
+    const name = dev.friendly_name?.trim() || ieee;
+    const model = dev.definition?.model || dev.model_id || 'unknown';
+    const vendor = dev.definition?.vendor || 'unknown';
+    try {
+      stmt.upsertDevice.run(ieee, name, model, vendor, dev.type || 'unknown', 1);
+      if (dev.type) deviceTypes.set(ieee, dev.type);
+      console.log(`📦 Bridge device: ${name} (${model})`);
+    } catch (e: any) {
+      logError(ieee, 'bridge_device_error', e.message, name);
+    }
   }
 }
 
@@ -134,7 +204,7 @@ function handleTelemetry(friendlyName: string, data: any) {
     humidity: { value: data.humidity, unit: '%' },
     co2: { value: data.co2, unit: 'ppm' },
     voc: { value: data.voc, unit: 'ppb' },
-    formaldehyde: { value: data.formaldehyde, unit: 'mg/m³' },
+    formaldehyde: { value: data.formaldehyde ?? data.formaldehyd, unit: 'mg/m³' },
     pm25: { value: data.pm25, unit: 'µg/m³' },
     illuminance: { value: data.illuminance ?? data.illuminance_lux, unit: 'lux' },
     soil_moisture: { value: data.soil_moisture, unit: '%' },
@@ -184,6 +254,11 @@ function handleTelemetry(friendlyName: string, data: any) {
     }).catch(() => {});
   }
 
+  // Track last presence time for presence_sensor
+  if (data.presence === true || data.presence === 1) {
+    lastPresenceAt.set(ieee, Date.now());
+  }
+
   // Update device last_seen
   try {
     stmt.upsertDevice.run(ieee, friendlyName, null, null, null, null);
@@ -196,6 +271,21 @@ function handleTelemetry(friendlyName: string, data: any) {
       .map(([k, v]) => `${k}=${v.value}${v.unit}`)
       .join(' ');
     console.log(`📊 ${friendlyName}: ${sample}`);
+
+    // Forward to all WebSocket clients in real-time
+    if (wss) {
+      const wsPayload = JSON.stringify({
+        type: 'mqtt',
+        topic: `zigbee2mqtt/${friendlyName}`,
+        payload: data,
+        ts: new Date().toISOString(),
+      });
+      for (const c of wss.clients) {
+        if (c.readyState === 1) {
+          try { c.send(wsPayload); } catch {}
+        }
+      }
+    }
 
     // Evaluate scenarios against incoming telemetry
     import('./engine').then(({ evaluateTelemetry }) => {
@@ -239,14 +329,17 @@ export function attachWebSocket(server: HTTPServer) {
       return;
     }
 
-    // ── AUTH: API Key REQUIRED ──
-    const apiKey = req.headers['x-api-key'] as string;
-    
-    if (!apiKey || !validateApiKey(apiKey)) {
-      console.log(`🔌 WebSocket rejected: no valid auth (IP: ${req.socket.remoteAddress})`);
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
+    // ── AUTH: optional — try header, then query param, then allow if no keys configured ──
+    const keys = (process.env.API_KEYS || '').split(',').map(k => k.trim()).filter(Boolean);
+    if (keys.length > 0) {
+      const apiKey = req.headers['x-api-key'] as string
+        || new URL(req.url || '/', `http://${req.headers.host}`).searchParams.get('api_key') as string;
+      if (!apiKey || !keys.includes(apiKey)) {
+        console.log(`🔌 WebSocket rejected: no valid auth (IP: ${req.socket.remoteAddress})`);
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
     }
 
     wss.handleUpgrade(req, socket, head, (ws: WSClient) => {
@@ -266,22 +359,8 @@ export function attachWebSocket(server: HTTPServer) {
   });
 
   // Hook into MQTT to forward to all WebSocket clients
-  if (client) {
-    client.on('message', (topic: string, payload: Buffer) => {
-      wss.clients.forEach((c) => {
-        if (c.readyState === 1) {
-          try {
-            c.send(JSON.stringify({
-              type: 'mqtt',
-              topic,
-              payload: JSON.parse(payload.toString()),
-              ts: new Date().toISOString(),
-            }));
-          } catch {}
-        }
-      });
-    });
-  }
+  // (Форвардинг теперь в handleTelemetry — надёжнее, работает всегда)
+  setWSServer(wss);
 
   console.log('🔌 WebSocket: ws://localhost:8788/ws');
   return wss;
@@ -300,4 +379,15 @@ export function publishCommand(deviceIeee: string, command: string, payload?: an
   return true;
 }
 
-export { client };
+export { client, lastPresenceAt };
+
+/** Gracefully disconnect MQTT (used when switching to demo mode) */
+export function disconnectMQTT(): void {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (client) {
+    try { client.end(true); } catch {}
+    client = null;
+  }
+  reconnectAttempts = 0;
+  console.log('📡 MQTT disconnected');
+}

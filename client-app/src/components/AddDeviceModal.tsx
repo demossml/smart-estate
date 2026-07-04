@@ -1,18 +1,31 @@
-import React, { useState } from "react";
-import { Plus, X, ArrowLeft, Check, Loader2 } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Plus, X, ArrowLeft, Check, Loader2, Radio, Wifi } from "lucide-react";
 import { DEVICE_TYPES } from "./DeviceTile";
-import { ROOM_ICONS, ROOM_ICON_LIST } from "./RoomCard";
+import { ROOM_ICONS, ROOM_ICON_LIST } from "./HomeWidgets";
+
+const API = "/api";
 
 /* ———————————————————————— AddDeviceModal ———————————————————————— */
+interface PendingDevice {
+  ieee_address: string;
+  friendly_name: string;
+  model: string;
+  vendor: string;
+  type: string;
+}
+
 interface AddDeviceModalProps {
   rooms: any[];
   presetRoomId: string | null;
   onClose: () => void;
-  onConfirm: (data: { type: string; name: string; roomMode: string; roomId: string; newRoomName: string; newRoomIcon: string }) => void;
+  onConfirm: (data: { ieee_addr: string; type: string; name: string; roomMode: string; roomId: string; newRoomName: string; newRoomIcon: string }) => void;
 }
 
 export default function AddDeviceModal({ rooms, presetRoomId, onClose, onConfirm }: AddDeviceModalProps) {
-  const [step, setStep] = useState(1);
+  const [step, setStep] = useState(0); // 0 = search, 1 = type, 2 = name/room
+  const [pending, setPending] = useState<PendingDevice[]>([]);
+  const [pendingLoading, setPendingLoading] = useState(true);
+  const [selectedDevice, setSelectedDevice] = useState<PendingDevice | null>(null);
   const [type, setType] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [roomMode, setRoomMode] = useState("existing");
@@ -21,21 +34,34 @@ export default function AddDeviceModal({ rooms, presetRoomId, onClose, onConfirm
   const [newRoomIcon, setNewRoomIcon] = useState("hallway");
   const [discovering, setDiscovering] = useState(false);
 
-  const canNext1 = !!type;
+  useEffect(() => {
+    fetch(`${API}/devices/pending`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) setPending(data.pending || []);
+      })
+      .catch(() => {})
+      .finally(() => setPendingLoading(false));
+  }, []);
+
+  const hasPending = pending.length > 0;
+
+  const canNext1 = hasPending ? !!selectedDevice : !!type;
   const canNext2 = name.trim().length > 0 && (roomMode === "existing" ? !!roomId : newRoomName.trim().length > 0);
 
   const handleConfirm = () => {
     setDiscovering(true);
     setTimeout(() => {
       onConfirm({
-        type: type!,
-        name: name.trim(),
+        ieee_addr: selectedDevice?.ieee_address || name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase(),
+        type: type || selectedDevice?.type || "sensor",
+        name: name.trim() || selectedDevice?.friendly_name || "device",
         roomMode,
         roomId,
         newRoomName: newRoomName.trim(),
         newRoomIcon,
       });
-    }, 1100);
+    }, 600);
   };
 
   return (
@@ -56,9 +82,53 @@ export default function AddDeviceModal({ rooms, presetRoomId, onClose, onConfirm
         {discovering ? (
           <div className="se-discovering">
             <Loader2 size={26} strokeWidth={1.6} className="se-spin" color="#C9A24B" />
-            <div className="se-discovering-text">Поиск устройства через MQTT…</div>
-            <div className="se-discovering-sub">device_announce · Zigbee2MQTT</div>
+            <div className="se-discovering-text">Добавление устройства…</div>
           </div>
+        ) : step === 0 ? (
+          <>
+            <div className="se-modal-sub">Устройства в Zigbee-сети</div>
+            {pendingLoading ? (
+              <div className="se-discovering" style={{ padding: "24px 0" }}>
+                <Loader2 size={20} strokeWidth={1.6} className="se-spin" color="#C9A24B" />
+                <div className="se-discovering-text" style={{ fontSize: "12px" }}>Поиск устройств…</div>
+              </div>
+            ) : hasPending ? (
+              <div className="se-pending-list">
+                {pending.map((p) => (
+                  <button
+                    key={p.ieee_address}
+                    className={"se-pending-item" + (selectedDevice?.ieee_address === p.ieee_address ? " se-pending-item--active" : "")}
+                    onClick={() => { setSelectedDevice(p); setType(p.type || "sensor"); }}
+                  >
+                    <div className="se-pending-left">
+                      <Wifi size={15} strokeWidth={1.5} color="#5CC98A" />
+                      <div>
+                        <div className="se-pending-name">{p.friendly_name}</div>
+                        <div className="se-pending-meta">{p.model} · {p.vendor}</div>
+                      </div>
+                    </div>
+                    <Radio size={14} strokeWidth={1.5} color={selectedDevice?.ieee_address === p.ieee_address ? "#C9A24B" : "#5A5F58"} />
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="se-empty-state">
+                <Wifi size={24} strokeWidth={1.5} color="#5A5F58" />
+                <div className="se-empty-text">Новых устройств в сети не найдено</div>
+                <div className="se-empty-sub">Включите режим сопряжения в Zigbee2MQTT и приведите устройство в режим пары</div>
+              </div>
+            )}
+            <div className="se-bottom-actions" style={{ marginTop: "10px" }}>
+              {!hasPending && (
+                <button className="se-outline-btn" onClick={() => setStep(1)} style={{ marginBottom: "6px" }}>
+                  Добавить вручную
+                </button>
+              )}
+              <button className="se-primary-btn" disabled={!canNext1} onClick={() => setStep(1)}>
+                Далее
+              </button>
+            </div>
+          </>
         ) : step === 1 ? (
           <>
             <div className="se-modal-sub">Выберите тип устройства</div>

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { X, Check } from "lucide-react";
-import { ROOM_ICONS, ROOM_ICON_LIST } from "./RoomCard";
+import { ROOM_ICONS, ROOM_ICON_LIST } from "./HomeWidgets";
 
 /* ———————————————————————— AddRoomModal ———————————————————————— */
 interface AddRoomModalProps {

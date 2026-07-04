@@ -24,10 +24,10 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - ./config/zigbee2mqtt.yaml:/app/data/configuration.yaml:ro
+      - ./config/zigbee2mqtt.yaml:/app/data/configuration.yaml
       - ./data/zigbee2mqtt:/app/data
     devices:
-      - /dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_0001-if00-port0:/dev/ttyUSB0
+      - /dev/ttyUSB0:/dev/ttyUSB0
     environment:
       - TZ=Europe/Moscow
       - MQTT_PASSWORD=${MQTT_PASSWORD:-changeme}
