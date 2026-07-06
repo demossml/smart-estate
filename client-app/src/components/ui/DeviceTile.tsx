@@ -68,11 +68,13 @@ export function DeviceTile({
   onToggle,
   onAdjustTemp,
   onSlider,
+  onDetails,
 }: {
   device: DeviceData;
   onToggle?: (id: string) => void;
   onAdjustTemp?: (id: string, delta: number) => void;
   onSlider?: (id: string, field: string, value: number) => void;
+  onDetails?: (device: DeviceData) => void;
 }) {
   const meta = DEVICE_TYPE_META[device.type];
   if (!meta) return null;
@@ -104,7 +106,7 @@ export function DeviceTile({
   const interactive = ['light', 'plug', 'gate_controller', 'climate'].includes(device.type);
 
   return (
-    <div className={'se-tile' + (interactive ? ' se-tile--interactive' : '')}>
+    <div className={'se-tile' + (interactive ? ' se-tile--interactive' : '')} onClick={() => onDetails?.(device)}>
       {/* Top row: icon + name + switch */}
       <div className="se-tile-top">
         <div className="se-tile-icon">

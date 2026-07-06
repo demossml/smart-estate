@@ -25,7 +25,7 @@ initCSRF();
 async function apiSimple(path: string, options?: RequestInit) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const method = options?.method || 'GET';
-  if (csrfToken && (method === 'POST' || method === 'PUT' || method === 'DELETE')) headers['X-CSRF-Token'] = csrfToken;
+  if (csrfToken && (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE')) headers['X-CSRF-Token'] = csrfToken;
   const res = await fetch(`/api${path}`, { headers, ...options });
   if (!res.ok) throw new Error(`API ${res.status}: ${await res.text().catch(() => '')}`);
   return res.json();
@@ -45,7 +45,7 @@ function apiToDevice(d: any): any {
   for (const t of (d.latest_telemetry || [])) tel[t.property] = t.value;
   const base: any = {
     id: d.ieee_addr, roomId: String(d.room_id || ''),
-    type: d.type, name: (d.friendly_name || d.ieee_addr).trim(),
+    type: d.type, name: (d.friendly_name || d.ieee_addr || 'device').trim(),
     battery: d.battery ?? tel.battery ?? null,
     linkquality: d.linkquality ?? tel.linkquality ?? null,
   };
@@ -124,7 +124,30 @@ export default function SmartEstateApp() {
       ]);
       const loadedRooms = (roomsData.rooms || []).map((r: any) => ({ ...r, icon: mapIcon(r.icon), id: String(r.id) }));
       setRooms(loadedRooms);
-      setDevices(devicesData.devices || []);
+      setDevices((devicesData.devices || []).map((d: any) => {
+        // Normalize server fields for frontend
+        const tel: Record<string, any> = {};
+        for (const t of (d.latest_telemetry || [])) tel[t.property] = t.value;
+        const isMotion = d.type === 'presence_sensor' || d.type === 'motion_sensor';
+        const presenceDetected = isMotion && (
+          tel.presence === 1 || tel.presence === true ||
+          tel.presence === '1' || tel.presence === 'present'
+        );
+        return {
+          ...d,
+          id: d.id ?? d.ieee_addr,
+          presence: presenceDetected,
+          lastSeenMin: d.last_presence_minutes ?? null,
+          last_presence_minutes: d.last_presence_minutes ?? null,
+          battery: d.battery ?? tel.battery ?? (d.status === 'online' ? 100 : 0),
+          linkquality: d.linkquality ?? tel.linkquality ?? 0,
+          temperature: d.temperature ?? tel.temperature,
+          humidity: d.humidity ?? tel.humidity,
+          co2: d.co2 ?? tel.co2,
+          contact: d.contact ?? tel.contact,
+          state: d.state ?? tel.state,
+        };
+      }));
       setScenarios((scenariosData.scenarios || []).map(apiToScenario));
       if (loadedRooms.length > 0) setExpanded({ [loadedRooms[0].id]: true });
     } catch (e: any) { console.error('Load error:', e); }
@@ -149,6 +172,11 @@ export default function SmartEstateApp() {
       return sum + (tel.state ? (tel.power || tel.ratedPower || 0) : 0);
     }, 0);
   }, [devices]);
+
+  /* ─── Rooms with devices ─── */
+  const roomsWithDevices = useMemo(() => {
+    return rooms.filter((r: any) => devices.some((d: any) => String(d.room_id) === String(r.id)));
+  }, [rooms, devices]);
 
   /* ─── Callbacks (real API) ─── */
   const toggleDevice = useCallback(async (id: string, explicitValue?: string) => {
@@ -214,8 +242,11 @@ export default function SmartEstateApp() {
       }
       await api('/devices', { method: 'POST', body: JSON.stringify({ ieee_addr, friendly_name: name, type, room_id: targetRoomId }) });
       await loadData();
-    } catch (e: any) { console.error('Add device error:', e); }
-    setShowAddDevice(false);
+      setShowAddDevice(false);
+    } catch (e: any) {
+      alert('Ошибка при добавлении устройства: ' + (e.message || 'неизвестная ошибка'));
+      console.error('Add device error:', e);
+    }
   };
 
   const confirmAddRoom = async ({ name, icon }: any) => {
@@ -472,7 +503,7 @@ export default function SmartEstateApp() {
         <div className="se-header">
           <div>
             <div className="se-logo">УМНАЯ УСАДЬБА</div>
-            <div className="se-logo-sub">SmartEstate · {rooms.length} комнат · {devices.length} устройств</div>
+            <div className="se-logo-sub">SmartEstate · {roomsWithDevices.length} комнат · {devices.length} устройств</div>
           </div>
           <button className="se-mode-pill" onClick={() => setMode((m) => (m === "live" ? "demo" : "live"))}>
             <span className={"se-mode-dot" + (mode === "live" ? " se-mode-dot--live" : "")} />
@@ -487,12 +518,19 @@ export default function SmartEstateApp() {
               <FavoritesGrid devices={devices.map(apiToDevice)} onToggle={toggleDevice} onAdjustTemp={adjustTemp} onSlider={setSlider} onOpenDetail={setDetailDevice} />
               <RunningNow scenarios={scenarios} devices={devices.map(apiToDevice)} />
               <div className="se-section-label">Комнаты</div>
-              {rooms.map((room: any) => (
+              {roomsWithDevices.map((room: any) => (
                 <RoomCard
                   key={room.id} room={room}
                   devices={devices.filter((d: any) => String(d.room_id) === room.id).map(apiToDevice)}
                   expanded={!!expanded[room.id]}
-                  onExpand={() => setExpanded((e: any) => ({ ...e, [room.id]: !e[room.id] }))}
+                  onExpand={() => setExpanded((e: any) => {
+                    // Force a brand-new object to guarantee React re-render
+                    const next = { ...e };
+                    const wasExpanded = !!next[room.id];
+                    if (wasExpanded) delete next[room.id];
+                    else next[room.id] = true;
+                    return next;
+                  })}
                   onToggleDevice={toggleDevice} onAdjustTemp={adjustTemp} onSlider={setSlider}
                   onOpenDetail={setDetailDevice}
                 />

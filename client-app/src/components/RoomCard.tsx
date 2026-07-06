@@ -68,7 +68,7 @@ export default function RoomCard({ room, devices, expanded, onExpand, onToggleDe
           ) : (
             <div className="se-tile-grid">
               {devices.map((d) => (
-                <DeviceTile key={d.id} device={d} onToggle={onToggleDevice} onAdjustTemp={onAdjustTemp} onSlider={onSlider} />
+                <DeviceTile key={d.id} device={d} onToggle={onToggleDevice} onAdjustTemp={onAdjustTemp} onSlider={onSlider} onOpenDetail={onOpenDetail} />
               ))}
             </div>
           )}

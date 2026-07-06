@@ -71,6 +71,7 @@ interface DeviceTileProps {
 
 export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, onOpenDetail }: DeviceTileProps) {
   const meta = DEVICE_TYPES[device.type];
+  if (!meta) return null;
   const Icon = meta.icon;
   const interactive = ["light", "plug", "gate_controller", "climate"].includes(device.type);
 

@@ -17,6 +17,11 @@ import mqtt from 'mqtt';
 
 const app = express();
 
+// ── Static files (BEFORE helmet to ensure CSP doesn't interfere) ──
+const clientDist = join(__dirname, '..', '..', 'client-app', 'dist');
+app.use('/assets', express.static(join(clientDist, 'assets'), { maxAge: 0 }));
+app.use('/icons', express.static(join(clientDist, 'icons'), { maxAge: 0 }));
+
 // ── Security Headers ─────────────────────────────────────
 app.use(helmet({
   contentSecurityPolicy: false, // Allow inline scripts for Mini App
@@ -40,7 +45,7 @@ app.use(cors({
     if (extra.includes(origin)) return callback(null, true);
     callback(null, false);
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'X-API-Key', 'X-Signature', 'X-Timestamp', 'X-Nonce', 'X-Telegram-InitData', 'X-CSRF-Token'],
   maxAge: 86400,
 }));
@@ -148,16 +153,23 @@ app.get('/api/devices', async (req, res) => {
     const rows = await query(sql, limit, offset);
 
     // Parse JSON-encoded telemetry
-    const devices = rows.map((row: any) => ({
-      ...row,
-      latest_telemetry: typeof row.latest_telemetry === 'string'
+    const devices = rows.map((row: any) => {
+      const telemetry = typeof row.latest_telemetry === 'string'
         ? JSON.parse(row.latest_telemetry)
-        : row.latest_telemetry || [],
-      params: typeof row.params_json === 'string'
-        ? JSON.parse(row.params_json)
-        : row.params_json || {},
-      params_json: undefined,
-    }));
+        : row.latest_telemetry || [];
+      // Last presence for motion/presence sensors
+      const lastSeen = (row.type === 'presence_sensor' || row.type === 'motion_sensor') ? lastPresenceAt.get(row.ieee_addr) : null;
+      const last_presence_minutes = lastSeen ? Math.floor((Date.now() - lastSeen) / 60000) : null;
+      return {
+        ...row,
+        latest_telemetry: telemetry,
+        params: typeof row.params_json === 'string'
+          ? JSON.parse(row.params_json)
+          : row.params_json || {},
+        params_json: undefined,
+        last_presence_minutes,
+      };
+    });
 
     res.json({ ok: true, devices, total, limit, offset });
   } catch (e: any) {
@@ -250,7 +262,40 @@ app.get('/api/devices/:id', async (req, res) => {
       id
     );
 
-    res.json({ ok: true, device, telemetry, commands, state_changes: stateChanges, stats });
+    // Motion stats (today)
+    let todayActivityMin = null;
+    let todaySessions = null;
+    if (device.type === 'motion_sensor') {
+      const motionRows = await query(
+        `SELECT value, ts FROM telemetry
+         WHERE device_ieee = ? AND property = 'presence'
+           AND ts >= CURRENT_DATE
+         ORDER BY ts`,
+        id
+      );
+      if (motionRows.length > 0) {
+        // Total minutes with presence=1 today
+        let activeMinutes = 0;
+        let sessions = 0;
+        let inSession = false;
+        for (const row of motionRows) {
+          if (row.value === 1 && !inSession) { sessions++; inSession = true; }
+          else if (row.value === 0 && inSession) { inSession = false; }
+        }
+        todaySessions = sessions;
+        // Count unique minutes where presence=1
+        const minuteSet = new Set<number>();
+        for (const row of motionRows) {
+          if (row.value === 1) {
+            const ts = new Date(row.ts).getTime();
+            minuteSet.add(Math.floor(ts / 60000));
+          }
+        }
+        todayActivityMin = minuteSet.size;
+      }
+    }
+
+    res.json({ ok: true, device, telemetry, commands, state_changes: stateChanges, stats, todayActivityMin, todaySessions });
   } catch (e: any) {
     logError(null, 'api_error', e.message, `device/${req.params.id}`);
     res.status(500).json({ ok: false, error: e.message });
@@ -322,12 +367,12 @@ app.post('/api/devices', csrfProtect, async (req, res) => {
     }
     await query(
       `INSERT INTO devices (ieee_addr, friendly_name, type, room_id, status, last_seen)
-       VALUES (?, ?, ?, ?, 'online', NOW())
+       VALUES (?, ?, ?, ?, 'online', datetime('now'))
        ON CONFLICT(ieee_addr) DO UPDATE SET
          friendly_name = EXCLUDED.friendly_name,
          type = EXCLUDED.type,
          room_id = EXCLUDED.room_id,
-         last_seen = NOW()`,
+         last_seen = datetime('now')`,
       ieee_addr, friendly_name, type, Number(room_id) || 1
     );
     res.json({ ok: true, device: { ieee_addr, friendly_name, type, room_id: Number(room_id) || 1, status: 'online' } });
@@ -489,7 +534,7 @@ app.put('/api/devices/:id', csrfProtect, async (req, res) => {
       updates.push('room_id = ?'); params.push(room_id);
     }
     if (!updates.length) return res.status(400).json({ ok: false, error: 'No fields to update' });
-    updates.push('last_seen = NOW()');
+    updates.push('last_seen = datetime(\'now\')');
     params.push(id);
     await query(`UPDATE devices SET ${updates.join(', ')} WHERE ieee_addr = ?`, ...params);
     const updated = await query('SELECT * FROM devices WHERE ieee_addr = ?', id);
@@ -1444,10 +1489,13 @@ app.get('/api/dashboard', async (_req, res) => {
       openPoints: doors.map((d: any) => d.friendly_name),
     };
 
-    // Rooms with temperature
+    // Rooms with temperature — only rooms that have at least one device
     const rooms = await query(`
       SELECT r.id, r.name, r.icon
-      FROM rooms r ORDER BY r.id
+      FROM rooms r
+      JOIN devices d ON d.room_id = r.id
+      GROUP BY r.id, r.name, r.icon
+      ORDER BY r.id
     `);
 
     const enriched = await Promise.all(rooms.map(async (room: any) => {
@@ -1557,31 +1605,17 @@ app.post('/api/demo/devices/:id/toggle', async (req, res) => {
   }
 });
 
-// ── Serve SPA for root AND /start (no redirect — SW handles offline) ──
-const clientDist = join(__dirname, '..', '..', 'client-app', 'dist');
-app.use('/assets', express.static(join(clientDist, 'assets'), { maxAge: '365d', immutable: true }));
-app.use('/icons', express.static(join(clientDist, 'icons'), { maxAge: '365d', immutable: true }));
+// ── Serve SPA for root AND /start ──
+// Serve root-level static files (favicon, icons.svg, manifest, sw, workbox)
+app.use(express.static(clientDist));
 
-// HTML shell: allow cache for offline, but validate when online
+// HTML shell: NO cache — disable caching temporarily for debugging
 function serveIndex(_req: express.Request, res: express.Response) {
-  res.set('Cache-Control', 'public, max-age=0, must-revalidate');
+  res.set('Cache-Control', 'no-store');
   res.sendFile(join(clientDist, 'index.html'));
 }
 app.get('/', serveIndex);
 app.get('/start', serveIndex);
-app.get('/manifest.json', (_req, res) => {
-  res.set('Cache-Control', 'public, max-age=3600');
-  res.sendFile(join(clientDist, 'manifest.json'));
-});
-app.get('/manifest.webmanifest', (_req, res) => {
-  res.set('Cache-Control', 'public, max-age=3600');
-  res.sendFile(join(clientDist, 'manifest.webmanifest'));
-});
-// SW must always be fresh — NO cache
-app.get('/sw.js', (_req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.sendFile(join(clientDist, 'sw.js'));
-});
 
 // ── Design prototype ────────────────────────────────────
 app.get('/design', (_req, res) => {
@@ -2289,7 +2323,7 @@ app.get('/api/dashboard/v2', async (_req, res) => {
         const battery = telemetry.find((t: any) => t.property === 'battery')?.value ?? null;
         const linkquality = telemetry.find((t: any) => t.property === 'linkquality')?.value ?? null;
         // Last presence: сколько минут назад был человек
-        const lastSeen = row.type === 'presence_sensor' ? lastPresenceAt.get(row.ieee_addr) : null;
+        const lastSeen = (row.type === 'presence_sensor' || row.type === 'motion_sensor') ? lastPresenceAt.get(row.ieee_addr) : null;
         const last_presence_minutes = lastSeen ? Math.floor((Date.now() - lastSeen) / 60000) : null;
         return {
           ...row,

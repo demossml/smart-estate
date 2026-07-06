@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { ChevronDown, AlertTriangle, Home, Sofa, Bed, UtensilsCrossed, TreePine, DoorOpen } from 'lucide-react';
 import { DeviceTile, type DeviceData, DEVICE_TYPE_META, ROOM_ICONS } from './DeviceTile';
+import DeviceDetailSheet from '../DeviceDetailSheet';
 import { api } from '../../api/client';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -33,6 +34,7 @@ function isOpenableDevice(type: string): boolean {
 
 export function RoomTileV2({ room, telemetryTick, onAddDevice }: RoomTileV2Props) {
   const [open, setOpen] = useState(false);
+  const [detailDevice, setDetailDevice] = useState<DeviceData | null>(null);
   const RoomIcon = ROOM_ICONS[room.icon] || Home;
 
   const devices = room.devices || [];
@@ -113,6 +115,7 @@ export function RoomTileV2({ room, telemetryTick, onAddDevice }: RoomTileV2Props
                   onToggle={handleToggle}
                   onAdjustTemp={handleAdjustTemp}
                   onSlider={handleSlider}
+                  onDetails={(dev) => setDetailDevice(dev)}
                 />
               ))}
             </div>
@@ -123,5 +126,16 @@ export function RoomTileV2({ room, telemetryTick, onAddDevice }: RoomTileV2Props
         </div>
       </div>
     </div>
+
+    {detailDevice && (
+      <DeviceDetailSheet
+        device={detailDevice}
+        room={room}
+        onClose={() => setDetailDevice(null)}
+        onToggle={handleToggle}
+        onAdjustTemp={handleAdjustTemp}
+        onSlider={handleSlider}
+      />
+    )}
   );
 }

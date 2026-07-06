@@ -9,6 +9,12 @@ export const DETAIL_FIELDS: Record<string, { key: string; label: string; unit: s
     { key: "lastOpenDurationMin", label: "Последний раз было открыто", unit: "мин" },
     { key: "tamper", label: "Вскрытие корпуса", unit: "", bool: true },
   ],
+  motion: [
+    { key: "presence", label: "Движение", unit: "", map: { "1": "🟢 Есть", "0": "🔴 Нет" } },
+    { key: "last_presence_minutes", label: "Последнее движение", unit: "" },
+    { key: "todayActivityMin", label: "Активность сегодня", unit: "мин" },
+    { key: "todaySessions", label: "Количество входов", unit: "" },
+  ],
   presence: [
     { key: "presence", label: "Присутствие", unit: "", map: { "1": "👤 Есть", "0": "🚫 Нет" } },
     { key: "detectionDistance", label: "Дальность", unit: "м" },
@@ -67,8 +73,10 @@ interface DeviceDetailSheetProps {
 
 export default function DeviceDetailSheet({ device, room, onClose, onToggle, onAdjustTemp, onSlider }: DeviceDetailSheetProps) {
   const meta = DEVICE_TYPES[device.type];
+  if (!meta) return null;
   const Icon = meta.icon;
-  const fields = DETAIL_FIELDS[meta.category] || [];
+  const detailKey = device.type === 'motion_sensor' ? 'motion' : meta.category;
+  const fields = DETAIL_FIELDS[detailKey] || [];
   const interactive = ["light", "plug", "gate_controller", "climate"].includes(device.type);
 
   return (

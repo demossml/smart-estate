@@ -178,7 +178,7 @@ function handleDeviceDiscovery(friendlyName: string, data: any) {
 function handleBridgeDevices(devices: any) {
   if (!Array.isArray(devices)) return;
   for (const dev of devices) {
-    if (dev.type === 'Coordinator' || dev.disabled) continue;
+    if (dev.type === 'Coordinator' || dev.type === 'Router' || dev.type === 'EndDevice' || dev.disabled) continue;
     const ieee = dev.ieee_address || dev.ieeeAddr;
     const name = dev.friendly_name?.trim() || ieee;
     const model = dev.definition?.model || dev.model_id || 'unknown';
@@ -254,7 +254,7 @@ function handleTelemetry(friendlyName: string, data: any) {
     }).catch(() => {});
   }
 
-  // Track last presence time for presence_sensor
+  // Track last presence time for presence_sensor & motion_sensor
   if (data.presence === true || data.presence === 1) {
     lastPresenceAt.set(ieee, Date.now());
   }
@@ -346,6 +346,31 @@ export function attachWebSocket(server: HTTPServer) {
       wss.emit('connection', ws, req);
     });
   });
+
+  // Load last presence from DB for motion/presence sensors (in case MQTT missed it)
+  try {
+    const { query } = require('./db');
+    query(`
+      SELECT t.device_ieee, MAX(t.ts) as last_ts
+      FROM telemetry t
+      JOIN devices d ON d.ieee_addr = t.device_ieee
+      WHERE t.property = 'presence' AND t.value = 1
+        AND (d.type = 'motion_sensor' OR d.type = 'presence_sensor')
+      GROUP BY t.device_ieee
+    `).then((lastPresenceRows: any[]) => {
+      for (const row of lastPresenceRows) {
+        const ts = new Date(row.last_ts).getTime();
+        if (!isNaN(ts)) lastPresenceAt.set(row.device_ieee, ts);
+      }
+      if (lastPresenceRows.length > 0) {
+        console.log(`👤 Loaded ${lastPresenceRows.length} last-presence timestamps from DB`);
+      }
+    }).catch((e: any) => {
+      logError(null, 'load_presence_init', e.message, 'startup');
+    });
+  } catch (e: any) {
+    logError(null, 'load_presence_init', e.message, 'startup');
+  }
 
   wss.on('connection', (ws: WSClient) => {
     console.log('🔌 WebSocket client connected');

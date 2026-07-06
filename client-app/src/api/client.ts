@@ -57,7 +57,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     
     // Add CSRF token for mutating requests
     const method = options?.method || 'GET';
-    if (csrfToken && ['POST', 'PUT', 'DELETE'].includes(method)) {
+    if (csrfToken && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
       headers['X-CSRF-Token'] = csrfToken;
     }
     
