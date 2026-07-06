@@ -1,8 +1,9 @@
 import React from "react";
-import { X, Battery, Signal } from "lucide-react";
+import { X } from "lucide-react";
 import { DEVICE_TYPES, batteryColor } from "./DeviceTile";
+import { getActiveAirFields, formatAirValue, getAirColor, getAirStatus, STATUS_COLORS } from "../lib/air-utils";
 
-/* ---- DETAIL_FIELDS (from reference) ---- */
+/* ---- DETAIL_FIELDS (для не-air типов) ---- */
 export const DETAIL_FIELDS: Record<string, { key: string; label: string; unit: string; bool?: boolean; map?: Record<string, string> }[]> = {
   contact: [
     { key: "openCountToday", label: "Открываний сегодня", unit: "" },
@@ -27,15 +28,6 @@ export const DETAIL_FIELDS: Record<string, { key: string; label: string; unit: s
   leak: [
     { key: "temperature", label: "Температура пола", unit: "°" },
     { key: "tamper", label: "Вскрытие корпуса", unit: "", bool: true },
-  ],
-  air: [
-    { key: "temperature", label: "Температура", unit: "°" },
-    { key: "humidity", label: "Влажность", unit: "%" },
-    { key: "co2", label: "CO₂", unit: "ppm" },
-    { key: "voc", label: "Летучие соединения (VOC)", unit: "ppb" },
-    { key: "formaldehyde", label: "Формальдегид", unit: "мг/м³" },
-    { key: "pm25", label: "PM2.5", unit: "мкг/м³" },
-    { key: "pressure", label: "Давление", unit: "мм рт.ст." },
   ],
   light: [
     { key: "brightness", label: "Яркость", unit: "%" },
@@ -75,15 +67,26 @@ export default function DeviceDetailSheet({ device, room, onClose, onToggle, onA
   const meta = DEVICE_TYPES[device.type];
   if (!meta) return null;
   const Icon = meta.icon;
-  const detailKey = device.type === 'motion_sensor' ? 'motion' : meta.category;
-  const fields = DETAIL_FIELDS[detailKey] || [];
+  const detailKey = device.type === 'motion_sensor' ? 'motion' : (device.type === 'air_monitor' ? 'air' : meta.category);
   const interactive = ["light", "plug", "gate_controller", "climate"].includes(device.type);
+
+  // Для air_monitor — динамические поля из данных устройства
+  const airFields = device.type === 'air_monitor' ? getActiveAirFields(device) : [];
+  const fields = device.type === 'air_monitor' ? [] : (DETAIL_FIELDS[detailKey] || []);
+
+  // Функция для получения значения из телеметрии, если его нет напрямую в device
+  const getTelValue = (key: string): number | null | undefined => {
+    if (device[key] !== undefined && device[key] !== null) return device[key];
+    const tel = device.latest_telemetry ?? [];
+    const found = tel.find((t: any) => t.property === key);
+    return found?.value ?? null;
+  };
 
   return (
     <div className="se-modal-overlay" onClick={onClose}>
       <div className="se-modal" onClick={(e) => e.stopPropagation()}>
         <div className="se-modal-head">
-          <div className="se-modal-title">{device.name}</div>
+          <div className="se-modal-title">{device.friendly_name || device.ieee_addr?.slice(0, 12)}</div>
           <button className="se-icon-btn" onClick={onClose}><X size={16} strokeWidth={1.8} /></button>
         </div>
 
@@ -91,7 +94,7 @@ export default function DeviceDetailSheet({ device, room, onClose, onToggle, onA
           <div className="se-detail-hero-icon"><Icon size={22} strokeWidth={1.5} /></div>
           <div>
             <div className="se-detail-hero-type">{meta.label}</div>
-            <div className="se-detail-hero-room">{room?.name} · {device.ieee}</div>
+            <div className="se-detail-hero-room">{room?.name} · {device.ieee_addr?.slice(0, 18)}</div>
           </div>
           {interactive && device.type !== "climate" && (
             <button
@@ -125,6 +128,21 @@ export default function DeviceDetailSheet({ device, room, onClose, onToggle, onA
         )}
 
         <div className="se-detail-grid">
+          {/* Для air_monitor — динамические поля из данных датчика */}
+          {device.type === 'air_monitor' && airFields.map((f) => {
+            const val = getTelValue(f.key);
+            const formatted = formatAirValue(f.key, val);
+            const status = getAirStatus(f.key, val);
+            const color = STATUS_COLORS[status].css;
+            return (
+              <div className="se-detail-cell" key={f.key}>
+                <div className="se-label">{f.label}</div>
+                <div className="se-value" style={{ color }}>{formatted}</div>
+              </div>
+            );
+          })}
+
+          {/* Для остальных типов — статические поля */}
           {fields.map((f) => {
             let val = device[f.key];
             if (val === undefined || val === null) val = "—";
@@ -139,7 +157,9 @@ export default function DeviceDetailSheet({ device, room, onClose, onToggle, onA
               </div>
             );
           })}
-          {"battery" in device && (
+
+          {/* battery — всегда, если есть */}
+          {device.type !== 'air_monitor' && "battery" in device && (
             <div className="se-detail-cell">
               <div className="se-label">Батарея</div>
               <div className="se-value" style={{ color: batteryColor(device.battery) }}>{device.battery}%</div>
@@ -153,7 +173,6 @@ export default function DeviceDetailSheet({ device, room, onClose, onToggle, onA
           )}
         </div>
 
-        {/* CSS для .se-detail-* */}
         <style>{`
           .se-detail-hero { display: flex; align-items: center; gap: 12px; padding: 6px 0 16px; border-bottom: 1px solid rgba(255,255,255,0.06); margin-bottom: 14px; }
           .se-detail-hero-icon { width: 44px; height: 44px; border-radius: 12px; background: rgba(201,162,75,0.08); border: 1px solid rgba(201,162,75,0.2); color: #C9A24B; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }

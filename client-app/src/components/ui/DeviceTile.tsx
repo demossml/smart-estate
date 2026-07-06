@@ -39,6 +39,7 @@ export const DEVICE_TYPE_META: Record<string, { label: string; category: string;
   plug:            { label: 'Розетка',              category: 'plug',     icon: PlugIcon },
   gate_controller: { label: 'Ворота',              category: 'gate',     icon: DoorOpen },
   climate:         { label: 'Кондиционер',          category: 'climate',  icon: Thermometer },
+  sensor:          { label: 'Датчик',               category: 'sensor',   icon: Activity },
 };
 
 export const ROOM_ICONS: Record<string, React.FC<{ size?: number; strokeWidth?: number }>> = {

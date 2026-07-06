@@ -254,14 +254,25 @@ export default function Dashboard() {
           let worst: string = 'good';
           aq.params = aq.params.map((p: any) => {
             const val = p.value;
-            let status = 'good';
+            let status: string;
             if (p.property === 'temperature') {
               if (val > 28 || val < 10) status = 'danger';
               else if (val > 24 || val < 18) status = 'warn';
+              else status = 'good';
             } else if (p.property === 'humidity') {
               if (val > 70 || val < 20) status = 'danger';
               else if (val > 60 || val < 30) status = 'warn';
+              else status = 'good';
+            } else if (Number.isInteger(val) && val >= 0 && val <= 5) {
+              // Tuya-индекс 0-5
+              const tuyaMap: Record<string, Record<number, string>> = {
+                co2: { 0: 'good', 1: 'good', 2: 'good', 3: 'warn', 4: 'danger', 5: 'danger' },
+                voc: { 0: 'good', 1: 'good', 2: 'good', 3: 'warn', 4: 'danger', 5: 'danger' },
+                formaldehyde: { 0: 'good', 1: 'good', 2: 'warn', 3: 'warn', 4: 'danger', 5: 'danger' },
+              };
+              status = tuyaMap[p.property]?.[val] || 'good';
             } else {
+              // Реальные значения — общие пороги
               const warnMap: Record<string, number> = { co2: 2000, voc: 220, formaldehyde: 0.05 };
               const goodMap: Record<string, number> = { co2: 1000, voc: 65, formaldehyde: 0.01 };
               if (val > (warnMap[p.property] ?? Infinity)) status = 'danger';

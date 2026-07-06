@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import { Home, Workflow, Zap, Settings, Plus, Wind, Loader2 } from "lucide-react";
+import { Home, Workflow, Zap, Settings, Plus, Wind, Loader2, CheckCircle2 } from "lucide-react";
 import RoomCard from "./components/RoomCard";
 import DeviceTile, { airStatus, DEVICE_TYPES, defaultFieldsFor } from "./components/DeviceTile";
 import AddDeviceModal from "./components/AddDeviceModal";
@@ -103,6 +103,7 @@ export default function SmartEstateApp() {
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [discoveredDevices, setDiscoveredDevices] = useState<any[]>([]);
   const [assigningDevice, setAssigningDevice] = useState<any>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const timersRef = useRef<any[]>([]);
 
   // AI agent state
@@ -371,10 +372,23 @@ export default function SmartEstateApp() {
   };
   const dismissDiscovered = (tempId: string) => setDiscoveredDevices((prev) => prev.filter((d) => d.tempId !== tempId));
 
-  const confirmAssignDiscovered = ({ name, roomId }: any) => {
-    setDevices((prev) => [...prev, { id: uid(), roomId, type: assigningDevice.type, name, ieee: assigningDevice.ieee, ...defaultFieldsFor(assigningDevice.type) }]);
-    setDiscoveredDevices((prev) => prev.filter((d) => d.tempId !== assigningDevice.tempId));
-    setAssigningDevice(null);
+  const confirmAssignDiscovered = async ({ name, roomId }: any) => {
+    if (!assigningDevice) return;
+    try {
+      await api(`/discovery/${assigningDevice.ieee}/confirm`, {
+        method: 'POST',
+        body: JSON.stringify({ name, roomId }),
+      });
+      setDevices((prev) => [...prev, { id: uid(), roomId, type: assigningDevice.type, name, ieee: assigningDevice.ieee, ...defaultFieldsFor(assigningDevice.type) }]);
+      setDiscoveredDevices((prev) => prev.filter((d) => d.tempId !== assigningDevice.tempId));
+      setAssigningDevice(null);
+      setToast(`✅ «${name}» добавлено`);
+      setTimeout(() => setToast(null), 3000);
+    } catch (e: any) {
+      console.error('Confirm error:', e);
+      setToast(`❌ Ошибка: ${e.message}`);
+      setTimeout(() => setToast(null), 3000);
+    }
   };
   useEffect(() => () => clearTimers(), []);
 
@@ -604,6 +618,14 @@ export default function SmartEstateApp() {
           onToggle={toggleDevice} onAdjustTemp={adjustTemp} onSlider={setSlider}
         />
       )}
+
+      {/* Toast banner */}
+      {toast && (
+        <div className="se-toast">
+          <CheckCircle2 size={16} strokeWidth={2} />
+          <span>{toast}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -776,8 +798,8 @@ const css = `
 .se-briefing { font-size: 12px; color: #B7BDB4; line-height: 1.6; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.08); border-radius: 10px; padding: 12px; }
 
 /* modal */
-.se-modal-overlay { position: fixed; inset: 0; background: rgba(5,6,5,0.72); display: flex; align-items: flex-end; justify-content: center; z-index: 50; }
-.se-modal { width: 420px; max-width: 100%; max-height: 86vh; overflow-y: auto; background: linear-gradient(165deg, #171C18, #0D110E); border: 1px solid rgba(201,162,75,0.2); border-radius: 20px 20px 0 0; padding: 18px 20px 26px; }
+.se-modal-overlay { position: fixed; inset: 0; background: rgba(5,6,5,0.72); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 12px; }
+.se-modal { width: 420px; max-width: 100%; max-height: 90vh; overflow-y: auto; background: linear-gradient(165deg, #171C18, #0D110E); border: 1px solid rgba(201,162,75,0.2); border-radius: 20px; padding: 18px 20px 26px; }
 .se-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .se-modal-title { font-family: 'Cormorant SC', serif; font-size: 17px; color: #E9E4D8; letter-spacing: 0.03em; }
 .se-modal-sub { font-size: 11.5px; color: #5A5F58; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -822,4 +844,9 @@ const css = `
 .se-empty-state { display: flex; flex-direction: column; align-items: center; padding: 32px 0 16px; gap: 8px; }
 .se-empty-text { font-size: 13px; color: #8B9088; }
 .se-empty-sub { font-size: 11px; color: #5A5F58; text-align: center; padding: 0 20px; line-height: 1.4; }
+
+/* Toast banner */
+.se-toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%); z-index: 9999; display: flex; align-items: center; gap: 8px; background: rgba(16,20,18,0.95); border: 1px solid rgba(92,201,138,0.35); border-radius: 12px; padding: 12px 20px; font-size: 13px; color: #E9E4D8; backdrop-filter: blur(12px); box-shadow: 0 8px 32px rgba(0,0,0,0.6); animation: se-toast-in 0.3s ease-out; }
+.se-toast svg { color: #5CC98A; flex-shrink: 0; }
+@keyframes se-toast-in { from { opacity: 0; transform: translateX(-50%) translateY(12px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
 `;
