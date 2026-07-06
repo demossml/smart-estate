@@ -97,7 +97,7 @@ app.get('/api/status', async (_req, res) => {
     const devices = await query('SELECT COUNT(*) as cnt FROM devices');
     const online = await query("SELECT COUNT(*) as cnt FROM devices WHERE status = 'online'");
     const errors24h = await query(
-      "SELECT COUNT(*) as cnt FROM errors WHERE ts >= CURRENT_TIMESTAMP - INTERVAL '24 hours'"
+      "SELECT COUNT(*) as cnt FROM errors WHERE ts >= CURRENT_TIMESTAMP - INTERVAL '24' HOUR"
     );
     res.json({
       ok: true,
@@ -257,7 +257,7 @@ app.get('/api/devices/:id', async (req, res) => {
     // Stats (last 24h)
     const stats = await query(
       `SELECT property, MIN(value) as min, MAX(value) as max, AVG(value)::DECIMAL(8,2) as avg, COUNT(*) as cnt
-       FROM telemetry WHERE device_ieee = ? AND ts >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+       FROM telemetry WHERE device_ieee = ? AND ts >= CURRENT_TIMESTAMP - INTERVAL '24' HOUR
        GROUP BY property`,
       id
     );
@@ -772,11 +772,11 @@ app.get('/api/telemetry', async (req, res) => {
 
     let tsFilter: string;
     switch (period) {
-      case '1h': tsFilter = "INTERVAL '1 hour'"; break;
-      case '6h': tsFilter = "INTERVAL '6 hours'"; break;
-      case '7d': tsFilter = "INTERVAL '7 days'"; break;
-      case '30d': tsFilter = "INTERVAL '30 days'"; break;
-      default: tsFilter = "INTERVAL '24 hours'";
+      case '1h': tsFilter = "INTERVAL '1' HOUR"; break;
+      case '6h': tsFilter = "INTERVAL '6' HOUR"; break;
+      case '7d': tsFilter = "INTERVAL '7' DAY"; break;
+      case '30d': tsFilter = "INTERVAL '30' DAY"; break;
+      default: tsFilter = "INTERVAL '24' HOUR";
     }
 
     let sql = `SELECT * FROM telemetry WHERE ts >= CURRENT_TIMESTAMP - ${tsFilter}`;
@@ -811,7 +811,7 @@ app.get('/api/rooms', async (_req, res) => {
         SELECT AVG(value)::DECIMAL(4,1) as avg_temp FROM telemetry
         WHERE property = 'temperature' AND device_ieee IN (
           SELECT ieee_addr FROM devices WHERE room_id = ?
-        ) AND ts >= CURRENT_TIMESTAMP - INTERVAL '1 hour'
+        ) AND ts >= CURRENT_TIMESTAMP - INTERVAL '1' HOUR
       `, room.id);
       return { ...room, avg_temperature: temp[0]?.avg_temp || null };
     }));
@@ -998,7 +998,7 @@ app.get('/api/energy/trend', async (_req, res) => {
         SUM(CASE WHEN property = 'power' THEN value ELSE 0 END) as total_power,
         COUNT(DISTINCT device_ieee) as device_count
       FROM telemetry
-      WHERE ts >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+      WHERE ts >= CURRENT_TIMESTAMP - INTERVAL '24' HOUR
         AND (property = 'power' OR property = 'energy')
       GROUP BY DATE_TRUNC('hour', ts)
       ORDER BY hour
@@ -1482,7 +1482,7 @@ app.get('/api/dashboard', async (_req, res) => {
       `SELECT t.device_ieee, d.friendly_name FROM telemetry t
        JOIN devices d ON t.device_ieee = d.ieee_addr
        WHERE t.property = 'contact' AND t.value > 0
-       AND t.ts >= CURRENT_TIMESTAMP - INTERVAL '1 minute'`
+       AND t.ts >= CURRENT_TIMESTAMP - INTERVAL '1' MINUTE`
     );
     const security = {
       armed: doors.length === 0,
@@ -1503,14 +1503,14 @@ app.get('/api/dashboard', async (_req, res) => {
         `SELECT AVG(value)::DECIMAL(4,1) as temp FROM telemetry
          WHERE property = 'temperature' AND device_ieee IN (
            SELECT ieee_addr FROM devices WHERE room_id = ?
-         ) AND ts >= CURRENT_TIMESTAMP - INTERVAL '1 hour'`,
+         ) AND ts >= CURRENT_TIMESTAMP - INTERVAL '1' HOUR`,
         room.id
       );
       const light = await query(
         `SELECT d.ieee_addr FROM devices d
          JOIN telemetry t ON d.ieee_addr = t.device_ieee
          WHERE d.room_id = ? AND d.type = 'light' AND t.property = 'state' AND t.value > 0
-         AND t.ts >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'`,
+         AND t.ts >= CURRENT_TIMESTAMP - INTERVAL '5' MINUTE`,
         room.id
       );
       return {
@@ -1526,7 +1526,7 @@ app.get('/api/dashboard', async (_req, res) => {
     // Energy
     const energyData = await query(
       `SELECT AVG(value)::DECIMAL(4,1) as val, EXTRACT(HOUR FROM ts) as h FROM telemetry
-       WHERE property = 'power' AND ts >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+       WHERE property = 'power' AND ts >= CURRENT_TIMESTAMP - INTERVAL '24' HOUR
        GROUP BY h ORDER BY h`
     );
     const energyTrend = Array(24).fill(0);
@@ -2299,6 +2299,7 @@ app.get('/api/dashboard/v2', async (_req, res) => {
       const air = roomAir.get(rid);
 
       // Устройства в комнате с телеметрией
+      // Устройства в комнате с телеметрией
       const devices = await query(`
         SELECT d.*,
           (SELECT COALESCE(json_group_array(
@@ -2308,7 +2309,7 @@ app.get('/api/dashboard/v2', async (_req, res) => {
                  SELECT property, value, unit,
                    ROW_NUMBER() OVER (PARTITION BY property ORDER BY ts DESC) as rn
                  FROM telemetry WHERE device_ieee = d.ieee_addr
-               ) sub WHERE rn = 1 LIMIT 6) t
+               ) sub WHERE rn = 1 ORDER BY property) t
           ) as latest_telemetry
         FROM devices d WHERE d.room_id = ?
         ORDER BY d.type, d.ieee_addr

@@ -1,5 +1,5 @@
 import mqtt from 'mqtt';
-import { stmt, logError, logStateChange, query, DB_PATH } from './db';
+import { stmt, db, logError, logStateChange, query, DB_PATH } from './db';
 import { validateMqttPayload, type MqttTelemetryPayload } from './schemas';
 
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
@@ -91,6 +91,11 @@ function handleMessage(topic: string, payload: Buffer) {
         handleBridgeDevices(data);
         return;
       }
+      // bridge/event — device_interview / device_announce from Z2M
+      if (event === 'event' && data?.type && (data.type === 'device_interview' || data.type === 'device_announce')) {
+        handleBridgeEvent(data);
+        return;
+      }
       console.log(`🌉 Bridge: ${event}`);
       return;
     }
@@ -118,7 +123,7 @@ function handleMessage(topic: string, payload: Buffer) {
 
     // Regular telemetry
     // 🔍 RAW log: показываем всё что пришло от Z2M
-    if (friendlyName === 'Окно левое' || data.contact !== undefined) {
+    if (friendlyName === 'Окно левое' || data.contact !== undefined || friendlyName === 'Датчик воздуха') {
       console.log(`🔍 RAW ${friendlyName}: ${JSON.stringify(data)}`);
     }
     handleTelemetry(friendlyName, data);
@@ -174,11 +179,49 @@ function handleDeviceDiscovery(friendlyName: string, data: any) {
   }
 }
 
+// ── Bridge Event (device_interview / device_announce from zigbee2mqtt/bridge/event) ──
+function handleBridgeEvent(data: any) {
+  const info = data.data;
+  if (!info?.ieee_address) return;
+  const ieee = info.ieee_address;
+  const name = info.friendly_name?.trim() || ieee;
+  // Use definition from the interview data if available
+  const model = info.definition?.model || info.model_id || null;
+  const vendor = info.definition?.vendor || null;
+  try {
+    stmt.upsertDevice.run(ieee, name, model, vendor, 'sensor', 1);
+    console.log(`🔍 Bridge event — ${data.type}: ${name} (${model || 'pairing...'})`);
+
+    // Log discovery event for SSE streaming
+    try {
+      stmt.insertDiscoveryEvent.run(ieee, name, model, vendor);
+    } catch { }
+
+    // Broadcast via WebSocket
+    if (wss) {
+      const event = {
+        type: 'device_discovered',
+        ieee_address: ieee,
+        friendly_name: name,
+        model: model,
+        vendor: vendor,
+        timestamp: new Date().toISOString(),
+      };
+      const msg = JSON.stringify({ type: 'discovery', data: event });
+      wss.clients.forEach((client: any) => {
+        try { client.send(msg); } catch { }
+      });
+    }
+  } catch (e: any) {
+    logError(ieee, 'bridge_event_error', e.message, data.type);
+  }
+}
+
 // ── Bridge Devices (process full device list on reconnect) ──
 function handleBridgeDevices(devices: any) {
   if (!Array.isArray(devices)) return;
   for (const dev of devices) {
-    if (dev.type === 'Coordinator' || dev.type === 'Router' || dev.type === 'EndDevice' || dev.disabled) continue;
+    if (dev.type === 'Coordinator' || dev.type === 'Router' || dev.disabled) continue;
     const ieee = dev.ieee_address || dev.ieeeAddr;
     const name = dev.friendly_name?.trim() || ieee;
     const model = dev.definition?.model || dev.model_id || 'unknown';
@@ -195,16 +238,35 @@ function handleBridgeDevices(devices: any) {
 
 // ── Telemetry Handler ───────────────────────────────────
 function handleTelemetry(friendlyName: string, data: any) {
-  const ieee = data.ieee_address || data.ieeeAddr || friendlyName;
+  let ieee = data.ieee_address || data.ieeeAddr || null;
   const raw = JSON.stringify(data);
+
+  // If telemetry has no ieee_address, look it up from DB by friendly_name
+  if (!ieee) {
+    try {
+      const row = db.prepare('SELECT ieee_addr FROM devices WHERE friendly_name = ? LIMIT 1').get(friendlyName) as { ieee_addr: string } | undefined;
+      if (row?.ieee_addr && /^0x[0-9a-f]{16}$/i.test(row.ieee_addr)) {
+        ieee = row.ieee_addr;
+      } else {
+        console.log(`⏭️ Skipping telemetry from ${friendlyName}: no ieee_address and device not registered`);
+        return;
+      }
+    } catch {
+      console.log(`⏭️ Skipping telemetry from ${friendlyName}: DB lookup failed`);
+      return;
+    }
+  }
+
+  // Safety: ensure ieee is a real 64-bit MAC address (0x + 16 hex chars)
+  if (!/^0x[0-9a-f]{16}$/i.test(ieee)) {
+    console.log(`⏭️ Skipping telemetry from ${friendlyName}: invalid IEEE (${ieee})`);
+    return;
+  }
 
   // Known property mappings
   const propertyMap: Record<string, { value: any; unit: string }> = {
     temperature: { value: data.temperature, unit: '°C' },
     humidity: { value: data.humidity, unit: '%' },
-    co2: { value: data.co2, unit: 'ppm' },
-    voc: { value: data.voc, unit: 'ppb' },
-    formaldehyde: { value: data.formaldehyde ?? data.formaldehyd, unit: 'mg/m³' },
     pm25: { value: data.pm25, unit: 'µg/m³' },
     illuminance: { value: data.illuminance ?? data.illuminance_lux, unit: 'lux' },
     soil_moisture: { value: data.soil_moisture, unit: '%' },
@@ -259,10 +321,12 @@ function handleTelemetry(friendlyName: string, data: any) {
     lastPresenceAt.set(ieee, Date.now());
   }
 
-  // Update device last_seen
-  try {
-    stmt.upsertDevice.run(ieee, friendlyName, null, null, null, null);
-  } catch {}
+  // Update device last_seen — only if ieee looks like a real MAC address
+  if (/^0x[0-9a-f]{16}$/i.test(ieee)) {
+    try {
+      stmt.upsertDevice.run(ieee, friendlyName, null, null, null, null);
+    } catch {}
+  }
 
   if (stored > 0) {
     const sample = Object.entries(propertyMap)

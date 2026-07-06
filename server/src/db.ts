@@ -282,6 +282,8 @@ export const stmt: any = {
     ON CONFLICT(ieee_addr) DO UPDATE SET
       friendly_name = COALESCE(excluded.friendly_name, friendly_name),
       model = COALESCE(excluded.model, model),
+      type = COALESCE(excluded.type, type),
+      room_id = COALESCE(excluded.room_id, room_id),
       last_seen = datetime('now')
   `),
 
@@ -428,29 +430,49 @@ export const stmt: any = {
 // ── SQL Compatibility Layer ──
 // Translates DuckDB-specific SQL constructs to SQLite syntax
 function sqliteCompat(sql: string): string {
-  return sql
-    // INTERVAL 'N hours' → datetime('now', '-N hours')
-    .replace(/CURRENT_TIMESTAMP\s*-\s*INTERVAL\s+'(\d+)\s*(hours|minutes|days|seconds)'/gi, (_, n, unit) => {
-      const unitMap: Record<string, string> = { hours: 'hours', minutes: 'minutes', days: 'days', seconds: 'seconds' };
-      return `datetime('now', '-${n} ${unitMap[unit.toLowerCase()] || unit}')`;
-    })
-    // INTERVAL 5 MINUTE → datetime('now', '+5 minutes')
-    .replace(/NOW\(\)\s*-\s*INTERVAL\s+(\d+)\s+(MINUTE|MINUTES|HOUR|HOURS|DAY|DAYS)/gi, (_, n, unit) => {
-      return `datetime('now', '-${n} ${unit.toLowerCase() === 'minute' ? 'minutes' : unit.toLowerCase() === 'hour' ? 'hours' : unit.toLowerCase() === 'day' ? 'days' : unit.toLowerCase()})`;
-    })
-    .replace(/INTERVAL\s+'(\d+)\s*(hours|minutes|days)'/gi, (_, n, unit) => {
-      return `datetime('now', '+${n} ${unit}')`;
-    })
-    // CURRENT_DATE → date('now')
-    .replace(/\bCURRENT_DATE\b/gi, "date('now')")
-    // CURRENT_TIMESTAMP → datetime('now')
-    .replace(/\bCURRENT_TIMESTAMP\b/gi, "datetime('now')")
-    // NOW() → datetime('now')
-    .replace(/\bNOW\(\)/gi, "datetime('now')")
-    // DuckDB ::DECIMAL(6,2) cast
-    .replace(/::DECIMAL\([^)]+\)/gi, '')
-    // DuckDB ::VARCHAR cast
-    .replace(/::VARCHAR/gi, '');
+  if (!sql) return sql;
+
+  let query = sql;
+
+  // 1. CURRENT_TIMESTAMP - INTERVAL 'N' UNIT → datetime('now', '-N units')
+  // Вариант с кавычками: INTERVAL 'N' UNIT
+  query = query.replace(
+    /CURRENT_TIMESTAMP\s*-\s*INTERVAL\s+'(\d+)'\s*(HOURS?|MINUTES?|DAYS?|SECONDS?)/gi,
+    (_match, num, unit) => {
+      const u = unit.toLowerCase().replace(/s$/, '');
+      return `datetime('now', '-${num} ${u}s')`;
+    }
+  );
+
+  // 2. datetime('now') - INTERVAL 'N' UNIT (второй проход)
+  query = query.replace(
+    /datetime\('now'\)\s*-\s*INTERVAL\s+'(\d+)'\s*(HOURS?|MINUTES?|DAYS?|SECONDS?)/gi,
+    (_match, num, unit) => {
+      const u = unit.toLowerCase().replace(/s$/, '');
+      return `datetime('now', '-${num} ${u}s')`;
+    }
+  );
+
+  // 3. Просто CURRENT_TIMESTAMP → datetime('now')
+  query = query.replace(/\bCURRENT_TIMESTAMP\b/gi, "datetime('now')");
+
+  // 4. Дополнительная защита — удалить оставшиеся INTERVAL с кавычками
+  query = query.replace(/INTERVAL\s+'\d+'\s*\w+/gi, '');
+  query = query.replace(/INTERVAL\s+\d+\s+\w+/gi, '');
+
+  // 5. CURRENT_DATE → date('now')
+  query = query.replace(/\bCURRENT_DATE\b/gi, "date('now')");
+
+  // 6. NOW() → datetime('now')
+  query = query.replace(/\bNOW\(\)/gi, "datetime('now')");
+
+  // 7. DuckDB ::DECIMAL(N,N) cast
+  query = query.replace(/::DECIMAL\([^)]+\)/gi, '');
+
+  // 8. DuckDB ::VARCHAR cast
+  query = query.replace(/::VARCHAR/gi, '');
+
+  return query;
 }
 
 // ── Helper Functions ────────────────────────────────────
