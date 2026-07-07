@@ -430,35 +430,33 @@ export const stmt: any = {
 // ── SQL Compatibility Layer ──
 // Translates DuckDB-specific SQL constructs to SQLite syntax
 function sqliteCompat(sql: string): string {
-  if (!sql) return sql;
+  if (!sql || typeof sql !== 'string') return sql;
 
-  let query = sql;
+  let query = sql.trim();
 
-  // 1. CURRENT_TIMESTAMP - INTERVAL 'N' UNIT → datetime('now', '-N units')
-  // Вариант с кавычками: INTERVAL 'N' UNIT
+  // 1. Заменяем CURRENT_TIMESTAMP - INTERVAL 'N' UNIT
   query = query.replace(
-    /CURRENT_TIMESTAMP\s*-\s*INTERVAL\s+'(\d+)'\s*(HOURS?|MINUTES?|DAYS?|SECONDS?)/gi,
+    /CURRENT_TIMESTAMP\s*-\s*INTERVAL\s*['"]?(\d+)['"]?\s*(HOURS|HOUR|MINUTES|MINUTE|DAYS|DAY|SECONDS|SECOND)/gi,
     (_match, num, unit) => {
       const u = unit.toLowerCase().replace(/s$/, '');
       return `datetime('now', '-${num} ${u}s')`;
     }
   );
 
-  // 2. datetime('now') - INTERVAL 'N' UNIT (второй проход)
+  // 2. Заменяем datetime('now') - INTERVAL 'N' UNIT
   query = query.replace(
-    /datetime\('now'\)\s*-\s*INTERVAL\s+'(\d+)'\s*(HOURS?|MINUTES?|DAYS?|SECONDS?)/gi,
+    /datetime\(['"]now['"]\)\s*-\s*INTERVAL\s*['"]?(\d+)['"]?\s*(HOURS|HOUR|MINUTES|MINUTE|DAYS|DAY|SECONDS|SECOND)/gi,
     (_match, num, unit) => {
       const u = unit.toLowerCase().replace(/s$/, '');
       return `datetime('now', '-${num} ${u}s')`;
     }
   );
 
-  // 3. Просто CURRENT_TIMESTAMP → datetime('now')
+  // 3. Простая замена CURRENT_TIMESTAMP
   query = query.replace(/\bCURRENT_TIMESTAMP\b/gi, "datetime('now')");
 
-  // 4. Дополнительная защита — удалить оставшиеся INTERVAL с кавычками
-  query = query.replace(/INTERVAL\s+'\d+'\s*\w+/gi, '');
-  query = query.replace(/INTERVAL\s+\d+\s+\w+/gi, '');
+  // 4. Удаляем оставшиеся INTERVAL (защита)
+  query = query.replace(/INTERVAL\s*['"]?\d+['"]?\s*\w+/gi, '');
 
   // 5. CURRENT_DATE → date('now')
   query = query.replace(/\bCURRENT_DATE\b/gi, "date('now')");
