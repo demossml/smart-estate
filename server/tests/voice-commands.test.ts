@@ -100,20 +100,21 @@ describe('GET /api/voice/pending-actions', () => {
 });
 
 describe('POST /api/voice/pending-actions/:id/confirm', () => {
-  it.skip('returns 403 without CSRF', async () => {
+  it('returns 404 for nonexistent action (voice excluded from CSRF)', async () => {
     const res = await request
       .post('/api/voice/pending-actions/test/confirm')
       .send({});
-    expect(res.status).toBe(403);
+    // Voice endpoints исключены из CSRF, но несуществующий action → 404
+    expect(res.status).toBe(404);
   });
 });
 
 describe('POST /api/voice/pending-actions/:id/dismiss', () => {
-  it.skip('returns 403 without CSRF', async () => {
+  it('returns 404 for nonexistent action (voice excluded from CSRF)', async () => {
     const res = await request
       .post('/api/voice/pending-actions/nonexistent/dismiss')
       .send({});
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -127,10 +128,10 @@ describe('GET /api/voice/suggestions', () => {
 });
 
 describe('POST /api/voice/suggestions/:id/accept', () => {
-  it.skip('returns 403 without CSRF', async () => {
+  it('returns 404 for nonexistent suggestion (voice excluded from CSRF)', async () => {
     const res = await request
       .post('/api/voice/suggestions/nonexistent/accept')
       .send({});
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });

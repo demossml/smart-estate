@@ -19,25 +19,16 @@ function api(url: string) {
 }
 
 function apiPost(url: string) {
-  const r = request.post(url).set('X-API-Key', 'test-key-12345');
-  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
-  if (csrfCookie) r.set('Cookie', csrfCookie);
-  return r;
+  return request.post(url).set('X-API-Key', 'test-key-12345');
 }
 
 function apiPatch(url: string) {
-  const r = request.patch(url).set('X-API-Key', 'test-key-12345');
-  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
-  if (csrfCookie) r.set('Cookie', csrfCookie);
-  return r;
+  return request.patch(url).set('X-API-Key', 'test-key-12345');
 }
 
 beforeAll(async () => {
   app = await getApp();
   request = getRequest(app);
-  const csrf = await getCsrf(request);
-  csrfToken = csrf.token;
-  csrfCookie = csrf.cookie;
 });
 
 afterAll(async () => {
@@ -274,16 +265,13 @@ describe('POST /api/scenarios/:id/toggle', () => {
     const before = await api('/api/scenarios');
     const wasActive = before.body.scenarios[0].active;
 
-    // Get fresh CSRF for this request
+    // Get fresh CSRF token (agent auto-handles cookies)
     const csrfRes = await request.get('/api/csrf-token').set('X-API-Key', 'test-key-12345');
-    const freshToken = csrfRes.body.token;
-    const freshCookie = (csrfRes.headers['set-cookie'] || []).join(',');
 
     const toggle = await request
       .post('/api/scenarios/1/toggle')
       .set('X-API-Key', 'test-key-12345')
-      .set('X-CSRF-Token', freshToken || '')
-      .set('Cookie', freshCookie);
+      .set('X-CSRF-Token', csrfRes.body.token || '');
     expect(toggle.status).toBe(200);
     expect(toggle.body.ok).toBe(true);
     // SQLite INTEGER 1/0 is represented as number; JS expects truthy
@@ -294,8 +282,7 @@ describe('POST /api/scenarios/:id/toggle', () => {
     await request
       .post('/api/scenarios/1/toggle')
       .set('X-API-Key', 'test-key-12345')
-      .set('X-CSRF-Token', csrfRes2.body.token || '')
-      .set('Cookie', (csrfRes2.headers['set-cookie'] || []).join(','));
+      .set('X-CSRF-Token', csrfRes2.body.token || '');
   });
 });
 

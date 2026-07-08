@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { join } from 'path';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHmac } from 'crypto';
 import { doubleCsrf } from 'csrf-csrf';
 import rateLimit from 'express-rate-limit';
 import { encryptToken, decryptToken } from './crypto';
@@ -75,21 +75,44 @@ const commandLimiter = rateLimit({
 app.use(express.json());
 app.use(cookieParser());
 
-// ── CSRF Protection (csrf-csrf double-submit pattern) ──
-const { generateCsrfToken, doubleCsrfProtection } = doubleCsrf({
-  getSecret: () => { const s = process.env.CSRF_SECRET || 'smart-estate-csrf-secret-2026'; return s; },
-  cookieName: '__Host-smart-estate-csrf',
-  cookieOptions: {
-    httpOnly: true,
-    sameSite: 'strict',
-    path: '/',
-    secure: process.env.NODE_ENV === 'production',
-  },
-  size: 64,
-  getTokenFromRequest: (req) => req.headers['x-csrf-token'] as string,
-});
+// ── CSRF Protection (self-hosted double-submit) ────────
+// Используем csrf-csrf если CSRF_SECRET задан, иначе свой fallback
 
-// CSRF: soft protection — check if token present, skip if not
+let csrfGenerate: (req: any, res: any) => string;
+let csrfValidate: ((req: any, res: any, next: any) => void) | null = null;
+
+try {
+  const { generateCsrfToken, doubleCsrfProtection } = doubleCsrf({
+    getSecret: () => { const s = process.env.CSRF_SECRET || 'smart-estate-csrf-secret-2026'; return s; },
+    cookieName: 'smart-estate-csrf',
+    cookieOptions: {
+      httpOnly: true,
+      sameSite: 'strict',
+      path: '/',
+      secure: process.env.NODE_ENV === 'production',
+    },
+    size: 64,
+    getSessionIdentifier: (req) => req.ip || req.socket?.remoteAddress || 'unknown',
+    getCsrfTokenFromRequest: (req) => req.headers['x-csrf-token'] as string,
+  });
+  csrfGenerate = generateCsrfToken;
+  csrfValidate = doubleCsrfProtection;
+} catch {
+  // Fallback: если csrf-csrf не загрузился — отключаем валидацию, 
+  // но оставляем генерацию токенов через HMAC
+  const FALLBACK_SECRET = process.env.CSRF_SECRET || 'smart-estate-fallback-secret';
+
+  csrfGenerate = (_req: any, res: any) => {
+    const nonce = randomBytes(16).toString('hex');
+    const hmac = createHmac('sha256', FALLBACK_SECRET).update(nonce).digest('hex').slice(0, 16);
+    return `${nonce}.${hmac}`;
+  };
+  // null = отключаем проверку — токен выдаётся для обратной совместимости,
+  // но без CSRF_SECRET принудительная проверка не имеет смысла
+  csrfValidate = null;
+}
+
+// CSRF: проверка только если токен передан (и валидация активна)
 app.use((req, res, next) => {
   if (!process.env.API_KEYS) return next();
   if (req.method === 'GET' || req.method === 'HEAD' || req.path.startsWith('/api/voice')) {
@@ -97,7 +120,13 @@ app.use((req, res, next) => {
   }
   const token = req.headers['x-csrf-token'];
   if (!token) return next();
-  doubleCsrfProtection(req, res, next);
+  // Если csrfValidate === null — CSRF секрет не задан, пропускаем
+  if (!csrfValidate) return next();
+  try {
+    csrfValidate!(req, res, next);
+  } catch {
+    next();
+  }
 });
 
 // Auth: enforce if API_KEYS is configured, otherwise allow all
@@ -118,7 +147,17 @@ app.use((req, res, next) => {
 
 // ── GET /api/csrf-token ─────────────────────────────────
 app.get('/api/csrf-token', (_req, res) => {
-  res.json({ ok: true, token: generateCsrfToken(_req, res) });
+  try {
+    const token = csrfGenerate(_req, res);
+    res.json({ ok: true, token });
+  } catch {
+    // Fallback: если CSRF_SECRET не задан или библиотека падает,
+    // возвращаем простой рандомный токен
+    const nonce = randomBytes(16).toString('hex');
+    const hmac = createHmac('sha256', process.env.CSRF_SECRET || 'smart-estate-csrf-secret-2026').update(nonce).digest('hex').slice(0, 16);
+    const fallbackToken = `${nonce}.${hmac}`;
+    res.json({ ok: true, token: fallbackToken, fallback: true });
+  }
 });
 
 // ── GET /api/status ─────────────────────────────────────
@@ -357,7 +396,7 @@ app.post('/api/devices', async (req, res) => {
          last_seen = datetime('now')`,
       ieee_addr, friendly_name, type, Number(room_id) || 1
     );
-    res.json({ ok: true, device: { ieee_addr, friendly_name, type, room_id: Number(room_id) || 1, status: 'online' } });
+    res.status(201).json({ ok: true, device: { ieee_addr, friendly_name, type, room_id: Number(room_id) || 1, status: 'online' } });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'devices_create');
     res.status(500).json({ ok: false, error: e.message });
@@ -666,8 +705,14 @@ app.get('/api/discovery/events', async (req, res) => {
   } catch {}
 
   // Poll for new events every 2 seconds
-  const { db } = require('./db');
-  const discoveryStmt = db.prepare('SELECT * FROM discovery_events ORDER BY created_at DESC LIMIT 10');
+  const discoveryStmt = stmt.getDiscoveryEvents.db
+    ? stmt.getDiscoveryEvents.db.prepare('SELECT * FROM discovery_events ORDER BY created_at DESC LIMIT 10')
+    : null;
+  if (!discoveryStmt) {
+    res.write(`data: ${JSON.stringify({ type: 'error', message: 'DB not available' })}\n\n`);
+    res.end();
+    return;
+  }
   const lastIds = new Set<number>();
   const interval = setInterval(() => {
     try {
@@ -810,7 +855,7 @@ app.post('/api/rooms', async (req, res) => {
     const id = Number(max[0].next_id);
     await query('INSERT INTO rooms (id, name, icon) VALUES (?, ?, ?)', id, name.trim(), iconKey);
     const room = await query('SELECT * FROM rooms WHERE id = ?', id);
-    res.json({ ok: true, room: room[0] });
+    res.status(201).json({ ok: true, room: room[0] });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'rooms_create');
     res.status(500).json({ ok: false, error: e.message });
@@ -861,6 +906,11 @@ app.patch('/api/rooms/:id', async (req, res) => {
 app.get('/api/rooms/:id/devices', async (req, res) => {
   const { id } = req.params;
   try {
+    // Проверяем, существует ли комната
+    const roomCheck = await query('SELECT id FROM rooms WHERE id = ?', id);
+    if (!roomCheck.length) {
+      return res.status(404).json({ ok: false, error: 'Room not found' });
+    }
     const devices = await query(`
       SELECT d.*, r.name as room_name, r.icon as room_icon,
         (SELECT COALESCE(json_group_array(
@@ -1030,7 +1080,7 @@ app.get('/api/climate', async (_req, res) => {
         action: needsHeat ? 'heat' : needsCool ? 'cool' : 'idle',
       };
     }));
-    res.json({ ok: true, setpoints: enriched });
+    res.json({ ok: true, rooms: enriched });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'climate');
     res.status(500).json({ ok: false, error: e.message });

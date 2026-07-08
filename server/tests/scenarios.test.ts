@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import supertest from 'supertest';
-import { getApp, getRequest, getCsrf, cleanTestDb } from './setup';
+import { getApp, getRequest, cleanTestDb } from './setup';
 
 // PORT — уникальный, чтобы файлы не конфликтовали при параллельном запуске
 process.env.PORT = '18791';
@@ -9,8 +9,7 @@ cleanTestDb();
 
 let app: any;
 let request: any;
-let csrfToken = '';
-let csrfCookie = '';
+
 
 function api(url: string) {
   return request.get(url).set('X-API-Key', 'test-key-12345');
@@ -18,31 +17,23 @@ function api(url: string) {
 
 function apiPost(url: string) {
   const r = request.post(url).set('X-API-Key', 'test-key-12345');
-  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
-  if (csrfCookie) r.set('Cookie', csrfCookie);
   return r;
 }
 
 function apiPut(url: string) {
   const r = request.put(url).set('X-API-Key', 'test-key-12345');
-  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
-  if (csrfCookie) r.set('Cookie', csrfCookie);
   return r;
 }
 
 function apiDel(url: string) {
   const r = request.delete(url).set('X-API-Key', 'test-key-12345');
-  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
-  if (csrfCookie) r.set('Cookie', csrfCookie);
   return r;
 }
 
 beforeAll(async () => {
   app = await getApp();
   request = getRequest(app);
-  const csrf = await getCsrf(request);
-  csrfToken = csrf.token;
-  csrfCookie = csrf.cookie;
+
 });
 
 afterAll(async () => {

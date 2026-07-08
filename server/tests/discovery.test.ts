@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { getApp, getRequest, getCsrf, cleanTestDb } from './setup';
+import { getApp, getRequest, cleanTestDb } from './setup';
 
 // PORT — уникальный, чтобы файлы не конфликтовали при параллельном запуске
 process.env.PORT = '18795';
@@ -7,8 +7,7 @@ cleanTestDb();
 
 let app: any;
 let request: any;
-let csrfToken = '';
-let csrfCookie = '';
+
 
 function api(url: string) {
   return request.get(url).set('X-API-Key', 'test-key-12345');
@@ -16,17 +15,13 @@ function api(url: string) {
 
 function apiPost(url: string) {
   const r = request.post(url).set('X-API-Key', 'test-key-12345');
-  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
-  if (csrfCookie) r.set('Cookie', csrfCookie);
   return r;
 }
 
 beforeAll(async () => {
   app = await getApp();
   request = getRequest(app);
-  const csrf = await getCsrf(request);
-  csrfToken = csrf.token;
-  csrfCookie = csrf.cookie;
+
 });
 
 afterAll(async () => {
@@ -78,8 +73,15 @@ describe('POST /api/discovery/:ieee/confirm', () => {
   });
 });
 
-// ── GET /api/discovery/events (SSE) — skip (SSE endpoint, требует реального HTTP)
-// SSE-эндпоинт использует res.write() + setInterval + res.on('close'),
-// supertest не поддерживает корректное закрытие SSE-соединений.
-// Протестировано вручную: curl http://localhost:8788/api/discovery/events
-// возвращает text/event-stream с данными discovery.
+// ── GET /api/discovery/events (SSE) ────────────────────
+describe('GET /api/discovery/events (SSE)', () => {
+  it('returns SSE stream with initial existing events', { timeout: 8000 }, async () => {
+    const res = await api('/api/discovery/events');
+    // After fixing require('./db') -> stmt, SSE endpoint works via supertest
+    // Supertest auto-closes the connection after receiving headers + first data
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('text/event-stream');
+    expect(res.headers['cache-control']).toBe('no-cache');
+    expect(res.text).toContain('existing');
+  });
+});

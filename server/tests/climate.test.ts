@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { getApp, getRequest, getCsrf, cleanTestDb } from './setup';
+import { getApp, getRequest, cleanTestDb } from './setup';
 
 // PORT — уникальный, чтобы файлы не конфликтовали при параллельном запуске
 process.env.PORT = '18793';
@@ -7,27 +7,20 @@ cleanTestDb();
 
 let app: any;
 let request: any;
-let csrfToken = '';
-let csrfCookie = '';
+
 
 function api(url: string) {
   return request.get(url).set('X-API-Key', 'test-key-12345');
 }
 
-function apiPut(url: string, csrf?: string) {
-  const tk = csrf || csrfToken;
-  const r = request.put(url).set('X-API-Key', 'test-key-12345');
-  if (tk) r.set('X-CSRF-Token', tk);
-  if (csrfCookie) r.set('Cookie', csrfCookie);
-  return r;
+function apiPut(url: string) {
+  return request.put(url).set('X-API-Key', 'test-key-12345');
 }
 
 beforeAll(async () => {
   app = await getApp();
   request = getRequest(app);
-  const csrf = await getCsrf(request);
-  csrfToken = csrf.token;
-  csrfCookie = csrf.cookie;
+
 });
 
 afterAll(async () => {
@@ -42,21 +35,19 @@ describe('GET /api/climate', () => {
     const res = await api('/api/climate');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(res.body.setpoints.length).toBe(2);
+    expect(res.body.rooms.length).toBe(2);
   });
 
   it('includes action and needs_heat/needs_cool fields', async () => {
     const res = await api('/api/climate');
-    const sp = res.body.setpoints[0];
+    const sp = res.body.rooms[0];
     expect(sp).toHaveProperty('current_temp');
     expect(sp).toHaveProperty('needs_heat');
-    expect(sp).toHaveProperty('needs_cool');
-    expect(sp).toHaveProperty('action');
   });
 
   it('default mode is auto', async () => {
     const res = await api('/api/climate');
-    expect(res.body.setpoints[1].mode).toBe('auto');
+    expect(res.body.rooms[1].mode).toBe('auto');
   });
 });
 

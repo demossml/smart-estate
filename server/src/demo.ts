@@ -371,15 +371,15 @@ export async function toggleDemoDevice(ieee_addr: string, state: 'ON' | 'OFF'): 
     stateProp.current = newVal;
 
     // Log to DB
-    logCommand(ieee_addr, state, '{}', 'demo');
-    logStateChange(ieee_addr, state === 'ON' ? 'OFF' : 'ON', state, 'demo_toggle');
+    await logCommand(ieee_addr, state, '{}', 'demo');
+    await logStateChange(ieee_addr, state === 'ON' ? 'OFF' : 'ON', state, 'demo_toggle');
 
     // Write telemetry so frontend sees state change immediately
     const seq = _telemetrySeq++;
-    query(
+    await query(
       `INSERT INTO telemetry (id, device_ieee, property, value, unit, raw_json, ts)
        VALUES (${seq}, '${ieee_addr}', 'state', ${newVal}, 'bool', '{}', CURRENT_TIMESTAMP)`
-    ).catch(() => {});
+    );
   }
 
   return true;

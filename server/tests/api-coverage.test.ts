@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { getApp, getRequest, getCsrf, cleanTestDb } from './setup';
+import { getApp, getRequest, cleanTestDb } from './setup';
 
 // Уникальный порт — избегаем конфликтов с другими файлами
 process.env.PORT = '18791';
@@ -8,8 +8,7 @@ cleanTestDb();
 
 let app: any;
 let request: any;
-let csrfToken = '';
-let csrfCookie = '';
+
 
 function api(url: string) {
   return request
@@ -19,38 +18,28 @@ function api(url: string) {
 
 function apiPost(url: string) {
   const r = request.post(url).set('X-API-Key', 'test-key-12345');
-  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
-  if (csrfCookie) r.set('Cookie', csrfCookie);
   return r;
 }
 
 function apiPut(url: string) {
   const r = request.put(url).set('X-API-Key', 'test-key-12345');
-  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
-  if (csrfCookie) r.set('Cookie', csrfCookie);
   return r;
 }
 
 function apiPatch(url: string) {
   const r = request.patch(url).set('X-API-Key', 'test-key-12345');
-  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
-  if (csrfCookie) r.set('Cookie', csrfCookie);
   return r;
 }
 
 function apiDelete(url: string) {
   const r = request.delete(url).set('X-API-Key', 'test-key-12345');
-  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
-  if (csrfCookie) r.set('Cookie', csrfCookie);
   return r;
 }
 
 beforeAll(async () => {
   app = await getApp();
   request = getRequest(app);
-  const csrf = await getCsrf(request);
-  csrfToken = csrf.token;
-  csrfCookie = csrf.cookie;
+
 });
 
 afterAll(async () => {
@@ -62,14 +51,14 @@ afterAll(async () => {
 
 // ── POST /api/devices — create device ────────────────────
 describe('POST /api/devices', () => {
-  it('creates a new device (returns 200)', async () => {
+  it('creates a new device (returns 201)', async () => {
     const res = await apiPost('/api/devices').send({
       ieee_addr: '0xCOV001',
       friendly_name: 'coverage_switch',
       type: 'switch',
       room_id: 1,
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(201);
     expect(res.body.ok).toBe(true);
     expect(res.body.device.ieee_addr).toBe('0xCOV001');
   });
@@ -81,7 +70,7 @@ describe('POST /api/devices', () => {
       type: 'switch',
     });
     // API может вернуть 200 (перезаписать) или 409 (отклонить) — проверяем что не 500
-    expect([200, 409, 400]).toContain(res.status);
+    expect([200, 201, 409, 400]).toContain(res.status);
   });
 
   it('rejects missing required fields', async () => {
@@ -98,7 +87,7 @@ describe('DELETE /api/devices/:id', () => {
       friendly_name: 'to_delete',
       type: 'sensor',
     });
-    expect(create.status).toBe(200);
+    expect(create.status).toBe(201);
     const res = await apiDelete('/api/devices/0xCOV_DEL');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
@@ -164,7 +153,7 @@ describe('GET /api/climate', () => {
     const res = await api('/api/climate');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(Array.isArray(res.body.setpoints)).toBe(true);
+    expect(Array.isArray(res.body.rooms)).toBe(true);
   });
 });
 
@@ -307,9 +296,9 @@ describe('POST /api/rooms', () => {
     await mod.query(`DELETE FROM rooms WHERE name = '${testRoomName}_2'`);
   });
 
-  it('creates a new room (returns 200)', async () => {
+  it('creates a new room (returns 201)', async () => {
     const res = await apiPost('/api/rooms').send({ name: testRoomName, icon: 'test' });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(201);
     expect(res.body.ok).toBe(true);
     expect(res.body.room.name).toBe(testRoomName);
   });
@@ -353,10 +342,9 @@ describe('GET /api/rooms/:id/devices', () => {
     expect(Array.isArray(res.body.devices)).toBe(true);
   });
 
-  it('returns empty array for non-existent room (no 404)', async () => {
+  it('returns 404 for non-existent room', async () => {
     const res = await api('/api/rooms/99999/devices');
-    expect(res.status).toBe(200);
-    expect(Array.isArray(res.body.devices)).toBe(true);
+    expect(res.status).toBe(404);
   });
 });
 

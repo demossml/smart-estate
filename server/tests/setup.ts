@@ -17,6 +17,7 @@ const TEST_DB = `/tmp/smart-estate-${TEST_DB_HASH}.db`;
 
 process.env.SMART_ESTATE_DB_PATH = TEST_DB;
 process.env.API_KEYS = 'test-key-12345';
+process.env.CSRF_SECRET = 'test-secret-2026-for-smart-estate';
 
 const fs = require('fs');
 
