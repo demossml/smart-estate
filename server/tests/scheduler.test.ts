@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 // Test the cron matching and schedule parsing logic
 // These are unit tests that don't need DB
 
-const TEST_DB = '/tmp/smart-estate-scheduler-test.duckdb';
+const TEST_DB = '/tmp/smart-estate-scheduler-test.db';
 process.env.SMART_ESTATE_DB_PATH = TEST_DB;
 
 const fs = require('fs');

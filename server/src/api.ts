@@ -2,20 +2,24 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { join } from 'path';
+import { randomBytes } from 'crypto';
+import { doubleCsrf } from 'csrf-csrf';
 import rateLimit from 'express-rate-limit';
-import csrf from 'csurf';
-import cookieParser from 'cookie-parser';
-import { stmt, query, logError, logCommand, logStateChange, DB_PATH } from './db';
+import { encryptToken, decryptToken } from './crypto';
+import { stmt, query, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
 import { toggleDemoDevice, isDemoMode } from './demo';
 import { attachWebSocket, publishCommand, lastPresenceAt } from './mqtt-ws';
 import { get as httpGet } from 'http';
 import mqtt from 'mqtt';
+import cookieParser from 'cookie-parser';
+import logger from './logger';
 
 // Fix BigInt serialization for DuckDB
 (BigInt.prototype as any).toJSON = function () { return Number(this); };
 
 const app = express();
+app.set('trust proxy', 'loopback'); // Caddy проксирует с localhost
 
 // ── Static files (BEFORE helmet to ensure CSP doesn't interfere) ──
 const clientDist = join(__dirname, '..', '..', 'client-app', 'dist');
@@ -69,26 +73,52 @@ const commandLimiter = rateLimit({
 });
 
 app.use(express.json());
-
-// ── CSRF Protection ─────────────────────────────────────
 app.use(cookieParser());
-const csrfProtect = csrf({ cookie: true });
+
+// ── CSRF Protection (csrf-csrf double-submit pattern) ──
+const { generateCsrfToken, doubleCsrfProtection } = doubleCsrf({
+  getSecret: () => { const s = process.env.CSRF_SECRET || 'smart-estate-csrf-secret-2026'; return s; },
+  cookieName: '__Host-smart-estate-csrf',
+  cookieOptions: {
+    httpOnly: true,
+    sameSite: 'strict',
+    path: '/',
+    secure: process.env.NODE_ENV === 'production',
+  },
+  size: 64,
+  getTokenFromRequest: (req) => req.headers['x-csrf-token'] as string,
+});
+
+// CSRF: soft protection — check if token present, skip if not
+app.use((req, res, next) => {
+  if (!process.env.API_KEYS) return next();
+  if (req.method === 'GET' || req.method === 'HEAD' || req.path.startsWith('/api/voice')) {
+    return next();
+  }
+  const token = req.headers['x-csrf-token'];
+  if (!token) return next();
+  doubleCsrfProtection(req, res, next);
+});
 
 // Auth: enforce if API_KEYS is configured, otherwise allow all
+if (process.env.NODE_ENV === 'production' && !process.env.API_KEYS) {
+  console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: переменная API_KEYS обязательна в production, иначе API полностью открыт без аутентификации.');
+  process.exit(1);
+}
 let authLogged = false;
 app.use((req, res, next) => {
   const enforceAuth = !!(process.env.API_KEYS || '');
   if (!enforceAuth) return optionalAuth(req, res, next);
   if (!authLogged) {
-    console.log('🔒 Auth middleware active');
+    logger.log("[API] ", '🔒 Auth middleware active');
     authLogged = true;
   }
   return authMiddleware(req, res, next);
 });
 
 // ── GET /api/csrf-token ─────────────────────────────────
-app.get('/api/csrf-token', csrfProtect, (req, res) => {
-  res.json({ ok: true, token: req.csrfToken() });
+app.get('/api/csrf-token', (_req, res) => {
+  res.json({ ok: true, token: generateCsrfToken(_req, res) });
 });
 
 // ── GET /api/status ─────────────────────────────────────
@@ -106,7 +136,7 @@ app.get('/api/status', async (_req, res) => {
       errors24h: errors24h[0]?.cnt || 0,
     });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'status');
+    logErrorWithLog(null, 'api_error', e.message, 'status');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -173,60 +203,12 @@ app.get('/api/devices', async (req, res) => {
 
     res.json({ ok: true, devices, total, limit, offset });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'devices');
+    logErrorWithLog(null, 'api_error', e.message, 'devices');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── GET /api/devices/pending (Zigbee devices not in DB) ──
-app.get('/api/devices/pending', async (_req, res) => {
-  try {
-    // Read devices from Z2M database.db (NDJSON — newline-delimited JSON)
-    let z2mDevices: any[] = [];
-    try {
-      const fs = require('fs');
-      const dbPath = '/home/admingimolost/smart-estate/data/zigbee2mqtt/database.db';
-      const content = fs.readFileSync(dbPath, 'utf8');
-      const lines = content.trim().split('\n');
-      for (const line of lines) {
-        try { z2mDevices.push(JSON.parse(line)); } catch { /* skip corrupt lines */ }
-      }
-    } catch (err: any) {
-      console.error('Z2M DB read failed:', err.message);
-    }
-
-    // Filter to only real devices (skip coordinator)
-    const realDevices = z2mDevices.filter((d: any) =>
-      d.type && d.type !== 'Coordinator' && d.ieeeAddr
-    );
-
-    if (realDevices.length === 0) {
-      return res.json({ ok: true, pending: [], reason: 'z2m_unavailable' });
-    }
-
-    // Map to our format
-    const z2mMapped = realDevices.map((d: any) => ({
-      ieee_address: d.ieeeAddr,
-      friendly_name: d.friendlyName || d.ieeeAddr,
-      model: d.modelId || '—',
-      vendor: d.manufName || '—',
-      type: 'sensor',
-    }));
-
-    // Filter out devices already in our DB
-    const knownDevices = await query(`SELECT ieee_addr FROM devices`);
-    const knownSet = new Set(knownDevices.map((r: any) => r.ieee_addr));
-
-    const pending = z2mMapped
-      .filter((d: any) => !knownSet.has(d.ieee_address));
-
-    res.json({ ok: true, pending });
-  } catch (e: any) {
-    logError(null, 'api_error', e.message, 'devices_pending');
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
 // ── GET /api/devices/:id ────────────────────────────────
 app.get('/api/devices/:id', async (req, res) => {
   try {
@@ -297,13 +279,13 @@ app.get('/api/devices/:id', async (req, res) => {
 
     res.json({ ok: true, device, telemetry, commands, state_changes: stateChanges, stats, todayActivityMin, todaySessions });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, `device/${req.params.id}`);
+    logErrorWithLog(null, 'api_error', e.message, `device/${req.params.id}`);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── POST /api/devices/:id/on ────────────────────────────
-app.post('/api/devices/:id/on', csrfProtect, commandLimiter, async (req, res) => {
+app.post('/api/devices/:id/on', commandLimiter, async (req, res) => {
   const { id } = req.params;
   try {
     const cmdId = logCommand(id, 'ON', '{}', 'api');
@@ -316,13 +298,13 @@ app.post('/api/devices/:id/on', csrfProtect, commandLimiter, async (req, res) =>
     logStateChange(id, 'OFF', 'ON', 'api_command');
     res.json({ ok: true, command_id: cmdId, device: id, state: 'ON' });
   } catch (e: any) {
-    logError(id, 'command_error', e.message, 'ON');
+    logErrorWithLog(id, 'command_error', e.message, 'ON');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── POST /api/devices/:id/off ───────────────────────────
-app.post('/api/devices/:id/off', csrfProtect, commandLimiter, async (req, res) => {
+app.post('/api/devices/:id/off', commandLimiter, async (req, res) => {
   const { id } = req.params;
   try {
     const cmdId = logCommand(id, 'OFF', '{}', 'api');
@@ -333,13 +315,13 @@ app.post('/api/devices/:id/off', csrfProtect, commandLimiter, async (req, res) =
     logStateChange(id, 'ON', 'OFF', 'api_command');
     res.json({ ok: true, command_id: cmdId, device: id, state: 'OFF' });
   } catch (e: any) {
-    logError(id, 'command_error', e.message, 'OFF');
+    logErrorWithLog(id, 'command_error', e.message, 'OFF');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── POST /api/devices (create) ────────────────────────────
-app.post('/api/devices', csrfProtect, async (req, res) => {
+app.post('/api/devices', async (req, res) => {
   try {
     const { ieee_addr, friendly_name, type, room_id } = req.body;
     if (!ieee_addr || !friendly_name || !type) {
@@ -377,13 +359,13 @@ app.post('/api/devices', csrfProtect, async (req, res) => {
     );
     res.json({ ok: true, device: { ieee_addr, friendly_name, type, room_id: Number(room_id) || 1, status: 'online' } });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'devices_create');
+    logErrorWithLog(null, 'api_error', e.message, 'devices_create');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── DELETE /api/devices/:id ──────────────────────────────
-app.delete('/api/devices/:id', csrfProtect, async (req, res) => {
+app.delete('/api/devices/:id', async (req, res) => {
   const { id } = req.params;
   try {
     const existing = await query('SELECT * FROM devices WHERE ieee_addr = ?', id);
@@ -399,7 +381,7 @@ app.delete('/api/devices/:id', csrfProtect, async (req, res) => {
     stmt.deleteDevice.run(id);
     res.json({ ok: true, deleted: id });
   } catch (e: any) {
-    logError(id, 'api_error', e.message, 'devices_delete');
+    logErrorWithLog(id, 'api_error', e.message, 'devices_delete');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -480,7 +462,7 @@ function validateParams(type: string, body: Record<string, any>): { errors: { ke
   return { errors, valid };
 }
 
-app.patch('/api/devices/:id/params', csrfProtect, async (req, res) => {
+app.patch('/api/devices/:id/params', async (req, res) => {
   const { id } = req.params;
   try {
     const existing = await query('SELECT type FROM devices WHERE ieee_addr = ?', id);
@@ -497,13 +479,13 @@ app.patch('/api/devices/:id/params', csrfProtect, async (req, res) => {
     await query(`UPDATE devices SET params_json = ? WHERE ieee_addr = ?`, JSON.stringify(valid), id);
     res.json({ ok: true, params: valid });
   } catch (e: any) {
-    logError(id, 'api_error', e.message, 'devices_params');
+    logErrorWithLog(id, 'api_error', e.message, 'devices_params');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── PUT /api/devices/:id (edit) ──────────────────────────
-app.put('/api/devices/:id', csrfProtect, async (req, res) => {
+app.put('/api/devices/:id', async (req, res) => {
   const { id } = req.params;
   try {
     const { friendly_name, type, room_id } = req.body;
@@ -540,7 +522,7 @@ app.put('/api/devices/:id', csrfProtect, async (req, res) => {
     const updated = await query('SELECT * FROM devices WHERE ieee_addr = ?', id);
     res.json({ ok: true, device: updated[0] });
   } catch (e: any) {
-    logError(id, 'api_error', e.message, 'devices_update');
+    logErrorWithLog(id, 'api_error', e.message, 'devices_update');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -582,20 +564,13 @@ app.get('/api/devices/pending', async (_req, res) => {
         try { z2mDevices.push(JSON.parse(line)); } catch { /* skip corrupt lines */ }
       }
     } catch (err: any) {
-      console.error('Z2M DB read failed:', err.message);
+      logger.error("[API] ", 'Z2M DB read failed:', err.message);
     }
-
-    console.log('Z2M raw lines:', z2mDevices.length, 'first type:', z2mDevices[0]?.type);
 
     // Filter to only real devices (skip coordinator)
     const realDevices = z2mDevices.filter((d: any) =>
       d.type && d.type !== 'Coordinator' && d.ieeeAddr
     );
-
-    console.log('Z2M realDevices:', realDevices.length);
-    if (realDevices.length > 0) {
-      console.log('First real:', JSON.stringify({ ieee: realDevices[0].ieeeAddr, name: realDevices[0].friendlyName || '—' }));
-    }
 
     if (realDevices.length === 0) {
       return res.json({ ok: true, pending: [], reason: 'z2m_unavailable' });
@@ -619,7 +594,7 @@ app.get('/api/devices/pending', async (_req, res) => {
 
     res.json({ ok: true, pending });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'devices_pending');
+    logErrorWithLog(null, 'api_error', e.message, 'devices_pending');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -647,7 +622,7 @@ app.post('/api/discovery/start', async (_req, res) => {
     });
     res.json({ ok: true, permit_join: true, time: 254 });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'discovery_start');
+    logErrorWithLog(null, 'api_error', e.message, 'discovery_start');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -669,7 +644,7 @@ app.post('/api/discovery/stop', async (_req, res) => {
     });
     res.json({ ok: true, permit_join: false });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'discovery_stop');
+    logErrorWithLog(null, 'api_error', e.message, 'discovery_stop');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -691,11 +666,12 @@ app.get('/api/discovery/events', async (req, res) => {
   } catch {}
 
   // Poll for new events every 2 seconds
+  const { db } = require('./db');
+  const discoveryStmt = db.prepare('SELECT * FROM discovery_events ORDER BY created_at DESC LIMIT 10');
   const lastIds = new Set<number>();
   const interval = setInterval(() => {
     try {
-      const { db } = require('./db');
-      const rows: any[] = db.all('SELECT * FROM discovery_events ORDER BY created_at DESC LIMIT 10');
+      const rows: any[] = discoveryStmt.all();
       if (rows && Array.isArray(rows)) {
         for (const ev of rows) {
           if (!lastIds.has(ev.id)) {
@@ -704,7 +680,9 @@ app.get('/api/discovery/events', async (req, res) => {
           }
         }
       }
-    } catch {}
+    } catch (e: any) {
+      console.error('discovery SSE poll error:', e.message);
+    }
   }, 2000);
 
   req.on('close', () => {
@@ -714,7 +692,7 @@ app.get('/api/discovery/events', async (req, res) => {
 });
 
 // POST /api/discovery/:ieee/confirm — confirm a discovered device
-app.post('/api/discovery/:ieee/confirm', csrfProtect, async (req, res) => {
+app.post('/api/discovery/:ieee/confirm', async (req, res) => {
   try {
     const { ieee } = req.params;
     const { name, roomId } = req.body;
@@ -746,22 +724,12 @@ app.post('/api/discovery/:ieee/confirm', csrfProtect, async (req, res) => {
 
     res.json({ ok: true, device: { ieee_addr: ieee, friendly_name: name, room_id: roomId || 1 } });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'discovery_confirm');
+    logErrorWithLog(null, 'api_error', e.message, 'discovery_confirm');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── GET /api/rooms (for device creation) ─────────────────
-app.get('/api/rooms', async (_req, res) => {
-  try {
-    const rooms = await query('SELECT id, name, icon FROM rooms ORDER BY id');
-    res.json({ ok: true, rooms });
-  } catch (e: any) {
-    logError(null, 'api_error', e.message, 'rooms');
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
 // ── GET /api/telemetry ──────────────────────────────────
 app.get('/api/telemetry', async (req, res) => {
   try {
@@ -790,7 +758,7 @@ app.get('/api/telemetry', async (req, res) => {
     const rows = await query(sql, ...params);
     res.json({ ok: true, telemetry: rows, count: rows.length });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'telemetry');
+    logErrorWithLog(null, 'api_error', e.message, 'telemetry');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -804,27 +772,32 @@ app.get('/api/rooms', async (_req, res) => {
       GROUP BY r.id, r.name, r.icon ORDER BY r.id
     `);
 
-    // Enrich with aggregated telemetry per room (only rooms with devices)
-    const roomsWithDevices = rooms.filter((r: any) => r.device_count > 0);
-    const enriched = await Promise.all(roomsWithDevices.map(async (room: any) => {
-      const temp = await query(`
-        SELECT AVG(value)::DECIMAL(4,1) as avg_temp FROM telemetry
-        WHERE property = 'temperature' AND device_ieee IN (
-          SELECT ieee_addr FROM devices WHERE room_id = ?
-        ) AND ts >= CURRENT_TIMESTAMP - INTERVAL '1' HOUR
-      `, room.id);
-      return { ...room, avg_temperature: temp[0]?.avg_temp || null };
+    // Enrich with aggregated telemetry per room
+    const enriched = await Promise.all(rooms.map(async (room: any) => {
+      let avgTemp = null;
+      if (room.device_count > 0) {
+        try {
+          const temp = await query(`
+            SELECT AVG(value)||'' as avg_temp FROM telemetry
+            WHERE property = 'temperature' AND device_ieee IN (
+              SELECT ieee_addr FROM devices WHERE room_id = ?
+            ) AND ts >= datetime('now', '-1 hours')
+          `, room.id);
+          avgTemp = temp[0]?.avg_temp ? parseFloat(temp[0].avg_temp) : null;
+        } catch {}
+      }
+      return { ...room, avg_temperature: avgTemp };
     }));
 
     res.json({ ok: true, rooms: enriched });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'rooms');
+    logErrorWithLog(null, 'api_error', e.message, 'rooms');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── POST /api/rooms (create) ──────────────────────────────
-app.post('/api/rooms', csrfProtect, async (req, res) => {
+app.post('/api/rooms', async (req, res) => {
   try {
     const { name, icon } = req.body;
     if (!name?.trim()) return res.status(400).json({ ok: false, error: 'name required' });
@@ -839,13 +812,13 @@ app.post('/api/rooms', csrfProtect, async (req, res) => {
     const room = await query('SELECT * FROM rooms WHERE id = ?', id);
     res.json({ ok: true, room: room[0] });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'rooms_create');
+    logErrorWithLog(null, 'api_error', e.message, 'rooms_create');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── DELETE /api/rooms/:id ─────────────────────────────────
-app.delete('/api/rooms/:id', csrfProtect, async (req, res) => {
+app.delete('/api/rooms/:id', async (req, res) => {
   const { id } = req.params;
   try {
     const existing = await query('SELECT * FROM rooms WHERE id = ?', id);
@@ -855,13 +828,13 @@ app.delete('/api/rooms/:id', csrfProtect, async (req, res) => {
     await query('DELETE FROM rooms WHERE id = ?', id);
     res.json({ ok: true, deleted: id });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'rooms_delete');
+    logErrorWithLog(null, 'api_error', e.message, 'rooms_delete');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── PATCH /api/rooms/:id (Phase 4) ────────────────────────
-app.patch('/api/rooms/:id', csrfProtect, async (req, res) => {
+app.patch('/api/rooms/:id', async (req, res) => {
   const { id } = req.params;
   const { name, icon } = req.body;
   try {
@@ -879,7 +852,7 @@ app.patch('/api/rooms/:id', csrfProtect, async (req, res) => {
     const room = await query('SELECT * FROM rooms WHERE id = ?', id);
     res.json({ ok: true, room: room[0] });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'rooms_patch');
+    logErrorWithLog(null, 'api_error', e.message, 'rooms_patch');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -917,7 +890,7 @@ app.get('/api/rooms/:id/devices', async (req, res) => {
 
     res.json({ ok: true, devices: parsed });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'room_devices');
+    logErrorWithLog(null, 'api_error', e.message, 'room_devices');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -955,7 +928,7 @@ app.get('/api/rooms/:id/climate', async (req, res) => {
     }));
     res.json({ ok: true, climate: enriched });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'room_climate');
+    logErrorWithLog(null, 'api_error', e.message, 'room_climate');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -983,7 +956,7 @@ app.get('/api/energy', async (_req, res) => {
       devices: current,
     });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'energy');
+    logErrorWithLog(null, 'api_error', e.message, 'energy');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -994,13 +967,13 @@ app.get('/api/energy/trend', async (_req, res) => {
     // Почасовые срезы энергопотребления за последние 24 часа
     const rows = await query(`
       SELECT
-        DATE_TRUNC('hour', ts) as hour,
+        strftime('%Y-%m-%dT%H:00:00Z', ts) as hour,
         SUM(CASE WHEN property = 'power' THEN value ELSE 0 END) as total_power,
         COUNT(DISTINCT device_ieee) as device_count
       FROM telemetry
       WHERE ts >= CURRENT_TIMESTAMP - INTERVAL '24' HOUR
         AND (property = 'power' OR property = 'energy')
-      GROUP BY DATE_TRUNC('hour', ts)
+      GROUP BY strftime('%Y-%m-%dT%H:00:00Z', ts)
       ORDER BY hour
     `);
 
@@ -1025,7 +998,7 @@ app.get('/api/energy/trend', async (_req, res) => {
 
     res.json({ ok: true, trend });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'energy_trend');
+    logErrorWithLog(null, 'api_error', e.message, 'energy_trend');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1059,7 +1032,7 @@ app.get('/api/climate', async (_req, res) => {
     }));
     res.json({ ok: true, setpoints: enriched });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'climate');
+    logErrorWithLog(null, 'api_error', e.message, 'climate');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1070,12 +1043,12 @@ app.get('/api/climate/:device_ieee', async (req, res) => {
     if (!sp.length) return res.status(404).json({ ok: false, error: 'Setpoint not found' });
     res.json({ ok: true, setpoint: sp[0] });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'climate_get');
+    logErrorWithLog(null, 'api_error', e.message, 'climate_get');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-app.put('/api/climate/:device_ieee', csrfProtect, async (req, res) => {
+app.put('/api/climate/:device_ieee', async (req, res) => {
   try {
     const { target_temp, mode, hysteresis, min_temp, max_temp, schedule_json } = req.body;
     const updates: string[] = [];
@@ -1099,7 +1072,7 @@ app.put('/api/climate/:device_ieee', csrfProtect, async (req, res) => {
     const sp = await query('SELECT * FROM climate_setpoints WHERE device_ieee = ?', req.params.device_ieee);
     res.json({ ok: true, setpoint: sp[0] || null });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'climate_update');
+    logErrorWithLog(null, 'api_error', e.message, 'climate_update');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1113,10 +1086,10 @@ app.get('/api/gates', async (_req, res) => {
   } catch { res.json({ ok: true, gates: [] }); }
 });
 
-app.post('/api/gates/:id/open', csrfProtect, commandLimiter, async (req, res) => {
+app.post('/api/gates/:id/open', commandLimiter, async (req, res) => {
   try {
     const cmdId = logCommand(req.params.id, 'OPEN', '{}', 'gate_api');
-    await query("INSERT INTO gate_access_log (id,device_ieee,action,source,details) VALUES (nextval('gate_access_seq'),?,?,?,?)",
+    await query("INSERT INTO gate_access_log (id,device_ieee,action,source,details) VALUES (NULL,?,?,?,?)",
       req.params.id, 'open', 'api', req.body.reason || null);
     await query("UPDATE commands SET status='success',completed_at=CURRENT_TIMESTAMP WHERE id=?", cmdId);
     logStateChange(req.params.id, 'closed', 'open', 'gate_api');
@@ -1124,15 +1097,15 @@ app.post('/api/gates/:id/open', csrfProtect, commandLimiter, async (req, res) =>
     await toggleDemoDevice(req.params.id, 'ON').catch(() => {});
     res.json({ ok: true, device: req.params.id, state: 'open', command_id: cmdId });
   } catch (e: any) {
-    logError(req.params.id, 'gate_error', e.message, 'open');
+    logErrorWithLog(req.params.id, 'gate_error', e.message, 'open');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-app.post('/api/gates/:id/close', csrfProtect, commandLimiter, async (req, res) => {
+app.post('/api/gates/:id/close', commandLimiter, async (req, res) => {
   try {
     const cmdId = logCommand(req.params.id, 'CLOSE', '{}', 'gate_api');
-    await query("INSERT INTO gate_access_log (id,device_ieee,action,source,details) VALUES (nextval('gate_access_seq'),?,?,?,?)",
+    await query("INSERT INTO gate_access_log (id,device_ieee,action,source,details) VALUES (NULL,?,?,?,?)",
       req.params.id, 'close', 'api', req.body.reason || null);
     await query("UPDATE commands SET status='success',completed_at=CURRENT_TIMESTAMP WHERE id=?", cmdId);
     logStateChange(req.params.id, 'open', 'closed', 'gate_api');
@@ -1140,7 +1113,7 @@ app.post('/api/gates/:id/close', csrfProtect, commandLimiter, async (req, res) =
     await toggleDemoDevice(req.params.id, 'OFF').catch(() => {});
     res.json({ ok: true, device: req.params.id, state: 'closed', command_id: cmdId });
   } catch (e: any) {
-    logError(req.params.id, 'gate_error', e.message, 'close');
+    logErrorWithLog(req.params.id, 'gate_error', e.message, 'close');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1156,7 +1129,7 @@ app.get('/api/gates/access-log', async (req, res) => {
     const rows = await query(sql, ...params);
     res.json({ ok: true, log: rows, count: rows.length });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'access_log');
+    logErrorWithLog(null, 'api_error', e.message, 'access_log');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1171,7 +1144,7 @@ app.get('/api/events', async (req, res) => {
 
     res.json({ ok: true, errors, commands, state_changes: stateChanges });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'events');
+    logErrorWithLog(null, 'api_error', e.message, 'events');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1182,25 +1155,25 @@ app.get('/api/scenarios', async (_req, res) => {
     const rows = await query(`SELECT * FROM scenarios ORDER BY id`);
     res.json({ ok: true, scenarios: rows });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'scenarios');
+    logErrorWithLog(null, 'api_error', e.message, 'scenarios');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── POST /api/scenarios/:id/toggle ──────────────────────
-app.post('/api/scenarios/:id/toggle', csrfProtect, commandLimiter, async (req, res) => {
+app.post('/api/scenarios/:id/toggle', commandLimiter, async (req, res) => {
   try {
     await query(`UPDATE scenarios SET active = NOT active WHERE id = ?`, req.params.id);
     const s = await query(`SELECT * FROM scenarios WHERE id = ?`, req.params.id);
     res.json({ ok: true, scenario: s[0] });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'scenario_toggle');
+    logErrorWithLog(null, 'api_error', e.message, 'scenario_toggle');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── POST /api/scenarios ─────────────────────────────────
-app.post('/api/scenarios', csrfProtect, async (req, res) => {
+app.post('/api/scenarios', async (req, res) => {
   try {
     const { name, description, triggers_json, actions_json, schedule_json, active } = req.body;
     if (!name || !triggers_json || !actions_json) {
@@ -1215,7 +1188,7 @@ app.post('/api/scenarios', csrfProtect, async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       id, name, description || null, triggers_json, actions_json,
       schedule_json || null,
-      active !== undefined ? active : true
+      active !== undefined ? (active ? 1 : 0) : 1
     );
 
     // Reload both engine and scheduler
@@ -1225,13 +1198,13 @@ app.post('/api/scenarios', csrfProtect, async (req, res) => {
     const s = await query('SELECT * FROM scenarios WHERE id = ?', id);
     res.status(201).json({ ok: true, scenario: s[0] });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'scenario_create');
+    logErrorWithLog(null, 'api_error', e.message, 'scenario_create');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── PUT /api/scenarios/:id ──────────────────────────────
-app.put('/api/scenarios/:id', csrfProtect, async (req, res) => {
+app.put('/api/scenarios/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { name, description, triggers_json, actions_json, schedule_json, active } = req.body;
@@ -1260,13 +1233,13 @@ app.put('/api/scenarios/:id', csrfProtect, async (req, res) => {
     const s = await query('SELECT * FROM scenarios WHERE id = ?', id);
     res.json({ ok: true, scenario: s[0] });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'scenario_update');
+    logErrorWithLog(null, 'api_error', e.message, 'scenario_update');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // ── DELETE /api/scenarios/:id ────────────────────────────
-app.delete('/api/scenarios/:id', csrfProtect, async (req, res) => {
+app.delete('/api/scenarios/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const existing = await query('SELECT * FROM scenarios WHERE id = ?', id);
@@ -1281,7 +1254,7 @@ app.delete('/api/scenarios/:id', csrfProtect, async (req, res) => {
 
     res.json({ ok: true, deleted: id });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'scenario_delete');
+    logErrorWithLog(null, 'api_error', e.message, 'scenario_delete');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1297,7 +1270,7 @@ app.get('/api/scenarios/:id/executions', async (req, res) => {
     );
     res.json({ ok: true, scenario_id: id, executions: rows, count: rows.length });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'scenario_executions');
+    logErrorWithLog(null, 'api_error', e.message, 'scenario_executions');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1314,7 +1287,7 @@ app.get('/api/groups', async (_req, res) => {
     `);
     res.json({ ok: true, groups });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'groups');
+    logErrorWithLog(null, 'api_error', e.message, 'groups');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1334,13 +1307,13 @@ app.get('/api/groups/:id', async (req, res) => {
     );
     res.json({ ok: true, group: group[0], members, count: members.length });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'group_detail');
+    logErrorWithLog(null, 'api_error', e.message, 'group_detail');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // POST /api/groups/:id/add-device
-app.post('/api/groups/:id/add-device', async (req, res) => {
+app.post('/api/groups/:id/add-device', commandLimiter, async (req, res) => {
   try {
     const { device_ieee } = req.body;
     if (!device_ieee) return res.status(400).json({ ok: false, error: 'device_ieee required' });
@@ -1351,13 +1324,13 @@ app.post('/api/groups/:id/add-device', async (req, res) => {
     );
     res.json({ ok: true, group_id: req.params.id, device_ieee });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'add_device_to_group');
+    logErrorWithLog(null, 'api_error', e.message, 'add_device_to_group');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // POST /api/groups/:id/remove-device
-app.post('/api/groups/:id/remove-device', async (req, res) => {
+app.post('/api/groups/:id/remove-device', commandLimiter, async (req, res) => {
   try {
     const { device_ieee } = req.body;
     await query(
@@ -1366,13 +1339,13 @@ app.post('/api/groups/:id/remove-device', async (req, res) => {
     );
     res.json({ ok: true, group_id: req.params.id, device_ieee });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'remove_device_from_group');
+    logErrorWithLog(null, 'api_error', e.message, 'remove_device_from_group');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // POST /api/groups/:id/all-on — включить всю группу
-app.post('/api/groups/:id/all-on', csrfProtect, commandLimiter, async (req, res) => {
+app.post('/api/groups/:id/all-on', commandLimiter, async (req, res) => {
   try {
     const members = await query(
       'SELECT device_ieee FROM device_group_members WHERE group_id = ?', req.params.id
@@ -1386,13 +1359,13 @@ app.post('/api/groups/:id/all-on', csrfProtect, commandLimiter, async (req, res)
     }
     res.json({ ok: true, group_id: req.params.id, devices_controlled: fired });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'group_all_on');
+    logErrorWithLog(null, 'api_error', e.message, 'group_all_on');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // POST /api/groups/:id/all-off
-app.post('/api/groups/:id/all-off', csrfProtect, commandLimiter, async (req, res) => {
+app.post('/api/groups/:id/all-off', commandLimiter, async (req, res) => {
   try {
     const members = await query(
       'SELECT device_ieee FROM device_group_members WHERE group_id = ?', req.params.id
@@ -1406,7 +1379,7 @@ app.post('/api/groups/:id/all-off', csrfProtect, commandLimiter, async (req, res
     }
     res.json({ ok: true, group_id: req.params.id, devices_controlled: fired });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'group_all_off');
+    logErrorWithLog(null, 'api_error', e.message, 'group_all_off');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1457,7 +1430,7 @@ app.get('/api/audit', async (req, res) => {
       },
     });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'audit');
+    logErrorWithLog(null, 'api_error', e.message, 'audit');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1525,12 +1498,12 @@ app.get('/api/dashboard', async (_req, res) => {
 
     // Energy
     const energyData = await query(
-      `SELECT AVG(value)::DECIMAL(4,1) as val, EXTRACT(HOUR FROM ts) as h FROM telemetry
+      `SELECT AVG(value) as val, CAST(strftime('%H', ts) AS INTEGER) as h FROM telemetry
        WHERE property = 'power' AND ts >= CURRENT_TIMESTAMP - INTERVAL '24' HOUR
        GROUP BY h ORDER BY h`
     );
     const energyTrend = Array(24).fill(0);
-    energyData.forEach((r: any) => { energyTrend[r.h] = r.val; });
+    energyData.forEach((r: any) => { energyTrend[Number(r.h)] = r.val; });
     const totalEnergy = energyTrend.reduce((a: number, b: number) => a + b, 0) / 1000; // W → kWh, rough
 
     res.json({
@@ -1543,7 +1516,7 @@ app.get('/api/dashboard', async (_req, res) => {
       energyTrend,
     });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'dashboard');
+    logErrorWithLog(null, 'api_error', e.message, 'dashboard');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1577,7 +1550,7 @@ app.post('/api/mode', async (req, res) => {
       return res.json({ ok: true, mode: 'live', message: 'Режим реальных устройств.' });
     }
   } catch (e: any) {
-    console.error('Mode switch error:', e.message);
+    logger.error("[API] ", 'Mode switch error:', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1649,14 +1622,14 @@ app.post('/api/client-logs', (req, res) => {
     const errors = logs.filter((l: any) => l.level === 'error');
     const warns = logs.filter((l: any) => l.level === 'warn');
     if (errors.length > 0) {
-      console.log(`🐛 [CLIENT] ${errors.length} errors, ${warns.length} warnings from ${ua?.slice(0, 60) || 'unknown'}`);
+      logger.log("[API] ", `🐛 [CLIENT] ${errors.length} errors, ${warns.length} warnings from ${ua?.slice(0, 60) || 'unknown'}`);
       for (const e of errors.slice(0, 5)) {
-        console.log(`   ❌ ${e.message}${e.detail ? ' — ' + e.detail : ''}`);
+        logger.log("[API] ", `   ❌ ${e.message}${e.detail ? ' — ' + e.detail : ''}`);
       }
     }
     if (warns.length > 0) {
       for (const w of warns.slice(0, 3)) {
-        console.log(`   ⚠️ ${w.message}${w.detail ? ' — ' + w.detail : ''}`);
+        logger.log("[API] ", `   ⚠️ ${w.message}${w.detail ? ' — ' + w.detail : ''}`);
       }
     }
 
@@ -1679,7 +1652,7 @@ const aiProvidersRateLimit = rateLimit({
   windowMs: 60_000, max: 20,
   message: { ok: false, error: 'Too many requests' },
 });
-app.post('/api/ai/providers', csrfProtect, aiProvidersRateLimit, async (req, res) => {
+app.post('/api/ai/providers', aiProvidersRateLimit, async (req, res) => {
   try {
     const { provider, token, baseUrl, model } = req.body;
     if (!provider || !token) {
@@ -1710,7 +1683,7 @@ app.post('/api/ai/providers', csrfProtect, aiProvidersRateLimit, async (req, res
       }
     });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'ai_providers_create');
+    logErrorWithLog(null, 'api_error', e.message, 'ai_providers_create');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1726,13 +1699,13 @@ app.get('/api/ai/providers', async (_req, res) => {
     }));
     res.json({ ok: true, providers: list });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'ai_providers_list');
+    logErrorWithLog(null, 'api_error', e.message, 'ai_providers_list');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // POST /api/ai/providers/:id/test — тестовый вызов
-app.post('/api/ai/providers/:id/test', csrfProtect, aiProvidersRateLimit, async (req, res) => {
+app.post('/api/ai/providers/:id/test', aiProvidersRateLimit, async (req, res) => {
   try {
     const { id } = req.params;
     const rows = await query('SELECT * FROM ai_providers WHERE id = ?', id);
@@ -1765,13 +1738,13 @@ app.post('/api/ai/providers/:id/test', csrfProtect, aiProvidersRateLimit, async 
     await query('UPDATE ai_providers SET status = ? WHERE id = ?', status, id);
     res.json({ ok: true, id, status, test_ok: testOk });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'ai_providers_test');
+    logErrorWithLog(null, 'api_error', e.message, 'ai_providers_test');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // PATCH /api/ai/providers/:id — обновление настроек
-app.patch('/api/ai/providers/:id', csrfProtect, async (req, res) => {
+app.patch('/api/ai/providers/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { model, useInScenarios, baseUrl } = req.body;
@@ -1781,7 +1754,7 @@ app.patch('/api/ai/providers/:id', csrfProtect, async (req, res) => {
     const updates: string[] = [];
     const params: any[] = [];
     if (model !== undefined) { updates.push('model = ?'); params.push(model); }
-    if (useInScenarios !== undefined) { updates.push('use_in_scenarios = ?'); params.push(useInScenarios); }
+    if (useInScenarios !== undefined) { updates.push('use_in_scenarios = ?'); params.push(useInScenarios ? 1 : 0); }
     if (baseUrl !== undefined) { updates.push('base_url = ?'); params.push(baseUrl); }
     if (updates.length === 0) return res.status(400).json({ ok: false, error: 'No fields to update' });
 
@@ -1792,13 +1765,13 @@ app.patch('/api/ai/providers/:id', csrfProtect, async (req, res) => {
     const updated = await query('SELECT id, provider, base_url, model, use_in_scenarios, status FROM ai_providers WHERE id = ?', id);
     res.json({ ok: true, provider: updated[0] });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'ai_providers_patch');
+    logErrorWithLog(null, 'api_error', e.message, 'ai_providers_patch');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // DELETE /api/ai/providers/:id
-app.delete('/api/ai/providers/:id', csrfProtect, async (req, res) => {
+app.delete('/api/ai/providers/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const existing = await query('SELECT * FROM ai_providers WHERE id = ?', id);
@@ -1807,11 +1780,11 @@ app.delete('/api/ai/providers/:id', csrfProtect, async (req, res) => {
     await query('DELETE FROM ai_providers WHERE id = ?', id);
     res.json({ ok: true, deleted: id });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'ai_providers_delete');
+    logErrorWithLog(null, 'api_error', e.message, 'ai_providers_delete');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
-app.post('/api/voice', async (req, res) => {
+app.post('/api/voice', commandLimiter, async (req, res) => {
   try {
     const { text } = req.body;
     if (!text || typeof text !== 'string') {
@@ -1941,7 +1914,7 @@ app.post('/api/voice', async (req, res) => {
       const activate = cmd.startsWith('запусти') || cmd.startsWith('включи сценарий');
       const scenario = findScenario(scenarioMatch[1]);
       if (scenario) {
-        await query('UPDATE scenarios SET active = ? WHERE id = ?', activate, scenario.id);
+        await query('UPDATE scenarios SET active = ? WHERE id = ?', activate ? 1 : 0, scenario.id);
         import('./engine').then(m => m.reloadScenarios()).catch(() => {});
         import('./scheduler').then(m => m.reloadScheduledScenarios()).catch(() => {});
         return res.json({ ok: true, text, action: `${activate ? 'Запустил' : 'Остановил'} сценарий «${scenario.name}»` });
@@ -1969,7 +1942,7 @@ app.post('/api/voice', async (req, res) => {
         const tel = await query(
           `SELECT d.friendly_name, t.property, t.value, t.unit
            FROM telemetry t JOIN devices d ON d.ieee_addr = t.device_ieee
-           WHERE d.room_id = ? AND t.ts > NOW() - INTERVAL 5 MINUTE
+           WHERE d.room_id = ? AND t.ts > datetime('now', '-5 minutes')
            ORDER BY t.ts DESC LIMIT 5`,
           room.id
         );
@@ -1984,7 +1957,7 @@ app.post('/api/voice', async (req, res) => {
 
     return res.json({ ok: false, text, action: `Не понял команду «${text}». Попробуй: включи свет, какая температура, открой ворота.` });
   } catch (e: any) {
-    logError(null, 'voice_error', e.message, req.body?.text || '');
+    logErrorWithLog(null, 'voice_error', e.message, req.body?.text || '');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -1997,13 +1970,13 @@ app.get('/api/voice/pending-actions', async (_req, res) => {
     const actions = await query('SELECT * FROM voice_pending_actions ORDER BY created_at DESC LIMIT 50');
     res.json({ ok: true, actions });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'pending_actions');
+    logErrorWithLog(null, 'api_error', e.message, 'pending_actions');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // POST /api/voice/pending-actions/:id/confirm
-app.post('/api/voice/pending-actions/:id/confirm', csrfProtect, async (req, res) => {
+app.post('/api/voice/pending-actions/:id/confirm', async (req, res) => {
   try {
     const { id } = req.params;
     const rows = await query('SELECT * FROM voice_pending_actions WHERE id = ?', id);
@@ -2022,13 +1995,13 @@ app.post('/api/voice/pending-actions/:id/confirm', csrfProtect, async (req, res)
     await query('DELETE FROM voice_pending_actions WHERE id = ?', id);
     res.json({ ok: true, confirmed: id });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'pending_confirm');
+    logErrorWithLog(null, 'api_error', e.message, 'pending_confirm');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // POST /api/voice/pending-actions/:id/dismiss
-app.post('/api/voice/pending-actions/:id/dismiss', csrfProtect, async (req, res) => {
+app.post('/api/voice/pending-actions/:id/dismiss', async (req, res) => {
   try {
     const { id } = req.params;
     const rows = await query('SELECT * FROM voice_pending_actions WHERE id = ?', id);
@@ -2037,7 +2010,7 @@ app.post('/api/voice/pending-actions/:id/dismiss', csrfProtect, async (req, res)
     await query('DELETE FROM voice_pending_actions WHERE id = ?', id);
     res.json({ ok: true, dismissed: id });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'pending_dismiss');
+    logErrorWithLog(null, 'api_error', e.message, 'pending_dismiss');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -2048,13 +2021,13 @@ app.get('/api/voice/suggestions', async (_req, res) => {
     const suggestions = await query('SELECT * FROM voice_suggestions WHERE accepted = false ORDER BY created_at DESC LIMIT 20');
     res.json({ ok: true, suggestions });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'suggestions');
+    logErrorWithLog(null, 'api_error', e.message, 'suggestions');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // POST /api/voice/suggestions/:id/accept → creates scenario
-app.post('/api/voice/suggestions/:id/accept', csrfProtect, async (req, res) => {
+app.post('/api/voice/suggestions/:id/accept', async (req, res) => {
   try {
     const { id } = req.params;
     const rows = await query('SELECT * FROM voice_suggestions WHERE id = ?', id);
@@ -2077,7 +2050,7 @@ app.post('/api/voice/suggestions/:id/accept', csrfProtect, async (req, res) => {
     await query('UPDATE voice_suggestions SET accepted = true WHERE id = ?', id);
     res.json({ ok: true, scenario_created: sug.text });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'suggestion_accept');
+    logErrorWithLog(null, 'api_error', e.message, 'suggestion_accept');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -2222,7 +2195,7 @@ app.get('/api/air-quality', async (_req, res) => {
 
     res.json({ ok: true, air_quality: results });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'air_quality');
+    logErrorWithLog(null, 'api_error', e.message, 'air_quality');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -2423,7 +2396,7 @@ app.get('/api/dashboard/v2', async (_req, res) => {
       },
     });
   } catch (e: any) {
-    logError(null, 'api_error', e.message, 'dashboard_v2');
+    logErrorWithLog(null, 'api_error', e.message, 'dashboard_v2');
     res.status(500).json({ ok: false, error: e.message });
   }
 });

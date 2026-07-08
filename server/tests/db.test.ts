@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
-const TEST_DB = '/tmp/smart-estate-test.duckdb';
+const TEST_DB = '/tmp/smart-estate-db-unit-test.db';
 process.env.SMART_ESTATE_DB_PATH = TEST_DB;
 
 const fs = require('fs');
@@ -80,16 +80,16 @@ describe('CRUD Operations', () => {
 
   it('inserts and queries telemetry', async () => {
     await mod.query(`INSERT INTO telemetry (id,device_ieee,property,value,unit,raw_json)
-      VALUES (nextval('telemetry_seq'),'0xTEL1','temperature',23.5,'°C','{}')`);
+      VALUES (NULL,'0xTEL1','temperature',23.5,'°C','{}')`);
     await mod.query(`INSERT INTO telemetry (id,device_ieee,property,value,unit,raw_json)
-      VALUES (nextval('telemetry_seq'),'0xTEL1','humidity',45.0,'%','{}')`);
+      VALUES (NULL,'0xTEL1','humidity',45.0,'%','{}')`);
     const rows = await mod.query("SELECT * FROM telemetry WHERE device_ieee='0xTEL1' ORDER BY ts");
     expect(rows.length).toBe(2);
   });
 
   it('inserts and completes commands', async () => {
     await mod.query(`INSERT INTO commands (id,device_ieee,command,payload,status,source)
-      VALUES (nextval('commands_seq'),'0xCMD1','ON','{}','sent','api')`);
+      VALUES (NULL,'0xCMD1','ON','{}','sent','api')`);
     const cmds = await mod.query("SELECT * FROM commands WHERE device_ieee='0xCMD1' ORDER BY sent_at");
     expect(cmds.length).toBe(1);
     await mod.query(`UPDATE commands SET status='success',completed_at=CURRENT_TIMESTAMP WHERE id=${cmds[0].id}`);
@@ -99,16 +99,16 @@ describe('CRUD Operations', () => {
 
   it('records state changes', async () => {
     await mod.query(`INSERT INTO state_changes (id,device_ieee,old_state,new_state,reason)
-      VALUES (nextval('state_changes_seq'),'0xST1','OFF','ON','mqtt')`);
+      VALUES (NULL,'0xST1','OFF','ON','mqtt')`);
     const rows = await mod.query("SELECT * FROM state_changes WHERE device_ieee='0xST1' ORDER BY ts");
     expect(rows.length).toBe(1);
   });
 
   it('aggregates energy data', async () => {
     await mod.query(`INSERT INTO telemetry (id,device_ieee,property,value,unit,raw_json)
-      VALUES (nextval('telemetry_seq'),'0xEN1','energy',1.5,'kWh','{}')`);
+      VALUES (NULL,'0xEN1','energy',1.5,'kWh','{}')`);
     await mod.query(`INSERT INTO telemetry (id,device_ieee,property,value,unit,raw_json)
-      VALUES (nextval('telemetry_seq'),'0xEN1','energy',2.0,'kWh','{}')`);
+      VALUES (NULL,'0xEN1','energy',2.0,'kWh','{}')`);
     const rows = await mod.query(
       "SELECT SUM(value)::DECIMAL(6,2) as kwh FROM telemetry WHERE property='energy' AND ts>=CURRENT_DATE"
     );
@@ -117,10 +117,10 @@ describe('CRUD Operations', () => {
 
   it('toggles scenario', async () => {
     const before = await mod.query("SELECT active FROM scenarios WHERE id=1");
-    expect(before[0].active).toBe(true);
+    expect(before[0].active).toBe(1);
     await mod.query("UPDATE scenarios SET active=NOT active WHERE id=1");
     const after = await mod.query("SELECT active FROM scenarios WHERE id=1");
-    expect(after[0].active).toBe(false);
+    expect(after[0].active).toBe(0);
     await mod.query("UPDATE scenarios SET active=NOT active WHERE id=1");
   });
 
@@ -141,8 +141,8 @@ describe('Helper Functions', () => {
   });
 
   it('query() handles parameterized queries', async () => {
-    const rows = await mod.query("SELECT ? as a, ? as b, ? as c", 10, 'test', true);
-    expect(rows[0]).toEqual({ a: 10, b: 'test', c: true });
+    const rows = await mod.query("SELECT ? as a, ? as b, ? as c", 10, 'test', 1);
+    expect(rows[0]).toEqual({ a: 10, b: 'test', c: 1 });
   });
 
   it('query() rejects on invalid SQL', async () => {
@@ -151,14 +151,14 @@ describe('Helper Functions', () => {
 
   it('logError() writes to errors table', async () => {
     const before = await mod.query("SELECT COUNT(*) as cnt FROM errors");
-    mod.logError('0xLOGERR', 'test_type', 'test message', 'test_ctx');
+    mod.logErrorWithLog('0xLOGERR', 'test_type', 'test message', 'test_ctx');
     await new Promise(r => setTimeout(r, 100));
     const after = await mod.query("SELECT COUNT(*) as cnt FROM errors");
     expect(after[0].cnt).toBeGreaterThan(before[0].cnt);
   });
 
   it('logError() handles null device_ieee', async () => {
-    mod.logError(null, 'sys_error', 'system failure');
+    mod.logErrorWithLog(null, 'sys_error', 'system failure');
     await new Promise(r => setTimeout(r, 100));
     const rows = await mod.query("SELECT * FROM errors WHERE error_type='sys_error' ORDER BY ts DESC LIMIT 1");
     expect(rows[0].device_ieee).toBeNull();

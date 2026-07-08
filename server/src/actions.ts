@@ -1,4 +1,5 @@
-import { query, logError, logCommand, logStateChange } from './db';
+import { query, logErrorWithLog, logCommand, logStateChange } from './db';
+import logger from './logger';
 
 // Action types
 export interface ScenarioAction {
@@ -18,14 +19,14 @@ export async function executeAction(action: ScenarioAction, scenarioName: string
     case 'notify':
       return executeNotifyAction(action, scenarioName);
     default:
-      console.warn(`⚠️ Unknown action type: ${(action as any).type}`);
+      logger.warn("[ACTIONS] ", `⚠️ Unknown action type: ${(action as any).type}`);
       return false;
   }
 }
 
 function executeMqttAction(action: ScenarioAction, scenarioName: string): boolean {
   if (!action.device || !action.command) {
-    logError(null, 'scenario_action_error', 'Missing device or command', scenarioName);
+    logErrorWithLog(null, 'scenario_action_error', 'Missing device or command', scenarioName);
     return false;
   }
 
@@ -39,25 +40,29 @@ function executeMqttAction(action: ScenarioAction, scenarioName: string): boolea
     cmdId
   ).catch(() => {});
 
-  console.log(`🎬 [${scenarioName}] → ${action.device}: ${action.command}`);
+  logger.log("[ACTIONS] ", `🎬 [${scenarioName}] → ${action.device}: ${action.command}`);
   return true;
 }
 
-function executeNotifyAction(action: ScenarioAction, scenarioName: string): boolean {
+async function executeNotifyAction(action: ScenarioAction, scenarioName: string): Promise<boolean> {
   if (!action.message) {
-    logError(null, 'scenario_action_error', 'Missing message', scenarioName);
+    logErrorWithLog(null, 'scenario_action_error', 'Missing message', scenarioName);
     return false;
   }
 
   // Log as a system notification in the state_changes table
-  query(
-    `INSERT INTO state_changes (id, device_ieee, old_state, new_state, reason) 
-     VALUES (nextval('state_changes_seq'), 'system', 'idle', 'notify', ?)`,
-    `scenario:${scenarioName}: ${action.message}`
-  ).catch(() => {});
-
-  console.log(`🔔 [${scenarioName}] NOTIFY: ${action.message}`);
-  return true;
+  try {
+    await query(
+      `INSERT INTO state_changes (device_ieee, old_state, new_state, reason)
+       VALUES ('system', 'idle', 'notify', ?)`,
+      `scenario:${scenarioName}: ${action.message}`
+    );
+    logger.log("[ACTIONS] ", `🔔 [${scenarioName}] NOTIFY: ${action.message}`);
+    return true;
+  } catch (e: any) {
+    logErrorWithLog(null, 'scenario_action_error', e.message, scenarioName);
+    return false;
+  }
 }
 
 // ── Batch Executor ───────────────────────────────────────
@@ -78,7 +83,7 @@ export async function executeActions(
       else errors.push(`Action ${action.type} failed`);
     } catch (e: any) {
       errors.push(e.message);
-      logError(null, 'scenario_action_error', e.message, scenarioName);
+      logErrorWithLog(null, 'scenario_action_error', e.message, scenarioName);
     }
   }
 

@@ -1,6 +1,7 @@
-import { query, logError, logScenarioExec } from './db';
+import { query, logErrorWithLog, logScenarioExec } from './db';
 import { evaluateTriggers, buildTriggerIndex, parseTriggers, TriggerSet, TriggerCondition } from './triggers';
 import { executeActions, parseActions, ScenarioAction } from './actions';
+import logger from './logger';
 
 // ── Scenario Engine ──────────────────────────────────────
 
@@ -34,7 +35,7 @@ export async function reloadScenarios(): Promise<void> {
       const actions = parseActions(row.actions_json);
 
       if (!triggers || !actions) {
-        logError(null, 'scenario_parse_error',
+        logErrorWithLog(null, 'scenario_parse_error',
           `Invalid triggers or actions for scenario #${row.id}`, row.name);
         continue;
       }
@@ -60,9 +61,9 @@ export async function reloadScenarios(): Promise<void> {
 
     scenarios = newScenarios;
     triggerIndex = newIndex;
-    console.log(`🎭 Scenarios loaded: ${scenarios.length} active`);
+    logger.log("[ENGINE] ", `🎭 Scenarios loaded: ${scenarios.length} active`);
   } catch (e: any) {
-    logError(null, 'scenario_reload_error', e.message);
+    logErrorWithLog(null, 'scenario_reload_error', e.message);
   }
 }
 
@@ -119,7 +120,7 @@ export async function evaluateTelemetry(
     const result = evaluateTriggers(scenario.triggers, telemetryMap);
 
     if (result.matched) {
-      console.log(`🎯 [scenario #${scenario.id}] ${scenario.name} TRIGGERED`);
+      logger.log("[ENGINE] ", `🎯 [scenario #${scenario.id}] ${scenario.name} TRIGGERED`);
 
       // Execute actions
       const execResult = await executeActions(scenario.actions, scenario.name);
@@ -184,4 +185,4 @@ async function enrichTelemetryMap(
 // ── Force Reload ─────────────────────────────────────────
 
 // Auto-reload on module load
-reloadScenarios().catch(e => console.error('Initial scenario load failed:', e.message));
+reloadScenarios().catch(e => logger.error("[ENGINE] ", 'Initial scenario load failed:', e.message));

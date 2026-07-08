@@ -1,29 +1,55 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import supertest from 'supertest';
+import { getApp, getRequest, getCsrf, cleanTestDb } from './setup';
 
-const TEST_DB = '/tmp/smart-estate-scenario-test.duckdb';
-process.env.SMART_ESTATE_DB_PATH = TEST_DB;
+// PORT — уникальный, чтобы файлы не конфликтовали при параллельном запуске
 process.env.PORT = '18791';
 
-const fs = require('fs');
-if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
-if (fs.existsSync(TEST_DB + '.wal')) fs.unlinkSync(TEST_DB + '.wal');
+cleanTestDb();
 
 let app: any;
 let request: any;
-let csrfToken: string;
+let csrfToken = '';
+let csrfCookie = '';
+
+function api(url: string) {
+  return request.get(url).set('X-API-Key', 'test-key-12345');
+}
+
+function apiPost(url: string) {
+  const r = request.post(url).set('X-API-Key', 'test-key-12345');
+  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
+  if (csrfCookie) r.set('Cookie', csrfCookie);
+  return r;
+}
+
+function apiPut(url: string) {
+  const r = request.put(url).set('X-API-Key', 'test-key-12345');
+  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
+  if (csrfCookie) r.set('Cookie', csrfCookie);
+  return r;
+}
+
+function apiDel(url: string) {
+  const r = request.delete(url).set('X-API-Key', 'test-key-12345');
+  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
+  if (csrfCookie) r.set('Cookie', csrfCookie);
+  return r;
+}
 
 beforeAll(async () => {
-  const mod = await import('../src/api');
-  app = mod.default;
-  request = supertest.agent(app);
-  const csrfRes = await request.get('/api/csrf-token');
-  csrfToken = csrfRes.body.token;
+  app = await getApp();
+  request = getRequest(app);
+  const csrf = await getCsrf(request);
+  csrfToken = csrf.token;
+  csrfCookie = csrf.cookie;
 });
 
 afterAll(async () => {
   const mod = await import('../src/db');
-  mod.db.close();
+  const db = (mod as any).db;
+  if (db && typeof db.close === 'function') db.close();
+  cleanTestDb();
 });
 
 const SAMPLE_TRIGGERS = JSON.stringify({
@@ -38,8 +64,7 @@ const SAMPLE_ACTIONS = JSON.stringify([
 
 describe('POST /api/scenarios', () => {
   it('creates a new scenario', async () => {
-    const res = await request.post('/api/scenarios')
-      .set('X-CSRF-Token', csrfToken)
+    const res = await apiPost('/api/scenarios')
       .send({
         name: 'Test Scenario',
         description: 'A test scenario',
@@ -49,34 +74,31 @@ describe('POST /api/scenarios', () => {
     expect(res.status).toBe(201);
     expect(res.body.ok).toBe(true);
     expect(res.body.scenario.name).toBe('Test Scenario');
-    expect(res.body.scenario.active).toBe(true);
+    expect(res.body.scenario.active).toBe(1);
   });
 
   it('returns 400 when required fields missing', async () => {
-    const res = await request.post('/api/scenarios')
-      .set('X-CSRF-Token', csrfToken)
+    const res = await apiPost('/api/scenarios')
       .send({ name: 'No triggers' });
     expect(res.status).toBe(400);
     expect(res.body.ok).toBe(false);
   });
 
   it('creates scenario with explicit active=false', async () => {
-    const res = await request.post('/api/scenarios')
-      .set('X-CSRF-Token', csrfToken)
+    const res = await apiPost('/api/scenarios')
       .send({
         name: 'Inactive Scenario',
         triggers_json: SAMPLE_TRIGGERS,
         actions_json: SAMPLE_ACTIONS,
         active: false,
       });
-    expect(res.body.scenario.active).toBe(false);
+    expect(res.body.scenario.active).toBe(0);
   });
 });
 
 describe('PUT /api/scenarios/:id', () => {
   it('updates scenario name and description', async () => {
-    const res = await request.put('/api/scenarios/1')
-      .set('X-CSRF-Token', csrfToken)
+    const res = await apiPut('/api/scenarios/1')
       .send({
         name: 'Updated Ventilation',
         description: 'Updated description',
@@ -87,8 +109,7 @@ describe('PUT /api/scenarios/:id', () => {
   });
 
   it('updates triggers and actions', async () => {
-    const res = await request.put('/api/scenarios/1')
-      .set('X-CSRF-Token', csrfToken)
+    const res = await apiPut('/api/scenarios/1')
       .send({
         triggers_json: SAMPLE_TRIGGERS,
         actions_json: SAMPLE_ACTIONS,
@@ -99,8 +120,7 @@ describe('PUT /api/scenarios/:id', () => {
   });
 
   it('returns 404 for unknown scenario', async () => {
-    const res = await request.put('/api/scenarios/999')
-      .set('X-CSRF-Token', csrfToken)
+    const res = await apiPut('/api/scenarios/999')
       .send({ name: 'Ghost' });
     expect(res.status).toBe(404);
   });
@@ -109,8 +129,7 @@ describe('PUT /api/scenarios/:id', () => {
 describe('DELETE /api/scenarios/:id', () => {
   it('deletes a scenario', async () => {
     // Create first
-    const create = await request.post('/api/scenarios')
-      .set('X-CSRF-Token', csrfToken)
+    const create = await apiPost('/api/scenarios')
       .send({
         name: 'To Delete',
         triggers_json: SAMPLE_TRIGGERS,
@@ -118,26 +137,24 @@ describe('DELETE /api/scenarios/:id', () => {
       });
     const id = create.body.scenario.id;
 
-    const res = await request.delete(`/api/scenarios/${id}`)
-      .set('X-CSRF-Token', csrfToken);
+    const res = await apiDel(`/api/scenarios/${id}`);
     expect(res.status).toBe(200);
     expect(res.body.deleted).toBe(String(id));
 
     // Verify gone
-    const check = await request.get(`/api/scenarios/${id}/executions`);
+    const check = await api(`/api/scenarios/${id}/executions`);
     expect(check.body.executions.length).toBe(0);
   });
 
   it('returns 404 for unknown scenario', async () => {
-    const res = await request.delete('/api/scenarios/999')
-      .set('X-CSRF-Token', csrfToken);
+    const res = await apiDel('/api/scenarios/999');
     expect(res.status).toBe(404);
   });
 });
 
 describe('GET /api/scenarios/:id/executions', () => {
   it('returns empty executions for scenario with no history', async () => {
-    const res = await request.get('/api/scenarios/1/executions');
+    const res = await api('/api/scenarios/1/executions');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.executions.length).toBe(0);
@@ -145,7 +162,7 @@ describe('GET /api/scenarios/:id/executions', () => {
   });
 
   it('respects limit parameter', async () => {
-    const res = await request.get('/api/scenarios/1/executions?limit=10');
+    const res = await api('/api/scenarios/1/executions?limit=10');
     expect(res.status).toBe(200);
   });
 });

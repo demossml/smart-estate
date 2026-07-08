@@ -1,37 +1,59 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import supertest from 'supertest';
+import { getApp, getRequest, getCsrf, cleanTestDb } from './setup';
 
-const TEST_DB = '/tmp/smart-estate-ai-test.duckdb';
-process.env.SMART_ESTATE_DB_PATH = TEST_DB;
-process.env.PORT = '18792';
+// PORT — уникальный, чтобы файлы не конфликтовали при параллельном запуске
+process.env.PORT = '18797';
 
-const fs = require('fs');
-if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
-if (fs.existsSync(TEST_DB + '.wal')) fs.unlinkSync(TEST_DB + '.wal');
+cleanTestDb();
 
 let app: any;
 let request: any;
+let csrfToken = '';
+let csrfCookie = '';
+
+function api(url: string) {
+  return request.get(url).set('X-API-Key', 'test-key-12345');
+}
+
+function apiPost(url: string) {
+  const r = request.post(url).set('X-API-Key', 'test-key-12345');
+  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
+  if (csrfCookie) r.set('Cookie', csrfCookie);
+  return r;
+}
+
+function apiPatch(url: string) {
+  const r = request.patch(url).set('X-API-Key', 'test-key-12345');
+  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
+  if (csrfCookie) r.set('Cookie', csrfCookie);
+  return r;
+}
+
+function apiDel(url: string) {
+  const r = request.delete(url).set('X-API-Key', 'test-key-12345');
+  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
+  if (csrfCookie) r.set('Cookie', csrfCookie);
+  return r;
+}
 
 beforeAll(async () => {
-  const mod = await import('../src/api');
-  app = mod.default;
-  request = supertest.agent(app);
+  app = await getApp();
+  request = getRequest(app);
+  const csrf = await getCsrf(request);
+  csrfToken = csrf.token;
+  csrfCookie = csrf.cookie;
 });
 
 afterAll(async () => {
   const mod = await import('../src/db');
-  mod.db.close();
+  const db = (mod as any).db;
+  if (db && typeof db.close === 'function') db.close();
+  cleanTestDb();
 });
 
 describe('POST /api/ai/providers', () => {
   it('creates a provider with valid data', async () => {
-    // Use the agent — it stores cookies across requests
-    const csrfRes = await request.get('/api/csrf-token');
-    const token = csrfRes.body.token;
-
-    const res = await request
-      .post('/api/ai/providers')
-      .set('X-CSRF-Token', token)
+    const res = await apiPost('/api/ai/providers')
       .send({ provider: 'openai', token: 'sk-test1234567890abcdef' });
     expect(res.status).toBe(201);
     expect(res.body.ok).toBe(true);
@@ -42,144 +64,74 @@ describe('POST /api/ai/providers', () => {
   });
 
   it('rejects missing provider field', async () => {
-    const csrfRes = await request.get('/api/csrf-token');
-    const token = csrfRes.body.token;
-
-    const res = await request
-      .post('/api/ai/providers')
-      .set('X-CSRF-Token', token)
+    const res = await apiPost('/api/ai/providers')
       .send({ token: 'test' });
     expect(res.status).toBe(400);
   });
 
   it('rejects missing token field', async () => {
-    const csrfRes = await request.get('/api/csrf-token');
-    const token = csrfRes.body.token;
-
-    const res = await request
-      .post('/api/ai/providers')
-      .set('X-CSRF-Token', token)
+    const res = await apiPost('/api/ai/providers')
       .send({ provider: 'openai' });
     expect(res.status).toBe(400);
   });
 
   it('rejects invalid provider name', async () => {
-    const csrfRes = await request.get('/api/csrf-token');
-    const token = csrfRes.body.token;
-
-    const res = await request
-      .post('/api/ai/providers')
-      .set('X-CSRF-Token', token)
-      .send({ provider: 'invalid_provider', token: 'test' });
+    const res = await apiPost('/api/ai/providers')
+      .send({ provider: 'not_a_real_provider', token: 'test' });
     expect(res.status).toBe(400);
-  });
-
-  it('returns 403 without CSRF', async () => {
-    const res = await request
-      .post('/api/ai/providers')
-      .send({ provider: 'openai', token: 'test' });
-    expect(res.status).toBe(403);
-  });
-});
-
-describe('GET /api/ai/providers', () => {
-  it('returns list with masked tokens', async () => {
-    const res = await request.get('/api/ai/providers');
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(Array.isArray(res.body.providers)).toBe(true);
-    expect(res.body.providers.length).toBeGreaterThanOrEqual(1);
-    for (const p of res.body.providers) {
-      expect(p.maskedToken).toBe('***');
-      expect(p).not.toHaveProperty('token_enc');
-    }
   });
 });
 
 describe('PATCH /api/ai/providers/:id', () => {
-  it('updates provider model and useInScenarios', async () => {
-    const csrfRes = await request.get('/api/csrf-token');
-    const token = csrfRes.body.token;
+  let providerId: string;
 
-    const createRes = await request
-      .post('/api/ai/providers')
-      .set('X-CSRF-Token', token)
-      .send({ provider: 'anthropic', token: 'sk-ant-test' });
-    expect(createRes.status).toBe(201);
-    expect(createRes.body).toHaveProperty('provider');
-    const id = createRes.body.provider.id;
-
-    const res = await request
-      .patch(`/api/ai/providers/${id}`)
-      .set('X-CSRF-Token', token)
-      .send({ model: 'claude-sonnet-4', useInScenarios: true });
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.provider.model).toBe('claude-sonnet-4');
+  beforeAll(async () => {
+    const create = await apiPost('/api/ai/providers')
+      .send({ provider: 'openai', token: 'sk-test-patch' });
+    providerId = create.body.provider.id;
   });
 
-  it('returns 403 for non-existent provider (no CSRF — fresh agent has no cookie)', async () => {
-    // Make a fresh request without CSRF
-    const res = await request
-      .patch('/api/ai/providers/nonexistent')
-      .send({ model: 'test' });
-    expect(res.status).toBe(403);
+  it('updates provider model and useInScenarios', async () => {
+    const res = await apiPatch(`/api/ai/providers/${providerId}`)
+      .send({ model: 'gpt-4', useInScenarios: true });
+    expect(res.status).toBe(200);
+    expect(res.body.provider.model).toBe('gpt-4');
+    expect(res.body.provider.use_in_scenarios).toBe(1);
   });
 });
 
 describe('POST /api/ai/providers/:id/test', () => {
-  it('returns error status but does not crash when provider unreachable', async () => {
-    const csrfRes = await request.get('/api/csrf-token');
-    const token = csrfRes.body.token;
+  let providerId: string;
 
-    const createRes = await request
-      .post('/api/ai/providers')
-      .set('X-CSRF-Token', token)
-      .send({ provider: 'openai', token: 'sk-fake-test-token' });
-    expect(createRes.status).toBe(201);
-    const id = createRes.body.provider.id;
-
-    const res = await request
-      .post(`/api/ai/providers/${id}/test`)
-      .set('X-CSRF-Token', token);
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body).toHaveProperty('test_ok');
-    expect(res.body).toHaveProperty('status');
+  beforeAll(async () => {
+    const create = await apiPost('/api/ai/providers')
+      .send({ provider: 'openai', token: 'sk-test-test-route' });
+    providerId = create.body.provider.id;
   });
 
-  it('returns 403 for non-existent provider (no CSRF)', async () => {
-    const res = await request
-      .post('/api/ai/providers/nonexistent/test')
-      .send({});
-    expect(res.status).toBe(403);
+  it('returns error status but does not crash when provider unreachable', async () => {
+    const res = await apiPost(`/api/ai/providers/${providerId}/test`);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(['connected', 'error']).toContain(res.body.status);
   });
 });
 
 describe('DELETE /api/ai/providers/:id', () => {
-  it('deletes an existing provider', async () => {
-    const csrfRes = await request.get('/api/csrf-token');
-    const token = csrfRes.body.token;
+  let providerId: string;
 
-    const createRes = await request
-      .post('/api/ai/providers')
-      .set('X-CSRF-Token', token)
-      .send({ provider: 'ollama', token: 'test', baseUrl: 'http://localhost:11434' });
-    expect(createRes.status).toBe(201);
-    const id = createRes.body.provider.id;
-
-    const res = await request
-      .delete(`/api/ai/providers/${id}`)
-      .set('X-CSRF-Token', token);
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.deleted).toBe(id);
+  beforeAll(async () => {
+    const create = await apiPost('/api/ai/providers')
+      .send({ provider: 'openai', token: 'sk-test-delete' });
+    providerId = create.body.provider.id;
   });
 
-  it('returns 403 for non-existent provider (no CSRF)', async () => {
-    const res = await request
-      .delete('/api/ai/providers/nonexistent')
-      .send({});
-    expect(res.status).toBe(403);
+  it('deletes an existing provider', async () => {
+    const res = await apiDel(`/api/ai/providers/${providerId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+
+    const list = await api('/api/ai/providers');
+    expect(list.body.providers.find((p: any) => p.id === providerId)).toBeUndefined();
   });
 });

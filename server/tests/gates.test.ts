@@ -1,34 +1,44 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import supertest from 'supertest';
+import { getApp, getRequest, getCsrf, cleanTestDb } from './setup';
 
-const TEST_DB = '/tmp/smart-estate-gates-test.duckdb';
-process.env.SMART_ESTATE_DB_PATH = TEST_DB;
+// PORT — уникальный, чтобы файлы не конфликтовали при параллельном запуске
 process.env.PORT = '18794';
-
-const fs = require('fs');
-if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
-if (fs.existsSync(TEST_DB + '.wal')) fs.unlinkSync(TEST_DB + '.wal');
+cleanTestDb();
 
 let app: any;
 let request: any;
-let csrfToken: string;
+let csrfToken = '';
+let csrfCookie = '';
+
+function api(url: string) {
+  return request.get(url).set('X-API-Key', 'test-key-12345');
+}
+
+function apiPost(url: string) {
+  const r = request.post(url).set('X-API-Key', 'test-key-12345');
+  if (csrfToken) r.set('X-CSRF-Token', csrfToken);
+  if (csrfCookie) r.set('Cookie', csrfCookie);
+  return r;
+}
 
 beforeAll(async () => {
-  const mod = await import('../src/api');
-  app = mod.default;
-  request = supertest.agent(app);
-  const csrfRes = await request.get('/api/csrf-token');
-  csrfToken = csrfRes.body.token;
+  app = await getApp();
+  request = getRequest(app);
+  const csrf = await getCsrf(request);
+  csrfToken = csrf.token;
+  csrfCookie = csrf.cookie;
 });
 
 afterAll(async () => {
   const mod = await import('../src/db');
-  mod.db.close();
+  const db = (mod as any).db;
+  if (db && typeof db.close === 'function') db.close();
+  cleanTestDb();
 });
 
 describe('GET /api/gates', () => {
   it('returns empty list when no gates', async () => {
-    const res = await request.get('/api/gates');
+    const res = await api('/api/gates');
     expect(res.status).toBe(200);
     expect(res.body.gates).toEqual([]);
   });
@@ -42,8 +52,7 @@ describe('POST /api/gates/:id/open and close', () => {
   });
 
   it('opens a gate and logs access', async () => {
-    const res = await request.post('/api/gates/0xGATE01/open')
-      .set('X-CSRF-Token', csrfToken)
+    const res = await apiPost('/api/gates/0xGATE01/open')
       .send({ reason: 'Guest arrived' });
     expect(res.status).toBe(200);
     expect(res.body.state).toBe('open');
@@ -51,15 +60,14 @@ describe('POST /api/gates/:id/open and close', () => {
   });
 
   it('closes a gate and logs access', async () => {
-    const res = await request.post('/api/gates/0xGATE01/close')
-      .set('X-CSRF-Token', csrfToken)
+    const res = await apiPost('/api/gates/0xGATE01/close')
       .send({ reason: 'Guest left' });
     expect(res.status).toBe(200);
     expect(res.body.state).toBe('closed');
   });
 
   it('returns gate in devices list', async () => {
-    const res = await request.get('/api/devices');
+    const res = await api('/api/devices');
     const gate = res.body.devices.find((d: any) => d.ieee_addr === '0xGATE01');
     expect(gate).toBeDefined();
   });
@@ -67,18 +75,18 @@ describe('POST /api/gates/:id/open and close', () => {
 
 describe('GET /api/gates/access-log', () => {
   it('returns access log entries', async () => {
-    const res = await request.get('/api/gates/access-log');
+    const res = await api('/api/gates/access-log');
     expect(res.status).toBe(200);
     expect(res.body.log.length).toBeGreaterThanOrEqual(2);
   });
 
   it('filters by device', async () => {
-    const res = await request.get('/api/gates/access-log?device=0xGATE01');
+    const res = await api('/api/gates/access-log?device=0xGATE01');
     expect(res.body.log.every((e: any) => e.device_ieee === '0xGATE01')).toBe(true);
   });
 
   it('respects limit', async () => {
-    const res = await request.get('/api/gates/access-log?limit=1');
+    const res = await api('/api/gates/access-log?limit=1');
     expect(res.body.log.length).toBe(1);
   });
 });

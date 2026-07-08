@@ -8,8 +8,9 @@
  * ИЛИ через API: POST /api/mode { "mode": "demo" }
  */
 
-import { query, logStateChange, logCommand } from './db';
+import { query, logStateChange, logCommand, logErrorWithLog } from './db';
 import { evaluateTelemetry, reloadScenarios } from './engine';
+import logger from './logger';
 
 // ── Types ─────────────────────────────────────────────
 interface DemoDevice {
@@ -237,11 +238,12 @@ export function isDemoMode(): boolean {
  * Only inserts if rooms/devices don't already exist.
  */
 export async function seedDemoData(): Promise<{ rooms: number; devices: number }> {
-  // Clean up old data
+  // Clean up old data — only demo devices, never touch real data
   await query("DELETE FROM devices WHERE ieee_addr LIKE 'demo:%'");
-  await query('DELETE FROM telemetry');
+  await query("DELETE FROM telemetry WHERE device_ieee LIKE 'demo:%'");
 
-  // Rooms — find by name, create if missing, update icon, delete extras
+  // Rooms — find by name, create if missing, update icon
+  // (don't touch rooms with id < 100 — they are real production rooms)
   let roomCount = 0;
   const roomIdByName = new Map<string, number>();
   for (const r of DEMO_ROOMS) {
@@ -257,12 +259,6 @@ export async function seedDemoData(): Promise<{ rooms: number; devices: number }
       roomIdByName.set(r.name, r.id);
       roomCount++;
     }
-  }
-  // Delete rooms not in DEMO_ROOMS
-  const demoIds = DEMO_ROOMS.map(r => r.id).join(',');
-  const demoRoomIds = [...roomIdByName.values()].map(String);
-  if (demoRoomIds.length) {
-    await query(`DELETE FROM rooms WHERE id NOT IN (${demoRoomIds.join(',')})`);
   }
   let deviceCount = 0;
   for (const d of DEMO_DEVICES) {
@@ -320,7 +316,7 @@ export async function seedDemoData(): Promise<{ rooms: number; devices: number }
       true)`, nextScId++);
   await reloadScenarios();
 
-  console.log(`🌱 Demo seed: ${roomCount} rooms, ${deviceCount} devices`);
+  logger.log("[DEMO] ", `🌱 Demo seed: ${roomCount} rooms, ${deviceCount} devices`);
   return { rooms: roomCount, devices: deviceCount };
 }
 
@@ -333,7 +329,7 @@ export async function startDemo(): Promise<void> {
   await seedDemoData();
 
   _isDemoActive = true;
-  console.log('🎭 DEMO MODE: симуляция датчиков активна (каждые 3 сек)');
+  logger.log("[DEMO] ", '🎭 DEMO MODE: симуляция датчиков активна (каждые 3 сек)');
 
   // Generate first batch immediately
   await generateTelemetry();
@@ -355,11 +351,11 @@ export async function stopDemo(): Promise<void> {
   try {
     await query(`DELETE FROM telemetry WHERE device_ieee LIKE 'demo:%'`);
     await query(`DELETE FROM state_changes WHERE device_ieee LIKE 'demo:%'`);
-    console.log('🧹 DEMO MODE: телеметрия demo-устройств очищена');
+    logger.log("[DEMO] ", '🧹 DEMO MODE: телеметрия demo-устройств очищена');
   } catch (e: any) {
-    console.error('🧹 DEMO cleanup error:', e.message);
+    logger.error("[DEMO] ", '🧹 DEMO cleanup error:', e.message);
   }
-  console.log('🎭 DEMO MODE: остановлен');
+  logger.log("[DEMO] ", '🎭 DEMO MODE: остановлен');
 }
 
 /**

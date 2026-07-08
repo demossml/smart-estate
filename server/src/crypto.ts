@@ -1,5 +1,6 @@
 import crypto from 'crypto';
-import { stmt, query } from './db';
+import { stmt, query, logErrorWithLog } from './db';
+import logger from './logger';
 
 // ── HMAC Signature ───────────────────────────────────────
 
@@ -13,9 +14,12 @@ export function createSignature(body: string, nonce: string, timestamp: string, 
 }
 
 export function verifySignature(body: string, nonce: string, timestamp: string, signature: string, secret: string): boolean {
-  if (!secret) return false;
+  if (!secret || !signature) return false;
   const expected = createSignature(body, nonce, timestamp, secret);
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  const sigBuf = Buffer.from(signature);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length) return false;
+  return crypto.timingSafeEqual(sigBuf, expBuf);
 }
 
 // ── Nonce/Timestamp Validation ───────────────────────────
@@ -35,18 +39,13 @@ export function validateTimestamp(timestamp: string): boolean {
 
 export async function checkAndRecordNonce(nonce: string): Promise<boolean> {
   try {
-    // DuckDB prepared statements don't throw on duplicate PRIMARY KEY,
-    // so we must check existence explicitly first.
-    const existing = await query('SELECT 1 FROM used_nonces WHERE nonce = ?', nonce);
-    if (existing.length > 0) return false;
-
-    stmt.insertNonce.run(nonce);
+    const info = stmt.insertNonce.run(nonce);
     nonceCallCount++;
     // Clean expired nonces every ~10% of calls (probabilistic)
     if (nonceCallCount % 10 === 0) {
       await query(`DELETE FROM used_nonces WHERE expires_at < CURRENT_TIMESTAMP`);
     }
-    return true;
+    return info.changes > 0; // 0 changes = nonce already existed (OR IGNORE) → replay
   } catch (err: any) {
     // Return false on any DB error (safety-first)
     return false;
@@ -63,7 +62,7 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
  */
 export function validateTelegramInitData(initData: string): boolean {
   if (!BOT_TOKEN) {
-    console.warn('⚠️ TELEGRAM_BOT_TOKEN not set — skipping initData validation');
+    logger.warn("[CRYPTO] ", '⚠️ TELEGRAM_BOT_TOKEN not set — skipping initData validation');
     return false;
   }
 
@@ -139,4 +138,28 @@ export function logSecurityEvent(event: SecurityEvent): void {
   for (const handler of auditHandlers) {
     try { handler(event); } catch {}
   }
+}
+
+// ── AES-256-GCM Token Encryption ─────────────────────────
+
+const ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY || '';
+
+export function encryptToken(plaintext: string): string {
+  if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
+    throw new Error('TOKEN_ENCRYPTION_KEY должен быть задан и содержать 64 hex-символа (32 байта)');
+  }
+  const key = Buffer.from(ENCRYPTION_KEY, 'hex');
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+export function decryptToken(encoded: string): string {
+  const [ivHex, authTagHex, dataHex] = encoded.split(':');
+  const key = Buffer.from(ENCRYPTION_KEY, 'hex');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
+  decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
+  return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
 }

@@ -1,7 +1,7 @@
 {
   "name": "@smart-estate/server",
   "version": "0.2.0",
-  "description": "Умная Усадьба — DuckDB + MQTT + REST API + WebSocket",
+  "description": "Умная Усадьба — SQLite + MQTT + REST API + WebSocket",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -12,11 +12,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@types/cookie-parser": "^1.4.10",
     "better-sqlite3": "^12.11.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
-    "csurf": "^1.11.0",
-    "duckdb": "^1.0.0",
+    "csrf-csrf": "^4.0.3",
     "express": "^4.21.0",
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.2.0",
@@ -27,9 +27,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
-    "@types/csurf": "^1.11.5",
     "@types/express": "^4.17.21",
     "@types/node": "^22.0.0",
     "@types/supertest": "^7.2.0",

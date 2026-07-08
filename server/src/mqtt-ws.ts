@@ -1,5 +1,5 @@
 import mqtt from 'mqtt';
-import { stmt, db, logError, logStateChange, query, DB_PATH } from './db';
+import { stmt, db, logErrorWithLog, logStateChange, query, DB_PATH } from './db';
 import { validateMqttPayload, type MqttTelemetryPayload } from './schemas';
 
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
@@ -40,12 +40,12 @@ export function connectMQTT() {
 
   client.on('connect', () => {
     reconnectAttempts = 0;
-    console.log(`📡 MQTT connected: ${MQTT_URL}`);
+    logger.log("[MQTT-WS] ", `📡 MQTT connected: ${MQTT_URL}`);
     client!.subscribe('zigbee2mqtt/#', (err) => {
       if (err) {
-        logError(null, 'mqtt_subscribe_error', err.message, MQTT_URL);
+        logErrorWithLog(null, 'mqtt_subscribe_error', err.message, MQTT_URL);
       } else {
-        console.log('🔍 Listening: zigbee2mqtt/# → DuckDB');
+        logger.log("[MQTT-WS] ", '🔍 Listening: zigbee2mqtt/# → DuckDB');
       }
     });
   });
@@ -53,7 +53,7 @@ export function connectMQTT() {
   client.on('error', (err) => {
     // Don't spam logs for connection refused (expected when MQTT is down)
     if (reconnectAttempts < 5) {
-      logError(null, 'mqtt_error', err.message, MQTT_URL);
+      logErrorWithLog(null, 'mqtt_error', err.message, MQTT_URL);
     }
   });
 
@@ -62,11 +62,11 @@ export function connectMQTT() {
     reconnectAttempts++;
     
     if (reconnectAttempts <= 3) {
-      console.log(`📡 MQTT disconnected — reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts})...`);
+      logger.log("[MQTT-WS] ", `📡 MQTT disconnected — reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts})...`);
     } else if (reconnectAttempts === 4) {
-      console.log('📡 MQTT still down — switching to silent retry mode (log every 10th attempt)');
+      logger.log("[MQTT-WS] ", '📡 MQTT still down — switching to silent retry mode (log every 10th attempt)');
     } else if (reconnectAttempts % 10 === 0) {
-      console.log(`📡 MQTT reconnecting... (attempt ${reconnectAttempts}, next delay ${delay / 1000}s)`);
+      logger.log("[MQTT-WS] ", `📡 MQTT reconnecting... (attempt ${reconnectAttempts}, next delay ${delay / 1000}s)`);
     }
     
     reconnectTimer = setTimeout(() => connectMQTT(), delay);
@@ -96,13 +96,13 @@ function handleMessage(topic: string, payload: Buffer) {
         handleBridgeEvent(data);
         return;
       }
-      console.log(`🌉 Bridge: ${event}`);
+      logger.log("[MQTT-WS] ", `🌉 Bridge: ${event}`);
       return;
     }
 
     const data = validateMqttPayload(payload.toString());
     if (!data) {
-      logError(null, 'mqtt_validation_error', 'Payload failed Zod validation', topic);
+      logErrorWithLog(null, 'mqtt_validation_error', 'Payload failed Zod validation', topic);
       return;
     }
 
@@ -124,11 +124,11 @@ function handleMessage(topic: string, payload: Buffer) {
     // Regular telemetry
     // 🔍 RAW log: показываем всё что пришло от Z2M
     if (friendlyName === 'Окно левое' || data.contact !== undefined || friendlyName === 'Датчик воздуха') {
-      console.log(`🔍 RAW ${friendlyName}: ${JSON.stringify(data)}`);
+      logger.log("[MQTT-WS] ", `🔍 RAW ${friendlyName}: ${JSON.stringify(data)}`);
     }
     handleTelemetry(friendlyName, data);
   } catch (e: any) {
-    logError(null, 'mqtt_parse_error', e.message, topic);
+    logErrorWithLog(null, 'mqtt_parse_error', e.message, topic);
   }
 }
 
@@ -146,7 +146,7 @@ function handleDeviceDiscovery(friendlyName: string, data: any) {
     );
     // Track device type
     if (data.type) deviceTypes.set(ieee, data.type);
-    console.log(`🔍 Device discovered: ${friendlyName} (${data.definition?.model || 'pairing...'})`);
+    logger.log("[MQTT-WS] ", `🔍 Device discovered: ${friendlyName} (${data.definition?.model || 'pairing...'})`);
 
     // Log discovery event for SSE streaming
     try {
@@ -156,7 +156,7 @@ function handleDeviceDiscovery(friendlyName: string, data: any) {
         data.definition?.vendor || null
       );
     } catch (e: any) {
-      logError(ieee, 'discovery_event_error', e.message);
+      logErrorWithLog(ieee, 'discovery_event_error', e.message);
     }
 
     // Broadcast via WebSocket if connected
@@ -175,7 +175,7 @@ function handleDeviceDiscovery(friendlyName: string, data: any) {
       });
     }
   } catch (e: any) {
-    logError(ieee, 'discovery_error', e.message, friendlyName);
+    logErrorWithLog(ieee, 'discovery_error', e.message, friendlyName);
   }
 }
 
@@ -190,7 +190,7 @@ function handleBridgeEvent(data: any) {
   const vendor = info.definition?.vendor || null;
   try {
     stmt.upsertDevice.run(ieee, name, model, vendor, 'sensor', 1);
-    console.log(`🔍 Bridge event — ${data.type}: ${name} (${model || 'pairing...'})`);
+    logger.log("[MQTT-WS] ", `🔍 Bridge event — ${data.type}: ${name} (${model || 'pairing...'})`);
 
     // Log discovery event for SSE streaming
     try {
@@ -213,7 +213,7 @@ function handleBridgeEvent(data: any) {
       });
     }
   } catch (e: any) {
-    logError(ieee, 'bridge_event_error', e.message, data.type);
+    logErrorWithLog(ieee, 'bridge_event_error', e.message, data.type);
   }
 }
 
@@ -229,9 +229,9 @@ function handleBridgeDevices(devices: any) {
     try {
       stmt.upsertDevice.run(ieee, name, model, vendor, dev.type || 'unknown', 1);
       if (dev.type) deviceTypes.set(ieee, dev.type);
-      console.log(`📦 Bridge device: ${name} (${model})`);
+      logger.log("[MQTT-WS] ", `📦 Bridge device: ${name} (${model})`);
     } catch (e: any) {
-      logError(ieee, 'bridge_device_error', e.message, name);
+      logErrorWithLog(ieee, 'bridge_device_error', e.message, name);
     }
   }
 }
@@ -248,18 +248,18 @@ function handleTelemetry(friendlyName: string, data: any) {
       if (row?.ieee_addr && /^0x[0-9a-f]{16}$/i.test(row.ieee_addr)) {
         ieee = row.ieee_addr;
       } else {
-        console.log(`⏭️ Skipping telemetry from ${friendlyName}: no ieee_address and device not registered`);
+        logger.log("[MQTT-WS] ", `⏭️ Skipping telemetry from ${friendlyName}: no ieee_address and device not registered`);
         return;
       }
     } catch {
-      console.log(`⏭️ Skipping telemetry from ${friendlyName}: DB lookup failed`);
+      logger.log("[MQTT-WS] ", `⏭️ Skipping telemetry from ${friendlyName}: DB lookup failed`);
       return;
     }
   }
 
   // Safety: ensure ieee is a real 64-bit MAC address (0x + 16 hex chars)
   if (!/^0x[0-9a-f]{16}$/i.test(ieee)) {
-    console.log(`⏭️ Skipping telemetry from ${friendlyName}: invalid IEEE (${ieee})`);
+    logger.log("[MQTT-WS] ", `⏭️ Skipping telemetry from ${friendlyName}: invalid IEEE (${ieee})`);
     return;
   }
 
@@ -297,7 +297,7 @@ function handleTelemetry(friendlyName: string, data: any) {
         stmt.insertTelemetry.run(ieee, prop, numericValue, unit, raw);
         stored++;
       } catch (e: any) {
-        logError(ieee, 'telemetry_insert_error', e.message, `${prop}=${value}`);
+        logErrorWithLog(ieee, 'telemetry_insert_error', e.message, `${prop}=${value}`);
       }
     }
   }
@@ -324,7 +324,7 @@ function handleTelemetry(friendlyName: string, data: any) {
   // Update device last_seen — only if ieee looks like a real MAC address
   if (/^0x[0-9a-f]{16}$/i.test(ieee)) {
     try {
-      stmt.upsertDevice.run(ieee, friendlyName, null, null, null, null);
+      stmt.upsertDevice.run(ieee, friendlyName, null, null, null, 1);
     } catch {}
   }
 
@@ -334,7 +334,7 @@ function handleTelemetry(friendlyName: string, data: any) {
       .slice(0, 3)
       .map(([k, v]) => `${k}=${v.value}${v.unit}`)
       .join(' ');
-    console.log(`📊 ${friendlyName}: ${sample}`);
+    logger.log("[MQTT-WS] ", `📊 ${friendlyName}: ${sample}`);
 
     // Forward to all WebSocket clients in real-time
     if (wss) {
@@ -363,7 +363,7 @@ function handleTelemetry(friendlyName: string, data: any) {
         }
       }
       evaluateTelemetry(ieee, props).catch(e =>
-        logError(ieee, 'scenario_eval_error', e.message, friendlyName)
+        logErrorWithLog(ieee, 'scenario_eval_error', e.message, friendlyName)
       );
     }).catch(() => {});
   }
@@ -372,6 +372,7 @@ function handleTelemetry(friendlyName: string, data: any) {
 // ── WebSocket Server ────────────────────────────────────
 import type { Server as WSServer, WebSocket as WSClient } from 'ws';
 import { Server as HTTPServer } from 'http';
+import logger from './logger';
 
 const WebSocketServer = require('ws').Server;
 
@@ -399,7 +400,7 @@ export function attachWebSocket(server: HTTPServer) {
       const apiKey = req.headers['x-api-key'] as string
         || new URL(req.url || '/', `http://${req.headers.host}`).searchParams.get('api_key') as string;
       if (!apiKey || !keys.includes(apiKey)) {
-        console.log(`🔌 WebSocket rejected: no valid auth (IP: ${req.socket.remoteAddress})`);
+        logger.log("[MQTT-WS] ", `🔌 WebSocket rejected: no valid auth (IP: ${req.socket.remoteAddress})`);
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
@@ -427,19 +428,19 @@ export function attachWebSocket(server: HTTPServer) {
         if (!isNaN(ts)) lastPresenceAt.set(row.device_ieee, ts);
       }
       if (lastPresenceRows.length > 0) {
-        console.log(`👤 Loaded ${lastPresenceRows.length} last-presence timestamps from DB`);
+        logger.log("[MQTT-WS] ", `👤 Loaded ${lastPresenceRows.length} last-presence timestamps from DB`);
       }
     }).catch((e: any) => {
-      logError(null, 'load_presence_init', e.message, 'startup');
+      logErrorWithLog(null, 'load_presence_init', e.message, 'startup');
     });
   } catch (e: any) {
-    logError(null, 'load_presence_init', e.message, 'startup');
+    logErrorWithLog(null, 'load_presence_init', e.message, 'startup');
   }
 
   wss.on('connection', (ws: WSClient) => {
-    console.log('🔌 WebSocket client connected');
+    logger.log("[MQTT-WS] ", '🔌 WebSocket client connected');
 
-    ws.on('close', () => console.log('🔌 WebSocket client disconnected'));
+    ws.on('close', () => logger.log("[MQTT-WS] ", '🔌 WebSocket client disconnected'));
 
     // Send latest telemetry on connect
     query(`SELECT * FROM telemetry ORDER BY ts DESC LIMIT 20`).then((rows: any[]) => {
@@ -451,20 +452,20 @@ export function attachWebSocket(server: HTTPServer) {
   // (Форвардинг теперь в handleTelemetry — надёжнее, работает всегда)
   setWSServer(wss);
 
-  console.log('🔌 WebSocket: ws://localhost:8788/ws');
+  logger.log("[MQTT-WS] ", '🔌 WebSocket: ws://localhost:8788/ws');
   return wss;
 }
 
 export function publishCommand(deviceIeee: string, command: string, payload?: any) {
   if (!client || !client.connected) {
-    logError(deviceIeee, 'mqtt_publish_error', 'MQTT not connected', command);
+    logErrorWithLog(deviceIeee, 'mqtt_publish_error', 'MQTT not connected', command);
     return false;
   }
 
   const topic = `zigbee2mqtt/${deviceIeee}/set`;
   const msg = JSON.stringify({ state: command });
   client.publish(topic, msg);
-  console.log(`📤 MQTT: ${topic} → ${msg}`);
+  logger.log("[MQTT-WS] ", `📤 MQTT: ${topic} → ${msg}`);
   return true;
 }
 
@@ -478,5 +479,5 @@ export function disconnectMQTT(): void {
     client = null;
   }
   reconnectAttempts = 0;
-  console.log('📡 MQTT disconnected');
+  logger.log("[MQTT-WS] ", '📡 MQTT disconnected');
 }

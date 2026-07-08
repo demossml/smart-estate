@@ -123,10 +123,10 @@ describe('API Key Validation', () => {
 
 // ── API Security Tests ───────────────────────────────────
 
-const TEST_DB = '/tmp/smart-estate-sec-test.duckdb';
+const TEST_DB = '/tmp/smart-estate-sec-test.db';
 process.env.SMART_ESTATE_DB_PATH = TEST_DB;
 process.env.API_KEYS = 'test-key-secure-123';
-process.env.PORT = '18795';
+process.env.PORT = '18788';
 
 const fs = require('fs');
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
@@ -232,8 +232,7 @@ describe('API — Authorized commands work', () => {
   it('allows device ON with auth', async () => {
     const res = await request
       .post('/api/devices/0xSEC001/on')
-      .set('X-API-Key', 'test-key-secure-123')
-      .set('X-CSRF-Token', csrfToken);
+      .set('X-API-Key', 'test-key-secure-123');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
   });
@@ -241,8 +240,7 @@ describe('API — Authorized commands work', () => {
   it('allows gate open with auth', async () => {
     const res = await request
       .post('/api/gates/0xSEC001/open')
-      .set('X-API-Key', 'test-key-secure-123')
-      .set('X-CSRF-Token', csrfToken);
+      .set('X-API-Key', 'test-key-secure-123');
     expect(res.status).toBe(200);
   });
 });
@@ -260,7 +258,7 @@ describe('WebSocket Auth', () => {
     const { WebSocket } = await import('ws');
     (globalThis as any).WebSocket = WebSocket;
     
-    wsDbPath = '/tmp/smart-estate-ws-test.duckdb';
+    wsDbPath = '/tmp/smart-estate-ws-test.db';
     process.env.SMART_ESTATE_DB_PATH = wsDbPath;
     process.env.SMART_ESTATE_MODE = 'demo';
     port = 18796;

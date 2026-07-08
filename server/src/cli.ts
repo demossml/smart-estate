@@ -50,11 +50,11 @@ async function main() {
       console.log('   (MQTT команда будет отправлена после подключения Zigbee2MQTT)');
       // Логируем команду
       await query(
-        `INSERT INTO commands (id, device_ieee, command, status, source)
-         VALUES (nextval('commands_seq'), ?, ?, 'pending', 'cli')`,
+        `INSERT INTO commands (device_ieee, command, status, source)
+         VALUES (?, ?, 'pending', 'cli')`,
         arg, cmd.toUpperCase()
       );
-      console.log('   ✅ Команда записана в DuckDB');
+      console.log('   ✅ Команда записана в SQLite');
       break;
     }
 

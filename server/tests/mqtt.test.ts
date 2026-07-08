@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 // We test the property mapping and value conversion inline since
 // handleTelemetry is not exported — we replicate the logic
 
-const TEST_DB = '/tmp/smart-estate-mqtt-test.duckdb';
+const TEST_DB = '/tmp/smart-estate-mqtt-test.db';
 process.env.SMART_ESTATE_DB_PATH = TEST_DB;
 
 const fs = require('fs');
@@ -309,7 +309,7 @@ describe('MQTT to DuckDB Integration', () => {
     for (const p of props) {
       await mod.query(
         `INSERT INTO telemetry (id,device_ieee,property,value,unit,raw_json)
-         VALUES (nextval('telemetry_seq'),'${ieee}','${p.prop}',${p.value},'${p.unit}','{}')`
+         VALUES (NULL,'${ieee}','${p.prop}',${p.value},'${p.unit}','{}')`
       );
     }
 
@@ -334,7 +334,7 @@ describe('MQTT to DuckDB Integration', () => {
 
     // Insert OFF state
     await mod.query(`INSERT INTO telemetry (id,device_ieee,property,value,unit,raw_json)
-      VALUES (nextval('telemetry_seq'),'${ieee}','state',0,'state','{"state":"OFF"}')`);
+      VALUES (NULL,'${ieee}','state',0,'state','{"state":"OFF"}')`);
 
     await new Promise(r => setTimeout(r, 50));
 
@@ -346,7 +346,7 @@ describe('MQTT to DuckDB Integration', () => {
 
     // Insert ON state
     await mod.query(`INSERT INTO telemetry (id,device_ieee,property,value,unit,raw_json)
-      VALUES (nextval('telemetry_seq'),'${ieee}','state',1,'state','{"state":"ON"}')`);
+      VALUES (NULL,'${ieee}','state',1,'state','{"state":"ON"}')`);
 
     const curr = await mod.query(
       `SELECT value FROM telemetry WHERE device_ieee='${ieee}' AND property='state' ORDER BY ts DESC LIMIT 1`

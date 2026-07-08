@@ -1,6 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 import BetterSqlite3Default from 'better-sqlite3';
 import * as path from 'path';
+import logger from './logger';
 
 const DB_PATH = process.env.SMART_ESTATE_DB_PATH || path.resolve(__dirname, '../../data/smart-estate.db');
 const db: BetterSqlite3.Database = new (BetterSqlite3Default as any)(DB_PATH);
@@ -239,7 +240,7 @@ if (defaultScenarios.get().cnt === 0) {
      '{"logic":"ALL","conditions":[{"device":"climate_sensor","property":"temperature","operator":">","value":22},{"device":"climate_sensor","property":"temperature","operator":"<","value":24},{"device":"climate_sensor","property":"humidity","operator":">","value":40},{"device":"climate_sensor","property":"humidity","operator":"<","value":60}]}',
      '[{"type":"notify","message":"✅ Климат в норме: 22-24°C, 40-60%"}]', NULL),
     (8, 'Экономия энергии', 'Мощность > 5 кВт → отключить некритичное',
-     '{"logic":"ANY","conditions":[{"device":"power_meter","property":"power","operator":"<",">","value":5000}]}',
+     '{"logic":"ANY","conditions":[{"device":"power_meter","property":"power","operator":">","value":5000}]}',
      '[{"type":"mqtt","device":"non_critical_relay","command":"OFF"},{"type":"notify","message":"⚡ Потребление > 5 кВт — некритичные нагрузки отключены"}]', NULL),
     (9, 'Ночной режим', '23:00 → свет OFF, охрана ON',
      '{"logic":"ANY","conditions":[]}',
@@ -264,12 +265,16 @@ if (defaultScenarios.get().cnt === 0) {
   `);
 }
 
-console.log('🗄️  SQLite ready:', DB_PATH);
+logger.log("[DB] ", '🗄️  SQLite ready:', DB_PATH);
 
 // ── Prepared Statements ─────────────────────────────────
 
 // Helper: get next auto-increment id for tables WITHOUT AUTOINCREMENT
+const NEXT_ID_ALLOWED_TABLES = new Set<string>(); // nextId() нигде не вызывается — список пуст
 function nextId(table: string): number {
+  if (!NEXT_ID_ALLOWED_TABLES.has(table)) {
+    throw new Error(`nextId: недопустимое имя таблицы "${table}"`);
+  }
   const row = db.prepare(`SELECT COALESCE(MAX(id), 0) + 1 as next FROM "${table}"`).get() as any;
   return row.next;
 }
@@ -428,11 +433,38 @@ export const stmt: any = {
 };
 
 // ── SQL Compatibility Layer ──
-// Translates DuckDB-specific SQL constructs to SQLite syntax
+// Translates DuckDB-specific SQL constructs to SQLite syntax (legacy)
 function sqliteCompat(sql: string): string {
   if (!sql || typeof sql !== 'string') return sql;
 
   let query = sql.trim();
+
+  // 0. Заменяем однострочный формат: CURRENT_TIMESTAMP - INTERVAL '10 seconds' (число и юнит в одних кавычках)
+  query = query.replace(
+    /CURRENT_TIMESTAMP\s*-\s*INTERVAL\s*['"](\d+)\s+(hours?|minutes?|seconds?|days?|weeks?)['"]/gi,
+    (_match, num, unit) => {
+      const u = unit.toLowerCase().replace(/s$/, '');
+      return `datetime('now', '-${num} ${u}s')`;
+    }
+  );
+  // 0b. Та же замена для NOW() вместо CURRENT_TIMESTAMP
+  query = query.replace(
+    /NOW\(\)\s*-\s*INTERVAL\s*['"](\d+)\s+(hours?|minutes?|seconds?|days?|weeks?)['"]/gi,
+    (_match, num, unit) => {
+      const u = unit.toLowerCase().replace(/s$/, '');
+      return `datetime('now', '-${num} ${u}s')`;
+    }
+  );
+  // 0c. Голый NOW() (без вычитания интервала) → datetime('now')
+  query = query.replace(/\bNOW\(\)/gi, "datetime('now')");
+  // 0d. INTERVAL без кавычек вокруг числа: INTERVAL 5 MINUTE
+  query = query.replace(
+    /INTERVAL\s+(\d+)\s+(HOURS?|MINUTES?|DAYS?|SECONDS?|WEEKS?)/gi,
+    (_match, num, unit) => {
+      const u = unit.toLowerCase().replace(/s$/, '');
+      return `'-${num} ${u}s'`;
+    }
+  );
 
   // 1. Заменяем CURRENT_TIMESTAMP - INTERVAL 'N' UNIT
   query = query.replace(
@@ -455,19 +487,18 @@ function sqliteCompat(sql: string): string {
   // 3. Простая замена CURRENT_TIMESTAMP
   query = query.replace(/\bCURRENT_TIMESTAMP\b/gi, "datetime('now')");
 
-  // 4. Удаляем оставшиеся INTERVAL (защита)
-  query = query.replace(/INTERVAL\s*['"]?\d+['"]?\s*\w+/gi, '');
+  // 4. Если после всех замен остался необработанный INTERVAL — это баг, а не место для тихого молчания
+  if (/INTERVAL/i.test(query)) {
+    throw new Error(`sqliteCompat: необработанный DuckDB INTERVAL-синтаксис в запросе: ${query}`);
+  }
 
   // 5. CURRENT_DATE → date('now')
   query = query.replace(/\bCURRENT_DATE\b/gi, "date('now')");
 
-  // 6. NOW() → datetime('now')
-  query = query.replace(/\bNOW\(\)/gi, "datetime('now')");
-
-  // 7. DuckDB ::DECIMAL(N,N) cast
+  // 6. DuckDB ::DECIMAL(N,N) cast
   query = query.replace(/::DECIMAL\([^)]+\)/gi, '');
 
-  // 8. DuckDB ::VARCHAR cast
+  // 7. DuckDB ::VARCHAR cast
   query = query.replace(/::VARCHAR/gi, '');
 
   return query;
@@ -508,27 +539,27 @@ export function exec(sql: string, ...params: any[]): Promise<any> {
   });
 }
 
-export function logError(device_ieee: string | null, error_type: string, error_msg: string, context?: string) {
+export function logErrorWithLog(device_ieee: string | null, error_type: string, error_msg: string, context?: string) {
   stmt.insertError.run(device_ieee, error_type, error_msg, context || null);
-  console.error(`❌ [${error_type}] ${device_ieee || 'system'}: ${error_msg}`);
+  logger.error("[DB] ", `❌ [${error_type}] ${device_ieee || 'system'}: ${error_msg}`);
 }
 
 export function logStateChange(device_ieee: string, old_state: string, new_state: string, reason: string = 'mqtt') {
   stmt.insertStateChange.run(device_ieee, old_state, new_state, reason);
-  console.log(`🔄 ${device_ieee}: ${old_state} → ${new_state} (${reason})`);
+  logger.log("[DB] ", `🔄 ${device_ieee}: ${old_state} → ${new_state} (${reason})`);
 }
 
 export function logCommand(device_ieee: string, command: string, payload: string, source: string = 'api'): number {
   const info = stmt.insertCommand.run(device_ieee, command, payload, source);
   const id = info.lastInsertRowid as number;
-  console.log(`📤 [cmd #${id}] ${device_ieee}: ${command}`);
+  logger.log("[DB] ", `📤 [cmd #${id}] ${device_ieee}: ${command}`);
   return id;
 }
 
 export function logScenarioExec(scenario_id: number, trigger_data: string, actions_fired: number, success: boolean, error_msg?: string) {
   stmt.insertScenarioExec.run(scenario_id, trigger_data, actions_fired, success ? 1 : 0, error_msg || null);
   const icon = success ? '✅' : '❌';
-  console.log(`${icon} [scenario #${scenario_id}] ${actions_fired} actions fired`);
+  logger.log("[DB] ", `${icon} [scenario #${scenario_id}] ${actions_fired} actions fired`);
 }
 
 export { db, DB_PATH };

@@ -1,6 +1,7 @@
-import { query, logError, logScenarioExec } from './db';
+import { query, logErrorWithLog, logScenarioExec } from './db';
 import { executeActions, parseActions, ScenarioAction } from './actions';
 import { parseTriggers, evaluateTriggers } from './triggers';
+import logger from './logger';
 
 // ── Schedule Types ───────────────────────────────────────
 
@@ -44,10 +45,10 @@ export async function startScheduler(): Promise<void> {
 
   // Every tick: check cron, interval, and sunset/sunrise
   tickInterval = setInterval(() => {
-    schedulerTick().catch(e => logError(null, 'scheduler_error', e.message));
+    schedulerTick().catch(e => logErrorWithLog(null, 'scheduler_error', e.message));
   }, TICK_MS);
 
-  console.log(`⏰ Scheduler started (tick=${TICK_MS}ms, lat=${LAT}, lon=${LON})`);
+  logger.log("[SCHEDULER] ", `⏰ Scheduler started (tick=${TICK_MS}ms, lat=${LAT}, lon=${LON})`);
 }
 
 export function stopScheduler(): void {
@@ -55,7 +56,7 @@ export function stopScheduler(): void {
     clearInterval(tickInterval);
     tickInterval = null;
   }
-  console.log('⏰ Scheduler stopped');
+  logger.log("[SCHEDULER] ", '⏰ Scheduler stopped');
 }
 
 export async function reloadScheduledScenarios(): Promise<void> {
@@ -72,7 +73,7 @@ export async function reloadScheduledScenarios(): Promise<void> {
         const schedule: ScheduleConfig = JSON.parse(row.schedule_json);
         const actions = parseActions(row.actions_json);
         if (!actions || !schedule.type) {
-          logError(null, 'scheduler_parse_error',
+          logErrorWithLog(null, 'scheduler_parse_error',
             `Invalid schedule or actions for #${row.id}`, row.name);
           continue;
         }
@@ -85,19 +86,19 @@ export async function reloadScheduledScenarios(): Promise<void> {
           actions,
           has_triggers: !!(row.triggers_json),
           triggers_json: row.triggers_json,
-          last_fired: existing?.last_fired || 0,
+          last_fired: existing?.last_fired ?? Date.now(),
         });
       } catch {
-        logError(null, 'scheduler_parse_error',
+        logErrorWithLog(null, 'scheduler_parse_error',
           `Failed to parse schedule for #${row.id}`, row.name);
       }
     }
 
     scheduledScenarios = newScenarios;
     updateSunTimes();
-    console.log(`⏰ Scheduler reloaded: ${scheduledScenarios.length} time-triggered scenarios`);
+    logger.log("[SCHEDULER] ", `⏰ Scheduler reloaded: ${scheduledScenarios.length} time-triggered scenarios`);
   } catch (e: any) {
-    logError(null, 'scheduler_reload_error', e.message);
+    logErrorWithLog(null, 'scheduler_reload_error', e.message);
   }
 }
 
@@ -116,7 +117,7 @@ async function schedulerTick(): Promise<void> {
     try {
       const shouldFire = await shouldFireNow(sc, now);
       if (shouldFire) {
-        console.log(`⏰ [schedule #${sc.id}] ${sc.name} — ${sc.schedule.type}`);
+        logger.log("[SCHEDULER] ", `⏰ [schedule #${sc.id}] ${sc.name} — ${sc.schedule.type}`);
 
         // If scenario also has telemetry triggers, evaluate them
         if (sc.has_triggers && sc.triggers_json) {
@@ -128,7 +129,7 @@ async function schedulerTick(): Promise<void> {
 
             const result = evaluateTriggers(triggers, map);
             if (!result.matched) {
-              console.log(`⏰ [schedule #${sc.id}] ${sc.name} — time matched but telemetry conditions not met, skipping`);
+              logger.log("[SCHEDULER] ", `⏰ [schedule #${sc.id}] ${sc.name} — time matched but telemetry conditions not met, skipping`);
               continue;
             }
           }
@@ -147,7 +148,7 @@ async function schedulerTick(): Promise<void> {
         sc.last_fired = now;
       }
     } catch (e: any) {
-      logError(null, 'scheduler_fire_error', e.message, `scenario #${sc.id}`);
+      logErrorWithLog(null, 'scheduler_fire_error', e.message, `scenario #${sc.id}`);
     }
   }
 }
@@ -291,7 +292,7 @@ function updateSunTimes(): void {
     sunriseTime = times.sunrise;
 
     if (sunsetTime && sunriseTime) {
-      console.log(`🌅 Sunrise: ${sunriseTime.toLocaleTimeString('ru-RU')} | Sunset: ${sunsetTime.toLocaleTimeString('ru-RU')}`);
+      logger.log("[SCHEDULER] ", `🌅 Sunrise: ${sunriseTime.toLocaleTimeString('ru-RU')} | Sunset: ${sunsetTime.toLocaleTimeString('ru-RU')}`);
     }
   } catch {
     // Fallback: rough estimate for Moscow
@@ -301,7 +302,7 @@ function updateSunTimes(): void {
     const latRad = LAT * Math.PI / 180;
     const declRad = declination * Math.PI / 180;
     const hourAngle = Math.acos(-Math.tan(latRad) * Math.tan(declRad));
-    const solarNoon = 12 + (LON / 15);
+    const solarNoon = 12 - (LON / 15);
     const daylightHours = (2 * hourAngle * 180 / Math.PI) / 15;
 
     const sunriseHour = solarNoon - daylightHours / 2;
