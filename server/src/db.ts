@@ -458,10 +458,10 @@ export const stmt: any = {
 function sqliteCompat(sql: string): string {
   if (!sql || typeof sql !== 'string') return sql;
 
-  let query = sql.trim();
+  let queryStr = sql.trim();
 
   // 0. Заменяем однострочный формат: CURRENT_TIMESTAMP - INTERVAL '10 seconds' (число и юнит в одних кавычках)
-  query = query.replace(
+  queryStr = queryStr.replace(
     /CURRENT_TIMESTAMP\s*-\s*INTERVAL\s*['"](\d+)\s+(hours?|minutes?|seconds?|days?|weeks?)['"]/gi,
     (_match, num, unit) => {
       const u = unit.toLowerCase().replace(/s$/, '');
@@ -469,7 +469,7 @@ function sqliteCompat(sql: string): string {
     }
   );
   // 0b. Та же замена для NOW() вместо CURRENT_TIMESTAMP
-  query = query.replace(
+  queryStr = queryStr.replace(
     /NOW\(\)\s*-\s*INTERVAL\s*['"](\d+)\s+(hours?|minutes?|seconds?|days?|weeks?)['"]/gi,
     (_match, num, unit) => {
       const u = unit.toLowerCase().replace(/s$/, '');
@@ -477,18 +477,18 @@ function sqliteCompat(sql: string): string {
     }
   );
   // 0c. Голый NOW() (без вычитания интервала) → datetime('now')
-  query = query.replace(/\bNOW\(\)/gi, "datetime('now')");
+  queryStr = queryStr.replace(/\bNOW\(\)/gi, "datetime('now')");
   // 0d. INTERVAL без кавычек вокруг числа: INTERVAL 5 MINUTE
-  query = query.replace(
+  queryStr = queryStr.replace(
     /INTERVAL\s+(\d+)\s+(HOURS?|MINUTES?|DAYS?|SECONDS?|WEEKS?)/gi,
     (_match, num, unit) => {
       const u = unit.toLowerCase().replace(/s$/, '');
-      return `'-${num} ${u}s'`;
+      return `datetime('now', '-${num} ${u}s')`;
     }
   );
 
   // 1. Заменяем CURRENT_TIMESTAMP - INTERVAL 'N' UNIT
-  query = query.replace(
+  queryStr = queryStr.replace(
     /CURRENT_TIMESTAMP\s*-\s*INTERVAL\s*['"]?(\d+)['"]?\s*(HOURS|HOUR|MINUTES|MINUTE|DAYS|DAY|SECONDS|SECOND)/gi,
     (_match, num, unit) => {
       const u = unit.toLowerCase().replace(/s$/, '');
@@ -497,7 +497,7 @@ function sqliteCompat(sql: string): string {
   );
 
   // 2. Заменяем datetime('now') - INTERVAL 'N' UNIT
-  query = query.replace(
+  queryStr = queryStr.replace(
     /datetime\(['"]now['"]\)\s*-\s*INTERVAL\s*['"]?(\d+)['"]?\s*(HOURS|HOUR|MINUTES|MINUTE|DAYS|DAY|SECONDS|SECOND)/gi,
     (_match, num, unit) => {
       const u = unit.toLowerCase().replace(/s$/, '');
@@ -506,15 +506,15 @@ function sqliteCompat(sql: string): string {
   );
 
   // 3. Простая замена CURRENT_TIMESTAMP
-  query = query.replace(/\bCURRENT_TIMESTAMP\b/gi, "datetime('now')");
+  queryStr = queryStr.replace(/\bCURRENT_TIMESTAMP\b/gi, "datetime('now')");
 
   // 4. Если после всех замен остался необработанный INTERVAL — это баг, а не место для тихого молчания
-  if (/INTERVAL/i.test(query)) {
-    throw new Error(`sqliteCompat: необработанный DuckDB INTERVAL-синтаксис в запросе: ${query}`);
+  if (/INTERVAL/i.test(queryStr)) {
+    throw new Error(`sqliteCompat: необработанный DuckDB INTERVAL-синтаксис в запросе: ${queryStr}`);
   }
 
   // 5. EXTRACT(field FROM column) → CAST(strftime(fmt, column) AS INTEGER)
-  query = query.replace(
+  queryStr = queryStr.replace(
     /EXTRACT\s*\(\s*(\w+)\s+FROM\s+(\w+(?:\.\w+)?)\s*\)/gi,
     (_match, field, col) => {
       const f = field.toUpperCase();
@@ -531,15 +531,15 @@ function sqliteCompat(sql: string): string {
   );
 
   // 6. CURRENT_DATE → date('now')
-  query = query.replace(/\bCURRENT_DATE\b/gi, "date('now')");
+  queryStr = queryStr.replace(/\bCURRENT_DATE\b/gi, "date('now')");
 
   // 7. DuckDB ::DECIMAL(N,N) cast
-  query = query.replace(/::DECIMAL\([^)]+\)/gi, '');
+  queryStr = queryStr.replace(/::DECIMAL\([^)]+\)/gi, '');
 
   // 7. DuckDB ::VARCHAR cast
-  query = query.replace(/::VARCHAR/gi, '');
+  queryStr = queryStr.replace(/::VARCHAR/gi, '');
 
-  return query;
+  return queryStr;
 }
 
 // ── Helper Functions ────────────────────────────────────
