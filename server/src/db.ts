@@ -219,6 +219,16 @@ if (!hasRoomDemo.cnt) {
   logger.log("[DB] ", '➕ Миграция: rooms.is_demo добавлена');
 }
 
+// ── Миграция: удалить старые хардкодные комнаты 2-5 (теперь только Гостиная) ──
+// При первом запуске с новым кодом — убираем кухню/спальню/ванную/улицу.
+// Устройства из них скидываем в Гостиную (id=1), чтобы не потерять реальные датчики.
+const legacyRoomCount = db.prepare(`SELECT COUNT(*) as cnt FROM rooms WHERE id IN (2,3,4,5)`).get() as any;
+if (legacyRoomCount.cnt > 0) {
+  db.exec(`UPDATE devices SET room_id = 1 WHERE room_id IN (2,3,4,5)`);
+  db.exec(`DELETE FROM rooms WHERE id IN (2,3,4,5)`);
+  logger.log("[DB] ", '🧹 Миграция: удалены хардкодные комнаты 2-5, устройства перенесены в Гостиную');
+}
+
 // Default scenarios
 const defaultScenarios = db.prepare(`SELECT COUNT(*) as cnt FROM scenarios`) as any;
 if (defaultScenarios.get().cnt === 0) {
