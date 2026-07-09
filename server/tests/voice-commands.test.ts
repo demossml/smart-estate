@@ -4,6 +4,7 @@ import supertest from 'supertest';
 const TEST_DB = '/tmp/smart-estate-voice-test.db';
 process.env.SMART_ESTATE_DB_PATH = TEST_DB;
 process.env.PORT = '18799';
+process.env.ALLOW_INSECURE_DEV = '1';
 
 const fs = require('fs');
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);

@@ -11,7 +11,6 @@ db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 db.pragma('cache_size = -8000');  // 8 MB
 db.pragma('foreign_keys = ON');
-
 // ── Schema ──────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS devices (
@@ -127,6 +126,8 @@ db.exec(`
     vendor        TEXT,
     event_type    TEXT DEFAULT 'device_announce',
     status        TEXT DEFAULT 'pending',
+    suggested_type TEXT,
+    exposes_json  TEXT,
     created_at    TEXT DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS ai_providers (
@@ -170,10 +171,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_gate_log_ts ON gate_access_log(ts);
   CREATE INDEX IF NOT EXISTS idx_gate_log_device ON gate_access_log(device_ieee, ts);
   CREATE INDEX IF NOT EXISTS idx_nonces_expires ON used_nonces(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_discovery_ieee_status ON discovery_events(ieee_address, status, created_at);
 `);
 
 // ── Idempotent migration: is_demo ──────────────────────────
-// Add is_demo column to devices and rooms if missing
 const hasDeviceDemo = db.prepare(`SELECT COUNT(*) as cnt FROM pragma_table_info('devices') WHERE name = 'is_demo'`).get() as any;
 if (!hasDeviceDemo.cnt) {
   db.exec(`ALTER TABLE devices ADD COLUMN is_demo INTEGER DEFAULT 0`);
@@ -186,7 +187,6 @@ if (!hasRoomDemo.cnt) {
 }
 
 // ── Migration: remove old hardcoded rooms 2-5 ──────────────
-// Move devices from rooms 2-5 to living room (id=1)
 const legacyRoomCount = db.prepare(`SELECT COUNT(*) as cnt FROM rooms WHERE id IN (2,3,4,5)`).get() as any;
 if (legacyRoomCount.cnt > 0) {
   db.exec(`UPDATE devices SET room_id = 1 WHERE room_id IN (2,3,4,5)`);
@@ -201,15 +201,16 @@ if (!hasTypeManual.cnt) {
   db.exec(`ALTER TABLE devices ADD COLUMN room_manually_set INTEGER DEFAULT 0`);
   logger.log("[DB] ", '➕ Миграция: devices.type_manually_set + room_manually_set добавлены');
 }
-
-// ── Migration: discovery_events.suggested_type + exposes_json ──
+// ── Migration: discovery_events.suggested_type / exposes_json ──
+// Раньше suggested_type/exposes уходили только в WebSocket-broadcast и терялись,
+// если никто не был подключён в момент interview или страница была перезагружена.
+// Теперь сохраняем их, чтобы REST-эндпоинт /api/devices/pending мог их отдать.
 const hasSuggestedType = db.prepare(`SELECT COUNT(*) as cnt FROM pragma_table_info('discovery_events') WHERE name = 'suggested_type'`).get() as any;
 if (!hasSuggestedType.cnt) {
   db.exec(`ALTER TABLE discovery_events ADD COLUMN suggested_type TEXT`);
   db.exec(`ALTER TABLE discovery_events ADD COLUMN exposes_json TEXT`);
   logger.log("[DB] ", '➕ Миграция: discovery_events.suggested_type + exposes_json добавлены');
 }
-
 // Default scenarios
 const defaultScenarios = db.prepare(`SELECT COUNT(*) as cnt FROM scenarios`) as any;
 if (defaultScenarios.get().cnt === 0) {
@@ -268,16 +269,6 @@ if (defaultScenarios.get().cnt === 0) {
 logger.log("[DB] ", '🗄️  SQLite ready:', DB_PATH);
 
 // ── Prepared Statements ─────────────────────────────────
-
-// Helper: get next auto-increment id for tables WITHOUT AUTOINCREMENT
-const NEXT_ID_ALLOWED_TABLES = new Set<string>(); // nextId() нигде не вызывается — список пуст
-function nextId(table: string): number {
-  if (!NEXT_ID_ALLOWED_TABLES.has(table)) {
-    throw new Error(`nextId: недопустимое имя таблицы "${table}"`);
-  }
-  const row = db.prepare(`SELECT COALESCE(MAX(id), 0) + 1 as next FROM "${table}"`).get() as any;
-  return row.next;
-}
 
 export const stmt: any = {
   // Devices
@@ -435,6 +426,7 @@ export const stmt: any = {
   getNonce: db.prepare(`SELECT nonce FROM used_nonces WHERE nonce = ? AND expires_at > datetime('now')`),
 
   // Discovery events
+  // Сигнатура расширена: (ieee, friendly_name, model, vendor, suggested_type, exposes_json)
   insertDiscoveryEvent: db.prepare(`
     INSERT INTO discovery_events (ieee_address, friendly_name, model, vendor, event_type, status, suggested_type, exposes_json)
     VALUES (?, ?, ?, ?, 'device_announce', 'pending', ?, ?)
@@ -442,14 +434,22 @@ export const stmt: any = {
   getDiscoveryEvents: db.prepare(`
     SELECT * FROM discovery_events ORDER BY created_at DESC LIMIT ?
   `),
+  // Последнее событие на каждый ieee_address, у которого статус ещё 'pending' —
+  // то есть устройство обнаружено, но пользователь его не подтвердил.
+  getPendingDiscoveryEvents: db.prepare(`
+    SELECT de.*
+    FROM discovery_events de
+    INNER JOIN (
+      SELECT ieee_address, MAX(created_at) as max_created
+      FROM discovery_events
+      WHERE status = 'pending'
+      GROUP BY ieee_address
+    ) latest ON de.ieee_address = latest.ieee_address AND de.created_at = latest.max_created
+    WHERE de.ieee_address NOT IN (SELECT ieee_addr FROM devices)
+    ORDER BY de.created_at DESC
+  `),
   confirmDiscovery: db.prepare(`
     UPDATE discovery_events SET status = 'confirmed' WHERE ieee_address = ?
-  `),
-  getPendingDiscoveryEvents: db.prepare(`
-    SELECT de.* FROM discovery_events de
-    WHERE de.status = 'pending'
-    AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.ieee_addr = de.ieee_address)
-    ORDER BY de.created_at DESC
   `),
 };
 
@@ -459,8 +459,6 @@ function sqliteCompat(sql: string): string {
   if (!sql || typeof sql !== 'string') return sql;
 
   let queryStr = sql.trim();
-
-  // 0. Заменяем однострочный формат: CURRENT_TIMESTAMP - INTERVAL '10 seconds' (число и юнит в одних кавычках)
   queryStr = queryStr.replace(
     /CURRENT_TIMESTAMP\s*-\s*INTERVAL\s*['"](\d+)\s+(hours?|minutes?|seconds?|days?|weeks?)['"]/gi,
     (_match, num, unit) => {
@@ -468,7 +466,6 @@ function sqliteCompat(sql: string): string {
       return `datetime('now', '-${num} ${u}s')`;
     }
   );
-  // 0b. Та же замена для NOW() вместо CURRENT_TIMESTAMP
   queryStr = queryStr.replace(
     /NOW\(\)\s*-\s*INTERVAL\s*['"](\d+)\s+(hours?|minutes?|seconds?|days?|weeks?)['"]/gi,
     (_match, num, unit) => {
@@ -476,18 +473,14 @@ function sqliteCompat(sql: string): string {
       return `datetime('now', '-${num} ${u}s')`;
     }
   );
-  // 0c. Голый NOW() (без вычитания интервала) → datetime('now')
   queryStr = queryStr.replace(/\bNOW\(\)/gi, "datetime('now')");
-  // 0d. INTERVAL без кавычек вокруг числа: INTERVAL 5 MINUTE
   queryStr = queryStr.replace(
     /INTERVAL\s+(\d+)\s+(HOURS?|MINUTES?|DAYS?|SECONDS?|WEEKS?)/gi,
     (_match, num, unit) => {
       const u = unit.toLowerCase().replace(/s$/, '');
-      return `datetime('now', '-${num} ${u}s')`;
+      return `-${num} ${u}s`;
     }
   );
-
-  // 1. Заменяем CURRENT_TIMESTAMP - INTERVAL 'N' UNIT
   queryStr = queryStr.replace(
     /CURRENT_TIMESTAMP\s*-\s*INTERVAL\s*['"]?(\d+)['"]?\s*(HOURS|HOUR|MINUTES|MINUTE|DAYS|DAY|SECONDS|SECOND)/gi,
     (_match, num, unit) => {
@@ -495,8 +488,6 @@ function sqliteCompat(sql: string): string {
       return `datetime('now', '-${num} ${u}s')`;
     }
   );
-
-  // 2. Заменяем datetime('now') - INTERVAL 'N' UNIT
   queryStr = queryStr.replace(
     /datetime\(['"]now['"]\)\s*-\s*INTERVAL\s*['"]?(\d+)['"]?\s*(HOURS|HOUR|MINUTES|MINUTE|DAYS|DAY|SECONDS|SECOND)/gi,
     (_match, num, unit) => {
@@ -504,16 +495,12 @@ function sqliteCompat(sql: string): string {
       return `datetime('now', '-${num} ${u}s')`;
     }
   );
-
-  // 3. Простая замена CURRENT_TIMESTAMP
   queryStr = queryStr.replace(/\bCURRENT_TIMESTAMP\b/gi, "datetime('now')");
 
-  // 4. Если после всех замен остался необработанный INTERVAL — это баг, а не место для тихого молчания
   if (/INTERVAL/i.test(queryStr)) {
     throw new Error(`sqliteCompat: необработанный DuckDB INTERVAL-синтаксис в запросе: ${queryStr}`);
   }
 
-  // 5. EXTRACT(field FROM column) → CAST(strftime(fmt, column) AS INTEGER)
   queryStr = queryStr.replace(
     /EXTRACT\s*\(\s*(\w+)\s+FROM\s+(\w+(?:\.\w+)?)\s*\)/gi,
     (_match, field, col) => {
@@ -530,13 +517,8 @@ function sqliteCompat(sql: string): string {
     }
   );
 
-  // 6. CURRENT_DATE → date('now')
   queryStr = queryStr.replace(/\bCURRENT_DATE\b/gi, "date('now')");
-
-  // 7. DuckDB ::DECIMAL(N,N) cast
   queryStr = queryStr.replace(/::DECIMAL\([^)]+\)/gi, '');
-
-  // 7. DuckDB ::VARCHAR cast
   queryStr = queryStr.replace(/::VARCHAR/gi, '');
 
   return queryStr;
@@ -548,14 +530,13 @@ export function query(sql: string, ...params: any[]): Promise<any[]> {
   const translated = sqliteCompat(sql);
   return new Promise((resolve, reject) => {
     try {
-      const stmt = db.prepare(translated);
+      const prepared = db.prepare(translated);
       const trimmed = translated.trim().toUpperCase();
-      // Write operations (INSERT/UPDATE/DELETE) → run(), SELECT → all()
       if (trimmed.startsWith('SELECT') || trimmed.startsWith('WITH') || trimmed.startsWith('PRAGMA') || trimmed.startsWith('ANALYZE')) {
-        const rows = params.length > 0 ? stmt.all(...params) : stmt.all();
+        const rows = params.length > 0 ? prepared.all(...params) : prepared.all();
         resolve(rows);
       } else {
-        stmt.run(...params);
+        prepared.run(...params);
         resolve([]);
       }
     } catch (err) {
@@ -568,8 +549,8 @@ export function exec(sql: string, ...params: any[]): Promise<any> {
   const translated = sqliteCompat(sql);
   return new Promise((resolve, reject) => {
     try {
-      const stmt = db.prepare(translated);
-      const info = params.length > 0 ? stmt.run(...params) : stmt.run();
+      const prepared = db.prepare(translated);
+      const info = params.length > 0 ? prepared.run(...params) : prepared.run();
       resolve(info);
     } catch (err) {
       reject(err);
@@ -586,7 +567,6 @@ export function logStateChange(device_ieee: string, old_state: string, new_state
   stmt.insertStateChange.run(device_ieee, old_state, new_state, reason);
   logger.log("[DB] ", `🔄 ${device_ieee}: ${old_state} → ${new_state} (${reason})`);
 }
-
 export function logCommand(device_ieee: string, command: string, payload: string, source: string = 'api'): number {
   const info = stmt.insertCommand.run(device_ieee, command, payload, source);
   const id = info.lastInsertRowid as number;

@@ -1,5 +1,5 @@
 import mqtt from 'mqtt';
-import { stmt, db, logErrorWithLog, logStateChange, query } from './db';
+import { stmt, db, logErrorWithLog, logStateChange, query, DB_PATH } from './db';
 import { validateMqttPayload, type MqttTelemetryPayload } from './schemas';
 import type { Server as WSServer, WebSocket as WSClient } from 'ws';
 import { Server as HTTPServer } from 'http';
@@ -111,7 +111,7 @@ function handleMessage(topic: string, payload: Buffer) {
       logErrorWithLog(null, 'mqtt_validation_error', 'Payload failed Zod validation', topic);
       return;
     }
-const friendlyName = topicParts[1];
+    const friendlyName = topicParts[1];
     if (!friendlyName) return;
 
     // Защитная ветка: по документации Z2M device_announce/device_interview приходят
@@ -189,7 +189,8 @@ function handleBridgeEvent(data: any) {
         logger.log("[MQTT-WS] ", `🆕 Device joined: ${name} — идёт настройка...`);
         broadcastDiscovery({ type: 'device_joined', ieee_address: ieee, friendly_name: name });
         break;
-case 'device_interview': {
+
+      case 'device_interview': {
         switch (info.status) {
           case 'started':
             logger.log("[MQTT-WS] ", `🔄 Interview started: ${name} (${ieee}) — настройка...`);
@@ -209,7 +210,7 @@ case 'device_interview': {
             });
             break;
           }
-          case 'failed': {
+          case 'failed':
             logErrorWithLog(ieee, 'interview_failed', `Interview failed for ${name}`, JSON.stringify(info));
             logger.log("[MQTT-WS] ", `❌ Interview failed: ${name} (${ieee}) — устройство не отвечает`);
             broadcastDiscovery({
@@ -219,7 +220,6 @@ case 'device_interview': {
               error: info.error || 'unknown',
             });
             break;
-          }
           default:
             logger.log("[MQTT-WS] ", `🌉 Bridge event — ${data.type}/${info.status}: ${name}`);
         }
@@ -262,7 +262,7 @@ function handleBridgeDevices(devices: any) {
   if (!Array.isArray(devices)) return;
   for (const dev of devices) {
     if (dev.type === 'Coordinator' || dev.type === 'Router' || dev.disabled) continue;
-    const ieee = dev.ieee_address || dev.ieeeAddr || 'unknown';
+    const ieee = dev.ieee_address || dev.ieeeAddr;
     const name = dev.friendly_name?.trim() || ieee;
     const model = dev.definition?.model || dev.model_id || null;
     const vendor = dev.definition?.vendor || null;
@@ -282,7 +282,8 @@ export function mapZ2MTypeToInternal(_ieeeAddr: string, exposes: any[] | null): 
 
   const types = new Set<string>();
   const features = new Set<string>();
-for (const expose of exposes) {
+
+  for (const expose of exposes) {
     if (expose.type) types.add(expose.type);
     if (expose.name) features.add(expose.name);
     if (expose.features && Array.isArray(expose.features)) {
@@ -353,7 +354,8 @@ function handleTelemetry(friendlyName: string, data: any) {
   try {
     stmt.updateLastSeen.run(ieee);
   } catch {}
-// НАХОДКА (Модуль 2, при сверке со schemas.ts): раньше здесь не было co2, voc,
+
+  // НАХОДКА (Модуль 2, при сверке со schemas.ts): раньше здесь не было co2, voc,
   // occupancy, pm10, tamper, battery_low, formaldehyde — эти поля ВАЛИДИРУЮТСЯ
   // Zod-схемой (MqttTelemetrySchema) и даже используются mapZ2MTypeToInternal для
   // классификации устройства (например occupancy → motion_sensor, co2/voc → air_monitor),
@@ -408,7 +410,10 @@ function handleTelemetry(friendlyName: string, data: any) {
 
   // Track state changes
   if (data.state !== undefined) {
-    query(`SELECT value FROM telemetry WHERE device_ieee = ? AND property = 'state' ORDER BY ts DESC LIMIT 1`, ieee).then((rows: any[]) => {
+    query(
+      `SELECT value FROM telemetry WHERE device_ieee = ? AND property = 'state' ORDER BY ts DESC LIMIT 1`,
+      ieee
+    ).then((rows: any[]) => {
       const prev = rows[0]?.value;
       const curr = data.state === 'ON' ? 1 : 0;
       if (prev !== undefined && prev !== curr) {
@@ -443,8 +448,8 @@ function handleTelemetry(friendlyName: string, data: any) {
         }
       }
     }
-import('./engine').then((mod) => {
-      const evaluateTelemetry = mod.evaluateTelemetry;
+
+    import('./engine').then(({ evaluateTelemetry }) => {
       const props: Record<string, number> = {};
       for (const [prop, meta] of Object.entries(propertyMap)) {
         const val = meta.value;
@@ -461,7 +466,7 @@ import('./engine').then((mod) => {
   }
 }
 
-// ── WebSocket Server ─────────────────────────────────────────────────────
+// ── WebSocket Server ─────────────────────────────────────
 const WebSocketServer = require('ws').Server;
 
 let wsAttached = false;
@@ -483,7 +488,7 @@ export function attachWebSocket(server: HTTPServer) {
     const keys = (process.env.API_KEYS || '').split(',').map(k => k.trim()).filter(Boolean);
     if (keys.length > 0) {
       const apiKey = req.headers['x-api-key'] as string
-        || new URL(req.url || '/', `http://${req.headers.host}`).searchParams.get('api_key') as string;
+         || new URL(req.url || '/', `http://${req.headers.host}`).searchParams.get('api_key') as string;
       if (!apiKey || !keys.includes(apiKey)) {
         logger.log("[MQTT-WS] ", `🔌 WebSocket rejected: no valid auth (IP: ${req.socket.remoteAddress})`);
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -499,7 +504,8 @@ export function attachWebSocket(server: HTTPServer) {
 
   // Load last presence from DB for motion/presence sensors (in case MQTT missed it)
   try {
-    query(`SELECT t.device_ieee, MAX(t.ts) as last_ts
+    query(`
+      SELECT t.device_ieee, MAX(t.ts) as last_ts
       FROM telemetry t
       JOIN devices d ON d.ieee_addr = t.device_ieee
       WHERE t.property = 'presence' AND t.value = 1
@@ -540,7 +546,8 @@ export function publishCommand(deviceIeee: string, command: string, payload?: an
     logErrorWithLog(deviceIeee, 'mqtt_publish_error', 'MQTT not connected', command);
     return false;
   }
-// НАХОДКА: раньше топик строился как zigbee2mqtt/${deviceIeee}/set — но по
+
+  // НАХОДКА: раньше топик строился как zigbee2mqtt/${deviceIeee}/set — но по
   // документации Z2M (https://www.zigbee2mqtt.io/guide/usage/mqtt_topics_and_messages.html)
   // "The FRIENDLY_NAME is the IEEE-address OR, if defined, the friendly_name" —
   // то есть после переименования устройства (а флоу подтверждения его переименовывает,

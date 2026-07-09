@@ -168,9 +168,10 @@ describe('API Key Validation', () => {
     expect(validateApiKey('key3')).toBe(false);
   });
 
-  it('returns true when no keys configured', () => {
+  it('returns false when no keys configured (fail-closed)', () => {
     delete process.env.API_KEYS;
-    expect(validateApiKey('anything')).toBe(true);
+    // validateApiKey теперь fail-closed: без API_KEYS доступ запрещён
+    expect(validateApiKey('anything')).toBe(false);
   });
 
   it('handles whitespace in key list', () => {

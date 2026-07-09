@@ -101,11 +101,10 @@ describe('API Key Validation', () => {
     else delete process.env.API_KEYS;
   });
 
-  it('returns true when no keys configured', () => {
+  it('returns false when no keys configured (fail-closed)', () => {
     delete process.env.API_KEYS;
-    // Re-require to get fresh module state would be complex — test the logic
-    // Without env, empty split produces [], validateApiKey returns true for non-empty
-    expect(validateApiKey('anything')).toBe(true);
+    // Без API_KEYS validateApiKey теперь fail-closed: отклоняет любой ключ
+    expect(validateApiKey('anything')).toBe(false);
   });
 
   it('validates against configured keys', () => {

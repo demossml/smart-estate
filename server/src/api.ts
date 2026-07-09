@@ -131,9 +131,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// Auth: enforce if API_KEYS is configured, otherwise allow all
-if (process.env.NODE_ENV === 'production' && !process.env.API_KEYS) {
-  console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: переменная API_KEYS обязательна в production, иначе API полностью открыт без аутентификации.');
+// Auth: API_KEYS обязателен всегда, если явно не включён небезопасный dev-режим.
+// Раньше проверка срабатывала только при NODE_ENV=production — легко забываемая
+// переменная при деплое через systemd/docker. Теперь проверка безусловна.
+if (!process.env.API_KEYS && process.env.ALLOW_INSECURE_DEV !== '1') {
+  console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: переменная API_KEYS обязательна. ' +
+    'Для локальной разработки без ключей явно установите ALLOW_INSECURE_DEV=1.');
   process.exit(1);
 }
 let authLogged = false;

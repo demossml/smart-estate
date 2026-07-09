@@ -12,3 +12,4 @@ client-app/dist/
 # Zigbee2MQTT secrets
 secret.yaml
 *.secret.yaml
+server/logs/

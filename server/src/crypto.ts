@@ -112,11 +112,27 @@ export function hashApiKey(apiKey: string): string {
 }
 
 // ── API Key Validation ───────────────────────────────────
+//
+// НАХОДКА (аудит модуля 1): раньше здесь было if (!keys.length) return true
+// — "нет ключей = разрешить всё". Единственная защита от этого в проде была
+// process.exit(1) в api.ts, но ТОЛЬКО если явно выставлен NODE_ENV=production —
+// переменная, которую легко забыть при деплое через systemd/docker без .env.
+// Теперь validateApiKey сам по себе fail-closed: если API_KEYS не настроены,
+// доступ запрещён всегда, независимо от NODE_ENV. Явный dev-режим — через
+// отдельный, недвусмысленный флаг ALLOW_INSECURE_DEV=1 (см. также auth.ts).
 
 export function validateApiKey(key: string): boolean {
   if (!key) return false;
   const keys = (process.env.API_KEYS || '').split(',').map(k => k.trim()).filter(Boolean);
-  if (!keys.length) return true; // No keys configured = allow all
+  if (!keys.length) {
+    // Раньше: return true (разрешить всё). Теперь — fail-closed по умолчанию.
+    // Единственное исключение — явный, громкий opt-in для локальной разработки.
+    if (process.env.ALLOW_INSECURE_DEV === '1') {
+      logger.warn("[CRYPTO] ", '⚠️ ALLOW_INSECURE_DEV=1: API_KEYS не заданы, доступ разрешён БЕЗ аутентификации. Не использовать вне локальной разработки.');
+      return true;
+    }
+    return false;
+  }
   return keys.includes(key);
 }
 
@@ -144,11 +160,15 @@ export function logSecurityEvent(event: SecurityEvent): void {
 
 const ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY || '';
 
-export function encryptToken(plaintext: string): string {
+function requireValidEncryptionKey(): Buffer {
   if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
     throw new Error('TOKEN_ENCRYPTION_KEY должен быть задан и содержать 64 hex-символа (32 байта)');
   }
-  const key = Buffer.from(ENCRYPTION_KEY, 'hex');
+  return Buffer.from(ENCRYPTION_KEY, 'hex');
+}
+
+export function encryptToken(plaintext: string): string {
+  const key = requireValidEncryptionKey();
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
@@ -157,8 +177,15 @@ export function encryptToken(plaintext: string): string {
 }
 
 export function decryptToken(encoded: string): string {
-  const [ivHex, authTagHex, dataHex] = encoded.split(':');
-  const key = Buffer.from(ENCRYPTION_KEY, 'hex');
+  // НАХОДКА: раньше здесь не было проверки длины ключа (в отличие от encryptToken) —
+  // при пустом/неверном TOKEN_ENCRYPTION_KEY падало с невнятной ошибкой Node crypto
+  // вместо понятного сообщения. Теперь используется тот же guard, что и в encryptToken.
+  const key = requireValidEncryptionKey();
+  const parts = encoded.split(':');
+  if (parts.length !== 3) {
+    throw new Error('decryptToken: неверный формат зашифрованных данных (ожидается iv:authTag:data)');
+  }
+  const [ivHex, authTagHex, dataHex] = parts;
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
   decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
   return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
