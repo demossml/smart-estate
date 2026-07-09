@@ -238,7 +238,9 @@ export function isDemoMode(): boolean {
  * Only inserts if rooms/devices don't already exist.
  */
 export async function seedDemoData(): Promise<{ rooms: number; devices: number }> {
-  // Clean up old data — only demo devices, never touch real data
+  // Clean up old data — только демо-устройства, никогда не трогаем реальные
+  // is_demo=1 (новый формат) + ieee_addr LIKE 'demo:%' (старый формат)
+  await query("DELETE FROM devices WHERE is_demo = 1");
   await query("DELETE FROM devices WHERE ieee_addr LIKE 'demo:%'");
   await query("DELETE FROM telemetry WHERE device_ieee LIKE 'demo:%'");
 
@@ -345,16 +347,17 @@ export async function stopDemo(): Promise<void> {
   // Clean up ALL demo data — устройства, телеметрию, сценарии, комнаты
   try {
     // Сначала зависимые таблицы
-    await query(`DELETE FROM commands WHERE device_ieee LIKE 'demo:%'`);
-    await query(`DELETE FROM errors WHERE device_ieee LIKE 'demo:%'`);
-    await query(`DELETE FROM climate_setpoints WHERE device_ieee LIKE 'demo:%'`);
-    await query(`DELETE FROM device_group_members WHERE device_ieee LIKE 'demo:%'`);
-    await query(`DELETE FROM state_changes WHERE device_ieee LIKE 'demo:%'`);
+    await query(`DELETE FROM commands WHERE device_ieee LIKE 'demo:%' OR device_ieee IN (SELECT ieee_addr FROM devices WHERE is_demo = 1)`);
+    await query(`DELETE FROM errors WHERE device_ieee LIKE 'demo:%' OR device_ieee IN (SELECT ieee_addr FROM devices WHERE is_demo = 1)`);
+    await query(`DELETE FROM climate_setpoints WHERE device_ieee LIKE 'demo:%' OR device_ieee IN (SELECT ieee_addr FROM devices WHERE is_demo = 1)`);
+    await query(`DELETE FROM device_group_members WHERE device_ieee LIKE 'demo:%' OR device_ieee IN (SELECT ieee_addr FROM devices WHERE is_demo = 1)`);
+    await query(`DELETE FROM state_changes WHERE device_ieee LIKE 'demo:%' OR device_ieee IN (SELECT ieee_addr FROM devices WHERE is_demo = 1)`);
     await query(`DELETE FROM telemetry WHERE device_ieee LIKE 'demo:%'`);
-    // Сами устройства
+    // Сами устройства — и новые (is_demo=1), и старые (префикс demo:)
+    await query(`DELETE FROM devices WHERE is_demo = 1`);
     await query(`DELETE FROM devices WHERE ieee_addr LIKE 'demo:%'`);
-    // Демо-комнаты (id >= 100)
-    await query(`DELETE FROM rooms WHERE id >= 100`);
+    // Демо-комнаты (id >= 100 или is_demo = 1)
+    await query(`DELETE FROM rooms WHERE id >= 100 OR is_demo = 1`);
     // Демо-сценарии
     await query(`DELETE FROM scenario_executions WHERE scenario_id IN (SELECT id FROM scenarios WHERE name LIKE 'Демо:%')`);
     await query(`DELETE FROM scenarios WHERE name LIKE 'Демо:%'`);

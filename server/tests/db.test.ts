@@ -46,11 +46,10 @@ describe('Database Schema', () => {
     ['error_type','error_msg','context'].forEach(c => expect(cols).toContain(c));
   });
 
-  it('has 5 default rooms', async () => {
+  it('has 1 default room (Гостиная)', async () => {
     const rows = await mod.query("SELECT * FROM rooms ORDER BY id");
-    expect(rows.length).toBe(5);
+    expect(rows.length).toBe(1);
     expect(rows[0].name).toBe('Гостиная');
-    expect(rows[4].name).toBe('Улица');
   });
 
   it('has 8 default scenarios', async () => {

@@ -409,17 +409,22 @@ app.post('/api/devices', async (req, res) => {
 app.delete('/api/devices/:id', async (req, res) => {
   const { id } = req.params;
   try {
-    const existing = await query('SELECT * FROM devices WHERE ieee_addr = ?', id);
+    // Ищем и по ieee_addr, и по friendly_name — фронт может слать и то, и другое
+    const existing = await query(
+      'SELECT * FROM devices WHERE ieee_addr = ? OR friendly_name = ?', id, id
+    );
     if (!existing.length) {
       return res.status(404).json({ ok: false, error: 'Device not found' });
     }
+    // Берём ieee из найденной записи — он точный ключ для связных таблиц
+    const ieee = existing[0].ieee_addr;
     // Delete related data
-    await query('DELETE FROM telemetry WHERE device_ieee = ?', id);
-    await query('DELETE FROM commands WHERE device_ieee = ?', id);
-    await query('DELETE FROM state_changes WHERE device_ieee = ?', id);
-    await query('DELETE FROM climate_setpoints WHERE device_ieee = ?', id);
-    await query('DELETE FROM device_group_members WHERE device_ieee = ?', id);
-    stmt.deleteDevice.run(id);
+    await query('DELETE FROM telemetry WHERE device_ieee = ?', ieee);
+    await query('DELETE FROM commands WHERE device_ieee = ?', ieee);
+    await query('DELETE FROM state_changes WHERE device_ieee = ?', ieee);
+    await query('DELETE FROM climate_setpoints WHERE device_ieee = ?', ieee);
+    await query('DELETE FROM device_group_members WHERE device_ieee = ?', ieee);
+    stmt.deleteDevice.run(ieee);
     res.json({ ok: true, deleted: id });
   } catch (e: any) {
     logErrorWithLog(id, 'api_error', e.message, 'devices_delete');
@@ -867,13 +872,25 @@ app.post('/api/rooms', async (req, res) => {
 // ── DELETE /api/rooms/:id ─────────────────────────────────
 app.delete('/api/rooms/:id', async (req, res) => {
   const { id } = req.params;
+  // 🔒 Нельзя удалить Гостиную (id=1) — это корневая комната приложения
+  if (id === '1') {
+    return res.status(400).json({ ok: false, error: 'Нельзя удалить Гостиную — это основная комната' });
+  }
   try {
     const existing = await query('SELECT * FROM rooms WHERE id = ?', id);
     if (!existing.length) return res.status(404).json({ ok: false, error: 'Room not found' });
-    // Move devices to room 1 (default) before deleting
-    await query('UPDATE devices SET room_id = 1 WHERE room_id = ?', id);
+    // Удаляем все устройства в этой комнате вместе с их данными
+    const devices = await query('SELECT ieee_addr FROM devices WHERE room_id = ?', id);
+    for (const d of devices) {
+      await query('DELETE FROM telemetry WHERE device_ieee = ?', d.ieee_addr);
+      await query('DELETE FROM commands WHERE device_ieee = ?', d.ieee_addr);
+      await query('DELETE FROM state_changes WHERE device_ieee = ?', d.ieee_addr);
+      await query('DELETE FROM climate_setpoints WHERE device_ieee = ?', d.ieee_addr);
+      await query('DELETE FROM device_group_members WHERE device_ieee = ?', d.ieee_addr);
+    }
+    await query('DELETE FROM devices WHERE room_id = ?', id);
     await query('DELETE FROM rooms WHERE id = ?', id);
-    res.json({ ok: true, deleted: id });
+    res.json({ ok: true, deleted: id, devices_removed: devices.length });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'rooms_delete');
     res.status(500).json({ ok: false, error: e.message });

@@ -79,13 +79,9 @@ db.exec(`
     icon          TEXT DEFAULT '🏠'
   );
 
-  -- Default rooms
+  -- Default rooms — только Гостиная (корневая комната)
   INSERT OR IGNORE INTO rooms (id, name, icon) VALUES
-    (1, 'Гостиная', '🏠'),
-    (2, 'Кухня', '🍳'),
-    (3, 'Спальня', '🛏️'),
-    (4, 'Ванная', '🚿'),
-    (5, 'Улица', '🌳');
+    (1, 'Гостиная', '🏠');
 
   -- Сценарии автоматизации
   CREATE TABLE IF NOT EXISTS scenarios (

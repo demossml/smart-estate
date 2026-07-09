@@ -66,11 +66,12 @@ describe('Demo/Live isolation (ticket 5)', () => {
   let roomsBeforeDemo: any[] = [];
   let devicesBeforeDemo: any[] = [];
 
-  it('шаг 1: Стартуем с чистой БД (дефолтные комнаты 1-5)', async () => {
+  it('шаг 1: Стартуем с чистой БД (только Гостиная)', async () => {
     const res = await api('/api/rooms');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(res.body.rooms.length).toBeGreaterThanOrEqual(5);
+    expect(res.body.rooms.length).toBeGreaterThanOrEqual(1);
+    expect(res.body.rooms[0].name).toBe('Гостиная');
 
     // Запоминаем
     roomsBeforeDemo = res.body.rooms;
