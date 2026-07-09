@@ -8,7 +8,7 @@ import { encryptToken, decryptToken } from './crypto';
 import { stmt, db, query, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
 import { toggleDemoDevice, isDemoMode } from './demo';
-import { attachWebSocket, publishCommand, lastPresenceAt, mapZ2MTypeToInternal } from './mqtt-ws';
+import { attachWebSocket, publishCommand, lastPresenceAt } from './mqtt-ws';
 import { get as httpGet } from 'http';
 import mqtt from 'mqtt';
 import cookieParser from 'cookie-parser';
@@ -249,7 +249,30 @@ app.get('/api/devices', async (req, res) => {
   }
 });
 
-// ── GET /api/devices/pending (Zigbee devices not in DB) ──
+// ── GET /api/devices/pending — обнаруженные по MQTT, не подтверждённые ──
+app.get('/api/devices/pending', async (_req, res) => {
+  try {
+    const rows = stmt.getPendingDiscoveryEvents.all() as any[];
+
+    const pending = rows.map((r: any) => ({
+      ieee_address: r.ieee_address,
+      friendly_name: r.friendly_name || r.ieee_address,
+      model: r.model || null,
+      vendor: r.vendor || null,
+      // Может быть null — значит по exposes однозначно не определили,
+      // фронтенд должен предложить пользователю выбрать тип вручную
+      suggested_type: r.suggested_type || null,
+      exposes: r.exposes_json ? JSON.parse(r.exposes_json) : null,
+      discovered_at: r.created_at,
+    }));
+
+    res.json({ ok: true, pending });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'devices_pending');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── GET /api/devices/:id ────────────────────────────────
 app.get('/api/devices/:id', async (req, res) => {
   try {
@@ -596,57 +619,6 @@ function zigbeeRequest(path: string): Promise<any> {
   });
 }
 
-// ── GET /api/devices/pending (all Z2M devices not yet added) ──────
-app.get('/api/devices/pending', async (_req, res) => {
-  try {
-    let z2mDevices: any[] = [];
-
-    // Read devices from Z2M database.db (NDJSON — newline-delimited JSON)
-    try {
-      const fs = await import('fs');
-      const path = require('path');
-      const dbPath = '/home/admingimolost/smart-estate/data/zigbee2mqtt/database.db';
-      const content = fs.readFileSync(dbPath, 'utf8');
-      const lines = content.trim().split('\n');
-      for (const line of lines) {
-        try { z2mDevices.push(JSON.parse(line)); } catch { /* skip corrupt lines */ }
-      }
-    } catch (err: any) {
-      logger.error("[API] ", 'Z2M DB read failed:', err.message);
-    }
-
-    // Filter to only real devices (skip coordinator)
-    const realDevices = z2mDevices.filter((d: any) =>
-      d.type && d.type !== 'Coordinator' && d.ieeeAddr
-    );
-
-    if (realDevices.length === 0) {
-      return res.json({ ok: true, pending: [], reason: 'z2m_unavailable' });
-    }
-
-    // Map to our format
-    const z2mMapped = realDevices.map((d: any) => ({
-      ieee_address: d.ieeeAddr,
-      friendly_name: d.friendlyName || d.ieeeAddr,
-      model: d.modelId || '—',
-      vendor: d.manufName || '—',
-      type: mapZ2MTypeToInternal(d.ieeeAddr, d.definition?.exposes),
-    }));
-
-    // Filter out devices already in our DB
-    const knownDevices = await query(`SELECT ieee_addr FROM devices`);
-    const knownSet = new Set(knownDevices.map((r: any) => r.ieee_addr));
-
-    const pending = z2mMapped
-      .filter((d: any) => !knownSet.has(d.ieee_address));
-
-    res.json({ ok: true, pending });
-  } catch (e: any) {
-    logErrorWithLog(null, 'api_error', e.message, 'devices_pending');
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
 // ── Phase 1: Discovery эндпоинты ─────────────────────────────
 // POST /api/discovery/start — enable permit_join
 app.post('/api/discovery/start', async (_req, res) => {
@@ -718,6 +690,7 @@ app.get('/api/discovery/events', async (req, res) => {
     return;
   }
   const lastIds = new Set<number>();
+  const MAX_TRACKED_IDS = 500; // не даём Set расти бесконечно на долгоживущих соединениях
   const interval = setInterval(() => {
     try {
       const rows: any[] = discoveryStmt.all();
@@ -725,12 +698,16 @@ app.get('/api/discovery/events', async (req, res) => {
         for (const ev of rows) {
           if (!lastIds.has(ev.id)) {
             lastIds.add(ev.id);
+            if (lastIds.size > MAX_TRACKED_IDS) {
+              const first = lastIds.keys().next();
+              if (!first.done) lastIds.delete(first.value as number);
+            }
             res.write(`data: ${JSON.stringify({ type: 'new', event: ev })}\n\n`);
           }
         }
       }
     } catch (e: any) {
-      console.error('discovery SSE poll error:', e.message);
+      logger.error("[API] ", 'discovery SSE poll error:', e.message);
     }
   }, 2000);
 

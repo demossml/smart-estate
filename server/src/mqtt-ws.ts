@@ -147,7 +147,7 @@ function handleDeviceDiscovery(friendlyName: string, data: any) {
 
     // Log discovery event for SSE streaming
     try {
-      stmt.insertDiscoveryEvent.run(ieee, name, model, vendor);
+      stmt.insertDiscoveryEvent.run(ieee, name, model, vendor, detectedType, data.exposes ? JSON.stringify(data.exposes) : null);
     } catch (e: any) {
       logErrorWithLog(ieee, 'discovery_event_error', e.message);
     }
@@ -189,7 +189,7 @@ function handleBridgeEvent(data: any) {
     switch (data.type) {
       case 'device_joined':
         // Устройство только что подключилось к сети — мгновенный фидбек
-        stmt.insertDiscoveryEvent.run(ieee, name, null, null);
+        stmt.insertDiscoveryEvent.run(ieee, name, null, null, null, null);
         logger.log("[MQTT-WS] ", `🆕 Device joined: ${name} — идёт настройка...`);
         broadcastDiscovery({ type: 'device_joined', ieee_address: ieee, friendly_name: name });
         break;
@@ -202,7 +202,7 @@ function handleBridgeEvent(data: any) {
           case 'successful':
             // Интервью успешно — у нас есть model/vendor/exposes
             const detectedType = mapZ2MTypeToInternal(ieee, info.definition?.exposes || null);
-            stmt.insertDiscoveryEvent.run(ieee, name, model, vendor);
+            stmt.insertDiscoveryEvent.run(ieee, name, model, vendor, detectedType, info.definition?.exposes ? JSON.stringify(info.definition.exposes) : null);
             logger.log("[MQTT-WS] ", `✅ Interview successful: ${name} (${model}) — готов к подтверждению`);
             broadcastDiscovery({
               type: 'device_interview_success',

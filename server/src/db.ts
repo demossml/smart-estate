@@ -202,6 +202,14 @@ if (!hasTypeManual.cnt) {
   logger.log("[DB] ", '➕ Миграция: devices.type_manually_set + room_manually_set добавлены');
 }
 
+// ── Migration: discovery_events.suggested_type + exposes_json ──
+const hasSuggestedType = db.prepare(`SELECT COUNT(*) as cnt FROM pragma_table_info('discovery_events') WHERE name = 'suggested_type'`).get() as any;
+if (!hasSuggestedType.cnt) {
+  db.exec(`ALTER TABLE discovery_events ADD COLUMN suggested_type TEXT`);
+  db.exec(`ALTER TABLE discovery_events ADD COLUMN exposes_json TEXT`);
+  logger.log("[DB] ", '➕ Миграция: discovery_events.suggested_type + exposes_json добавлены');
+}
+
 // Default scenarios
 const defaultScenarios = db.prepare(`SELECT COUNT(*) as cnt FROM scenarios`) as any;
 if (defaultScenarios.get().cnt === 0) {
@@ -428,14 +436,20 @@ export const stmt: any = {
 
   // Discovery events
   insertDiscoveryEvent: db.prepare(`
-    INSERT INTO discovery_events (ieee_address, friendly_name, model, vendor, event_type, status)
-    VALUES (?, ?, ?, ?, 'device_announce', 'pending')
+    INSERT INTO discovery_events (ieee_address, friendly_name, model, vendor, event_type, status, suggested_type, exposes_json)
+    VALUES (?, ?, ?, ?, 'device_announce', 'pending', ?, ?)
   `),
   getDiscoveryEvents: db.prepare(`
     SELECT * FROM discovery_events ORDER BY created_at DESC LIMIT ?
   `),
   confirmDiscovery: db.prepare(`
     UPDATE discovery_events SET status = 'confirmed' WHERE ieee_address = ?
+  `),
+  getPendingDiscoveryEvents: db.prepare(`
+    SELECT de.* FROM discovery_events de
+    WHERE de.status = 'pending'
+    AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.ieee_addr = de.ieee_address)
+    ORDER BY de.created_at DESC
   `),
 };
 
