@@ -210,6 +210,19 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_nonces_expires ON used_nonces(expires_at);
 `);
 
+// ── Идемпотентная миграция: is_demo ──────────────────────
+// Добавляем колонку is_demo в devices и rooms, если её нет
+const hasDeviceDemo = db.prepare(`SELECT COUNT(*) as cnt FROM pragma_table_info('devices') WHERE name = 'is_demo'`).get() as any;
+if (!hasDeviceDemo.cnt) {
+  db.exec(`ALTER TABLE devices ADD COLUMN is_demo INTEGER DEFAULT 0`);
+  logger.log("[DB] ", '➕ Миграция: devices.is_demo добавлена');
+}
+const hasRoomDemo = db.prepare(`SELECT COUNT(*) as cnt FROM pragma_table_info('rooms') WHERE name = 'is_demo'`).get() as any;
+if (!hasRoomDemo.cnt) {
+  db.exec(`ALTER TABLE rooms ADD COLUMN is_demo INTEGER DEFAULT 0`);
+  logger.log("[DB] ", '➕ Миграция: rooms.is_demo добавлена');
+}
+
 // Default scenarios
 const defaultScenarios = db.prepare(`SELECT COUNT(*) as cnt FROM scenarios`) as any;
 if (defaultScenarios.get().cnt === 0) {
@@ -492,10 +505,27 @@ function sqliteCompat(sql: string): string {
     throw new Error(`sqliteCompat: необработанный DuckDB INTERVAL-синтаксис в запросе: ${query}`);
   }
 
-  // 5. CURRENT_DATE → date('now')
+  // 5. EXTRACT(field FROM column) → CAST(strftime(fmt, column) AS INTEGER)
+  query = query.replace(
+    /EXTRACT\s*\(\s*(\w+)\s+FROM\s+(\w+(?:\.\w+)?)\s*\)/gi,
+    (_match, field, col) => {
+      const f = field.toUpperCase();
+      const fmt = f === 'HOUR' ? '%H'
+                  : f === 'MINUTE' ? '%M'
+                  : f === 'DAY' ? '%d'
+                  : f === 'MONTH' ? '%m'
+                  : f === 'YEAR' ? '%Y'
+                  : f === 'DOW' ? '%w'
+                  : f === 'DOY' ? '%j'
+                  : '%Y-%m-%d';
+      return `CAST(strftime('${fmt}', ${col}) AS INTEGER)`;
+    }
+  );
+
+  // 6. CURRENT_DATE → date('now')
   query = query.replace(/\bCURRENT_DATE\b/gi, "date('now')");
 
-  // 6. DuckDB ::DECIMAL(N,N) cast
+  // 7. DuckDB ::DECIMAL(N,N) cast
   query = query.replace(/::DECIMAL\([^)]+\)/gi, '');
 
   // 7. DuckDB ::VARCHAR cast

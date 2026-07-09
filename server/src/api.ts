@@ -3,7 +3,6 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { join } from 'path';
 import { randomBytes, createHmac } from 'crypto';
-import { doubleCsrf } from 'csrf-csrf';
 import rateLimit from 'express-rate-limit';
 import { encryptToken, decryptToken } from './crypto';
 import { stmt, query, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
@@ -75,58 +74,61 @@ const commandLimiter = rateLimit({
 app.use(express.json());
 app.use(cookieParser());
 
-// ── CSRF Protection (self-hosted double-submit) ────────
-// Используем csrf-csrf если CSRF_SECRET задан, иначе свой fallback
+// ── CSRF Protection (self-hosted HMAC double-submit) ───
+// Не используем csrf-csrf из-за проблем с куками (отсутствие куки → 403)
+// Собственная реализация: GET /api/csrf-token возвращает HMAC-подпись,
+// мутации проверяют подпись без куки (достаточно заголовка X-CSRF-Token)
 
-let csrfGenerate: (req: any, res: any) => string;
-let csrfValidate: ((req: any, res: any, next: any) => void) | null = null;
+const CSRF_SECRET = process.env.CSRF_SECRET || 'smart-estate-csrf-secret-2026';
+const CSRF_ENABLED = !!process.env.CSRF_SECRET; // только если явно задан CSRF_SECRET
 
-try {
-  const { generateCsrfToken, doubleCsrfProtection } = doubleCsrf({
-    getSecret: () => { const s = process.env.CSRF_SECRET || 'smart-estate-csrf-secret-2026'; return s; },
-    cookieName: 'smart-estate-csrf',
-    cookieOptions: {
-      httpOnly: true,
-      sameSite: 'strict',
-      path: '/',
-      secure: process.env.NODE_ENV === 'production',
-    },
-    size: 64,
-    getSessionIdentifier: (req) => req.ip || req.socket?.remoteAddress || 'unknown',
-    getCsrfTokenFromRequest: (req) => req.headers['x-csrf-token'] as string,
-  });
-  csrfGenerate = generateCsrfToken;
-  csrfValidate = doubleCsrfProtection;
-} catch {
-  // Fallback: если csrf-csrf не загрузился — отключаем валидацию, 
-  // но оставляем генерацию токенов через HMAC
-  const FALLBACK_SECRET = process.env.CSRF_SECRET || 'smart-estate-fallback-secret';
-
-  csrfGenerate = (_req: any, res: any) => {
-    const nonce = randomBytes(16).toString('hex');
-    const hmac = createHmac('sha256', FALLBACK_SECRET).update(nonce).digest('hex').slice(0, 16);
-    return `${nonce}.${hmac}`;
-  };
-  // null = отключаем проверку — токен выдаётся для обратной совместимости,
-  // но без CSRF_SECRET принудительная проверка не имеет смысла
-  csrfValidate = null;
+/** Генерирует CSRF-токен: nonce.hmac */
+function csrfGenerate(_req: any, res: any): string {
+  const nonce = randomBytes(16).toString('hex');
+  const hmac = createHmac('sha256', CSRF_SECRET).update(nonce).digest('hex').slice(0, 16);
+  return `${nonce}.${hmac}`;
 }
 
-// CSRF: проверка только если токен передан (и валидация активна)
+/** Проверяет HMAC-подпись токена. Возвращает true/false */
+function csrfValidate(token: string): boolean {
+  const parts = token.split('.');
+  if (parts.length !== 2) return false;
+  const [nonce, hmac] = parts;
+  const expected = createHmac('sha256', CSRF_SECRET).update(nonce).digest('hex').slice(0, 16);
+  return hmac === expected;
+}
+
+// ── Хелпер: SQL-условие для фильтрации demo-данных ────
+// В Live-режиме не показываем demo-объекты.
+// В Demo-режиме показываем только demo-объекты + базовые (без is_demo).
+// Используется через строковую интерполяцию в SQL-запросах чтения.
+function demoFilter(alias: string): string {
+  if (isDemoMode()) {
+    // Demo-режим: показываем только demo + записи без флага
+    return `(${alias}.is_demo = 1 OR ${alias}.is_demo IS NULL)`;
+  }
+  // Live-режим: не показываем demo
+  return `(${alias}.is_demo IS NULL OR ${alias}.is_demo = 0)`;
+}
+
+// CSRF middleware: проверка только на мутациях
 app.use((req, res, next) => {
-  if (!process.env.API_KEYS) return next();
+  // GET/HEAD/voice — безопасные методы
   if (req.method === 'GET' || req.method === 'HEAD' || req.path.startsWith('/api/voice')) {
     return next();
   }
-  const token = req.headers['x-csrf-token'];
-  if (!token) return next();
-  // Если csrfValidate === null — CSRF секрет не задан, пропускаем
-  if (!csrfValidate) return next();
-  try {
-    csrfValidate!(req, res, next);
-  } catch {
-    next();
+  // Если CSRF не включён (нет CSRF_SECRET) — пропускаем
+  if (!CSRF_ENABLED) return next();
+  // Если не заданы API_KEYS — CSRF не нужен
+  if (!process.env.API_KEYS) return next();
+  // Получаем токен
+  const token = req.headers['x-csrf-token'] as string;
+  if (!token) return next(); // soft mode: без токена пропускаем
+  // Валидируем
+  if (!csrfValidate(token)) {
+    return res.status(403).json({ ok: false, error: 'Invalid CSRF token' });
   }
+  next();
 });
 
 // Auth: enforce if API_KEYS is configured, otherwise allow all
@@ -149,12 +151,11 @@ app.use((req, res, next) => {
 app.get('/api/csrf-token', (_req, res) => {
   try {
     const token = csrfGenerate(_req, res);
-    res.json({ ok: true, token });
+    res.json({ ok: true, token, enabled: CSRF_ENABLED });
   } catch {
-    // Fallback: если CSRF_SECRET не задан или библиотека падает,
-    // возвращаем простой рандомный токен
+    // Аварийный fallback
     const nonce = randomBytes(16).toString('hex');
-    const hmac = createHmac('sha256', process.env.CSRF_SECRET || 'smart-estate-csrf-secret-2026').update(nonce).digest('hex').slice(0, 16);
+    const hmac = createHmac('sha256', CSRF_SECRET).update(nonce).digest('hex').slice(0, 16);
     const fallbackToken = `${nonce}.${hmac}`;
     res.json({ ok: true, token: fallbackToken, fallback: true });
   }
@@ -166,7 +167,7 @@ app.get('/api/status', async (_req, res) => {
     const devices = await query('SELECT COUNT(*) as cnt FROM devices');
     const online = await query("SELECT COUNT(*) as cnt FROM devices WHERE status = 'online'");
     const errors24h = await query(
-      "SELECT COUNT(*) as cnt FROM errors WHERE ts >= CURRENT_TIMESTAMP - INTERVAL '24' HOUR"
+      "SELECT COUNT(*) as cnt FROM errors WHERE ts >= datetime('now', '-24 hours')"
     );
     res.json({
       ok: true,
@@ -193,9 +194,10 @@ app.get('/api/devices', async (req, res) => {
     const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
 
     // Build WHERE clause for filtering
-    let whereClause = '';
-    if (filter === 'online') whereClause = " WHERE d.status = 'online'";
-    else if (filter === 'offline') whereClause = " WHERE d.status = 'offline'";
+    const demoCond = demoFilter('d');
+    let whereClause = ` WHERE ${demoCond}`;
+    if (filter === 'online') whereClause += ` AND d.status = 'online'`;
+    else if (filter === 'offline') whereClause += ` AND d.status = 'offline'`;
 
     // Total count (before pagination)
     const countResult = await query(`SELECT COUNT(*) as total FROM devices d${whereClause}`);
@@ -252,7 +254,7 @@ app.get('/api/devices', async (req, res) => {
 app.get('/api/devices/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const devices = await query(`SELECT * FROM devices WHERE ieee_addr = ?`, id);
+    const devices = await query(`SELECT * FROM devices WHERE ieee_addr = ? AND ${demoFilter('devices')}`, id);
     if (!devices.length) return res.status(404).json({ ok: false, error: 'Device not found' });
 
     const device = devices[0];
@@ -277,8 +279,8 @@ app.get('/api/devices/:id', async (req, res) => {
 
     // Stats (last 24h)
     const stats = await query(
-      `SELECT property, MIN(value) as min, MAX(value) as max, AVG(value)::DECIMAL(8,2) as avg, COUNT(*) as cnt
-       FROM telemetry WHERE device_ieee = ? AND ts >= CURRENT_TIMESTAMP - INTERVAL '24' HOUR
+      `SELECT property, MIN(value) as min, MAX(value) as max, AVG(value) as avg, COUNT(*) as cnt
+       FROM telemetry WHERE device_ieee = ? AND ts >= datetime('now', '-24 hours')
        GROUP BY property`,
       id
     );
@@ -785,14 +787,14 @@ app.get('/api/telemetry', async (req, res) => {
 
     let tsFilter: string;
     switch (period) {
-      case '1h': tsFilter = "INTERVAL '1' HOUR"; break;
-      case '6h': tsFilter = "INTERVAL '6' HOUR"; break;
-      case '7d': tsFilter = "INTERVAL '7' DAY"; break;
-      case '30d': tsFilter = "INTERVAL '30' DAY"; break;
-      default: tsFilter = "INTERVAL '24' HOUR";
+      case '1h': tsFilter = "datetime('now', '-1 hours')"; break;
+      case '6h': tsFilter = "datetime('now', '-6 hours')"; break;
+      case '7d': tsFilter = "datetime('now', '-7 days')"; break;
+      case '30d': tsFilter = "datetime('now', '-30 days')"; break;
+      default: tsFilter = "datetime('now', '-24 hours')";
     }
 
-    let sql = `SELECT * FROM telemetry WHERE ts >= CURRENT_TIMESTAMP - ${tsFilter}`;
+    let sql = `SELECT * FROM telemetry WHERE ts >= ${tsFilter}`;
     const params: any[] = [];
 
     if (device) { sql += ' AND device_ieee = ?'; params.push(device); }
@@ -813,7 +815,7 @@ app.get('/api/rooms', async (_req, res) => {
   try {
     const rooms = await query(`
       SELECT r.*, COUNT(d.ieee_addr) as device_count
-      FROM rooms r LEFT JOIN devices d ON r.id = d.room_id
+      FROM rooms r LEFT JOIN devices d ON r.id = d.room_id AND ${demoFilter('d')}
       GROUP BY r.id, r.name, r.icon ORDER BY r.id
     `);
 
@@ -923,7 +925,7 @@ app.get('/api/rooms/:id/devices', async (req, res) => {
              ) sub WHERE rn = 1 LIMIT 6) t
         ) as latest_telemetry
       FROM devices d LEFT JOIN rooms r ON d.room_id = r.id
-      WHERE d.room_id = ?
+      WHERE d.room_id = ? AND ${demoFilter('d')}
       ORDER BY d.type, d.ieee_addr
     `, id);
 
@@ -987,7 +989,7 @@ app.get('/api/rooms/:id/climate', async (req, res) => {
 app.get('/api/energy', async (_req, res) => {
   try {
     const today = await query(
-      `SELECT SUM(value)::DECIMAL(6,2) as kwh FROM telemetry
+      `SELECT SUM(value) as kwh FROM telemetry
        WHERE property = 'energy' AND ts >= CURRENT_DATE`
     );
     const current = await query(
@@ -1021,7 +1023,7 @@ app.get('/api/energy/trend', async (_req, res) => {
         SUM(CASE WHEN property = 'power' THEN value ELSE 0 END) as total_power,
         COUNT(DISTINCT device_ieee) as device_count
       FROM telemetry
-      WHERE ts >= CURRENT_TIMESTAMP - INTERVAL '24' HOUR
+      WHERE ts >= datetime('now', '-24 hours')
         AND (property = 'power' OR property = 'energy')
       GROUP BY strftime('%Y-%m-%dT%H:00:00Z', ts)
       ORDER BY hour
@@ -1505,35 +1507,37 @@ app.get('/api/dashboard', async (_req, res) => {
       `SELECT t.device_ieee, d.friendly_name FROM telemetry t
        JOIN devices d ON t.device_ieee = d.ieee_addr
        WHERE t.property = 'contact' AND t.value > 0
-       AND t.ts >= CURRENT_TIMESTAMP - INTERVAL '1' MINUTE`
+       AND t.ts >= datetime('now', '-1 minutes')
+       AND ${demoFilter('d')}`
     );
     const security = {
       armed: doors.length === 0,
       openPoints: doors.map((d: any) => d.friendly_name),
     };
 
-    // Rooms with temperature — only rooms that have at least one device
+    // Rooms with temperature — only rooms that have at least one non-demo device
     const rooms = await query(`
       SELECT r.id, r.name, r.icon
       FROM rooms r
-      JOIN devices d ON d.room_id = r.id
+      JOIN devices d ON d.room_id = r.id AND ${demoFilter('d')}
       GROUP BY r.id, r.name, r.icon
       ORDER BY r.id
     `);
 
     const enriched = await Promise.all(rooms.map(async (room: any) => {
       const temp = await query(
-        `SELECT AVG(value)::DECIMAL(4,1) as temp FROM telemetry
+        `SELECT AVG(value) as temp FROM telemetry
          WHERE property = 'temperature' AND device_ieee IN (
-           SELECT ieee_addr FROM devices WHERE room_id = ?
-         ) AND ts >= CURRENT_TIMESTAMP - INTERVAL '1' HOUR`,
+           SELECT ieee_addr FROM devices WHERE room_id = ? AND ${demoFilter('devices')}
+         ) AND ts >= datetime('now', '-1 hours')`,
         room.id
       );
       const light = await query(
         `SELECT d.ieee_addr FROM devices d
          JOIN telemetry t ON d.ieee_addr = t.device_ieee
          WHERE d.room_id = ? AND d.type = 'light' AND t.property = 'state' AND t.value > 0
-         AND t.ts >= CURRENT_TIMESTAMP - INTERVAL '5' MINUTE`,
+         AND t.ts >= datetime('now', '-5 minutes')
+         AND ${demoFilter('d')}`,
         room.id
       );
       return {
@@ -1549,7 +1553,7 @@ app.get('/api/dashboard', async (_req, res) => {
     // Energy
     const energyData = await query(
       `SELECT AVG(value) as val, CAST(strftime('%H', ts) AS INTEGER) as h FROM telemetry
-       WHERE property = 'power' AND ts >= CURRENT_TIMESTAMP - INTERVAL '24' HOUR
+       WHERE property = 'power' AND ts >= datetime('now', '-24 hours')
        GROUP BY h ORDER BY h`
     );
     const energyTrend = Array(24).fill(0);
@@ -2254,14 +2258,14 @@ app.get('/api/air-quality', async (_req, res) => {
 // Один запрос — все данные для нового дашборда: метрики + комнаты с устройствами/климатом/воздухом
 app.get('/api/dashboard/v2', async (_req, res) => {
   try {
-    // 1. Комнаты
+    // 1. Комнаты (только не-demo)
     const rooms = await query(`
       SELECT r.*, COUNT(d.ieee_addr) as device_count
-      FROM rooms r LEFT JOIN devices d ON r.id = d.room_id
+      FROM rooms r LEFT JOIN devices d ON r.id = d.room_id AND ${demoFilter('d')}
       GROUP BY r.id, r.name, r.icon ORDER BY r.id
     `);
 
-    // 2. Все air-параметры (последние значения) — одним запросом
+    // 2. Все air-параметры (последние значения) — только не-demo устройства
     const airData = await query(`
       WITH ranked AS (
         SELECT t.device_ieee, t.property, t.value, t.unit,
@@ -2273,6 +2277,7 @@ app.get('/api/dashboard/v2', async (_req, res) => {
         FROM telemetry t
         JOIN devices d ON d.ieee_addr = t.device_ieee
         WHERE t.property IN ('temperature','humidity','co2','voc','formaldehyde')
+          AND ${demoFilter('d')}
       )
       SELECT * FROM ranked WHERE rn = 1
     `);
@@ -2321,8 +2326,7 @@ app.get('/api/dashboard/v2', async (_req, res) => {
       const rid = room.id;
       const air = roomAir.get(rid);
 
-      // Устройства в комнате с телеметрией
-      // Устройства в комнате с телеметрией
+      // Устройства в комнате с телеметрией (только не-demo)
       const devices = await query(`
         SELECT d.*,
           (SELECT COALESCE(json_group_array(
@@ -2334,7 +2338,7 @@ app.get('/api/dashboard/v2', async (_req, res) => {
                  FROM telemetry WHERE device_ieee = d.ieee_addr
                ) sub WHERE rn = 1 ORDER BY property) t
           ) as latest_telemetry
-        FROM devices d WHERE d.room_id = ?
+        FROM devices d WHERE d.room_id = ? AND ${demoFilter('d')}
         ORDER BY d.type, d.ieee_addr
       `, rid);
 
@@ -2359,11 +2363,11 @@ app.get('/api/dashboard/v2', async (_req, res) => {
         };
       });
 
-      // Климат
+      // Климат (только не-demo устройства)
       const climate = await query(`
         SELECT cs.*, d.friendly_name
         FROM climate_setpoints cs JOIN devices d ON cs.device_ieee = d.ieee_addr
-        WHERE d.room_id = ?
+        WHERE d.room_id = ? AND ${demoFilter('d')}
         ORDER BY cs.device_ieee
       `, rid);
 
@@ -2375,6 +2379,7 @@ app.get('/api/dashboard/v2', async (_req, res) => {
         JOIN devices d ON d.ieee_addr = t.device_ieee
         WHERE d.room_id = ? AND t.property = 'contact'
           AND d.type IN ('window_sensor', 'door_sensor')
+          AND ${demoFilter('d')}
           AND t.ts = (SELECT MAX(ts) FROM telemetry t2
                       WHERE t2.device_ieee = t.device_ieee AND t2.property = 'contact')
         ORDER BY d.friendly_name
@@ -2428,10 +2433,11 @@ app.get('/api/dashboard/v2', async (_req, res) => {
       };
     }));
 
-    // 4. Энергия
+    // 4. Энергия (только не-demo устройства)
     const energyToday = await query(
-      `SELECT SUM(value)::DECIMAL(6,2) as kwh FROM telemetry
-       WHERE property = 'energy' AND ts >= CURRENT_DATE`
+      `SELECT SUM(value) as kwh FROM telemetry
+       WHERE property = 'energy' AND ts >= datetime('now', 'start of day')
+       AND device_ieee NOT IN (SELECT ieee_addr FROM devices WHERE is_demo = 1)`
     );
 
     res.json({

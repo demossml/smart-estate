@@ -1,11 +1,13 @@
 const BASE = '/api';
 
 /* ─── CSRF Token ─── */
+// Soft mode: API пропускает запросы без CSRF-токена (см. middleware в api.ts)
+// Если понадобится строгая защита — нужно передавать X-API-Key при запросе токена
 let csrfToken = '';
 
 async function initCSRF(): Promise<void> {
   try {
-    const res = await fetch('/api/csrf-token');
+    const res = await fetch('/api/csrf-token', { headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' } });
     const data = await res.json();
     csrfToken = data.token || '';
   } catch {
@@ -303,11 +305,11 @@ export const api = {
 
   getClimate: async () => {
     const [setpointsData, devices] = await Promise.all([
-      request<{ ok: boolean; setpoints: RawSetpoint[] }>('/climate'),
+      request<{ ok: boolean; rooms: RawSetpoint[] }>('/climate'),
       getDeviceCache(),
     ]);
     const deviceMap = new Map(devices.map(d => [d.id, d]));
-    return setpointsData.setpoints.map(s => mapSetpoint(s, deviceMap.get(s.device_ieee)));
+    return setpointsData.rooms.map(s => mapSetpoint(s, deviceMap.get(s.device_ieee)));
   },
 
   updateClimate: (id: string, targetTemp: number, mode: import('../types').ClimateSetpoint['mode']) =>

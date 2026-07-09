@@ -42,12 +42,12 @@ let _telemetrySeq = BigInt(100000);
 // ═══════════════════════════════════════════════════════
 
 const DEMO_ROOMS = [
-  { id: 100, name: 'Гостиная', icon: 'armchair' },
-  { id: 101, name: 'Кухня', icon: 'cooking-pot' },
-  { id: 102, name: 'Спальня', icon: 'bed' },
-  { id: 103, name: 'Ванная', icon: 'bath' },
-  { id: 104, name: 'Коридор', icon: 'door-open' },
-  { id: 105, name: 'Улица', icon: 'tree-pine' },
+  { id: 100, name: 'Гостиная (демо)', icon: 'armchair' },
+  { id: 101, name: 'Кухня (демо)', icon: 'cooking-pot' },
+  { id: 102, name: 'Спальня (демо)', icon: 'bed' },
+  { id: 103, name: 'Ванная (демо)', icon: 'bath' },
+  { id: 104, name: 'Коридор (демо)', icon: 'door-open' },
+  { id: 105, name: 'Улица (демо)', icon: 'tree-pine' },
 ];
 
 const DEMO_DEVICES: DemoDevice[] = [
@@ -56,14 +56,14 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:living_light',
     name: 'Основной свет',
     type: 'light',
-    room: 'Гостиная',
+    room: 'Гостиная (демо)',
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 1, direction: 0 }],
   },
   {
     ieee_addr: 'demo:living_temp',
     name: 'Датчик температуры',
     type: 'temp_sensor',
-    room: 'Гостиная',
+    room: 'Гостиная (демо)',
     properties: [
       { property: 'temperature', unit: '°C', min: 18, max: 28, current: 21.5, direction: 1 },
       { property: 'humidity', unit: '%', min: 35, max: 65, current: 48, direction: -1 },
@@ -73,7 +73,7 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:living_power',
     name: 'Розетка ТВ',
     type: 'plug',
-    room: 'Гостиная',
+    room: 'Гостиная (демо)',
     properties: [{ property: 'power', unit: 'W', min: 5, max: 150, current: 45, direction: 1 }],
   },
 
@@ -82,14 +82,14 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:kitchen_light',
     name: 'Свет кухни',
     type: 'light',
-    room: 'Кухня',
+    room: 'Кухня (демо)',
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
   {
     ieee_addr: 'demo:kitchen_temp',
     name: 'Датчик температуры',
     type: 'temp_sensor',
-    room: 'Кухня',
+    room: 'Кухня (демо)',
     properties: [
       { property: 'temperature', unit: '°C', min: 19, max: 30, current: 22.0, direction: 1 },
       { property: 'humidity', unit: '%', min: 40, max: 75, current: 55, direction: 1 },
@@ -99,7 +99,7 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:kitchen_air',
     name: 'Монитор воздуха',
     type: 'air_monitor',
-    room: 'Кухня',
+    room: 'Кухня (демо)',
     properties: [
       { property: 'co2', unit: 'ppm', min: 400, max: 1200, current: 720, direction: 1 },
       { property: 'voc', unit: 'ppb', min: 0, max: 300, current: 110, direction: 1 },
@@ -111,7 +111,7 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:kitchen_window',
     name: 'Окно левое',
     type: 'window_sensor',
-    room: 'Кухня',
+    room: 'Кухня (демо)',
     properties: [
       { property: 'contact', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 },
     ],
@@ -120,14 +120,14 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:kitchen_fan',
     name: 'Вытяжка',
     type: 'fan',
-    room: 'Кухня',
+    room: 'Кухня (демо)',
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
   {
     ieee_addr: 'demo:kitchen_fridge',
     name: 'Холодильник',
     type: 'plug',
-    room: 'Кухня',
+    room: 'Кухня (демо)',
     properties: [{ property: 'power', unit: 'W', min: 50, max: 200, current: 120, direction: -1 }],
   },
 
@@ -136,14 +136,14 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:bedroom_light',
     name: 'Свет спальни',
     type: 'light',
-    room: 'Спальня',
+    room: 'Спальня (демо)',
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
   {
     ieee_addr: 'demo:bedroom_temp',
     name: 'Датчик температуры',
     type: 'temp_sensor',
-    room: 'Спальня',
+    room: 'Спальня (демо)',
     properties: [
       { property: 'temperature', unit: '°C', min: 18, max: 26, current: 20.0, direction: -1 },
       { property: 'humidity', unit: '%', min: 40, max: 60, current: 52, direction: -1 },
@@ -155,14 +155,14 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:bath_light',
     name: 'Свет ванной',
     type: 'light',
-    room: 'Ванная',
+    room: 'Ванная (демо)',
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
   {
     ieee_addr: 'demo:bath_temp',
     name: 'Датчик влажности',
     type: 'temp_sensor',
-    room: 'Ванная',
+    room: 'Ванная (демо)',
     properties: [
       { property: 'temperature', unit: '°C', min: 18, max: 28, current: 23.0, direction: 1 },
       { property: 'humidity', unit: '%', min: 45, max: 90, current: 65, direction: 1 },
@@ -172,7 +172,7 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:bath_leak',
     name: 'Датчик протечки',
     type: 'temp_sensor',
-    room: 'Ванная',
+    room: 'Ванная (демо)',
     properties: [{ property: 'water_leak', unit: 'bool', min: 0, max: 0, current: 0, direction: 0 }],
   },
 
@@ -181,14 +181,14 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:hall_light',
     name: 'Свет коридора',
     type: 'light',
-    room: 'Коридор',
+    room: 'Коридор (демо)',
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 1, direction: 0 }],
   },
   {
     ieee_addr: 'demo:hall_motion',
     name: 'Датчик движения',
     type: 'temp_sensor',
-    room: 'Коридор',
+    room: 'Коридор (демо)',
     properties: [
       { property: 'occupancy', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 },
       { property: 'illuminance', unit: 'lux', min: 0, max: 500, current: 120, direction: -1 },
@@ -198,14 +198,14 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:main_door',
     name: 'Входная дверь',
     type: 'temp_sensor',
-    room: 'Коридор',
+    room: 'Коридор (демо)',
     properties: [{ property: 'contact', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
   {
     ieee_addr: 'demo:main_lock',
     name: 'Замок двери',
     type: 'lock',
-    room: 'Коридор',
+    room: 'Коридор (демо)',
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
   // Ворота и калитка
@@ -213,14 +213,14 @@ const DEMO_DEVICES: DemoDevice[] = [
     ieee_addr: 'demo:main_gate',
     name: 'Въездные ворота',
     type: 'gate',
-    room: 'Улица',
+    room: 'Улица (демо)',
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
   {
     ieee_addr: 'demo:side_gate',
     name: 'Калитка',
     type: 'gate',
-    room: 'Улица',
+    room: 'Улица (демо)',
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
 ];
@@ -242,30 +242,25 @@ export async function seedDemoData(): Promise<{ rooms: number; devices: number }
   await query("DELETE FROM devices WHERE ieee_addr LIKE 'demo:%'");
   await query("DELETE FROM telemetry WHERE device_ieee LIKE 'demo:%'");
 
-  // Rooms — find by name, create if missing, update icon
-  // (don't touch rooms with id < 100 — they are real production rooms)
+  // Rooms — insert only if id >= 100 doesn't exist yet
+  // Явный id из DEMO_ROOMS, без поиска по имени (чтобы не коллизировать с комнатами 1-5)
   let roomCount = 0;
   const roomIdByName = new Map<string, number>();
   for (const r of DEMO_ROOMS) {
-    const existing = await query('SELECT id, icon FROM rooms WHERE name = ?', r.name);
-    if (existing.length > 0) {
-      roomIdByName.set(r.name, Number(existing[0].id));
-      // Update icon if changed
-      if (existing[0].icon !== r.icon) {
-        await query('UPDATE rooms SET icon = ? WHERE id = ?', r.icon, Number(existing[0].id));
-      }
-    } else {
-      await query('INSERT INTO rooms (id, name, icon) VALUES (?, ?, ?)', r.id, r.name, r.icon);
-      roomIdByName.set(r.name, r.id);
-      roomCount++;
-    }
+    await query(
+      'INSERT OR IGNORE INTO rooms (id, name, icon, is_demo) VALUES (?, ?, ?, 1)',
+      r.id, r.name, r.icon
+    );
+    // Убедимся что комната создана (если была IGNORE — значит уже есть)
+    roomIdByName.set(r.name, r.id);
+    roomCount++;
   }
   let deviceCount = 0;
   for (const d of DEMO_DEVICES) {
     const roomId = roomIdByName.get(d.room) || null;
     await query(
-      `INSERT INTO devices (ieee_addr, friendly_name, type, room_id, status, last_seen)
-       VALUES (?, ?, ?, ?, 'online', CURRENT_TIMESTAMP)`,
+      `INSERT INTO devices (ieee_addr, friendly_name, type, room_id, status, last_seen, is_demo)
+       VALUES (?, ?, ?, ?, 'online', CURRENT_TIMESTAMP, 1)`,
       d.ieee_addr, d.name, d.type, roomId
     );
     deviceCount++;
@@ -347,11 +342,23 @@ export async function stopDemo(): Promise<void> {
     intervalId = null;
   }
   _isDemoActive = false;
-  // Clean up demo telemetry so real devices show clearly
+  // Clean up ALL demo data — устройства, телеметрию, сценарии, комнаты
   try {
-    await query(`DELETE FROM telemetry WHERE device_ieee LIKE 'demo:%'`);
+    // Сначала зависимые таблицы
+    await query(`DELETE FROM commands WHERE device_ieee LIKE 'demo:%'`);
+    await query(`DELETE FROM errors WHERE device_ieee LIKE 'demo:%'`);
+    await query(`DELETE FROM climate_setpoints WHERE device_ieee LIKE 'demo:%'`);
+    await query(`DELETE FROM device_group_members WHERE device_ieee LIKE 'demo:%'`);
     await query(`DELETE FROM state_changes WHERE device_ieee LIKE 'demo:%'`);
-    logger.log("[DEMO] ", '🧹 DEMO MODE: телеметрия demo-устройств очищена');
+    await query(`DELETE FROM telemetry WHERE device_ieee LIKE 'demo:%'`);
+    // Сами устройства
+    await query(`DELETE FROM devices WHERE ieee_addr LIKE 'demo:%'`);
+    // Демо-комнаты (id >= 100)
+    await query(`DELETE FROM rooms WHERE id >= 100`);
+    // Демо-сценарии
+    await query(`DELETE FROM scenario_executions WHERE scenario_id IN (SELECT id FROM scenarios WHERE name LIKE 'Демо:%')`);
+    await query(`DELETE FROM scenarios WHERE name LIKE 'Демо:%'`);
+    logger.log("[DEMO] ", '🧹 DEMO MODE: все демо-данные очищены');
   } catch (e: any) {
     logger.error("[DEMO] ", '🧹 DEMO cleanup error:', e.message);
   }
@@ -468,7 +475,7 @@ async function generateTelemetry(): Promise<void> {
   const recentExecs = await query(
     `SELECT se.*, s.name as scenario_name, s.actions_json FROM scenario_executions se
      JOIN scenarios s ON s.id = se.scenario_id
-     WHERE se.ts >= CURRENT_TIMESTAMP - INTERVAL '10 seconds'
+     WHERE se.ts >= datetime('now', '-10 seconds')
        AND s.name LIKE 'Демо:%'
      ORDER BY se.ts DESC LIMIT 5`
   ).catch(() => []);

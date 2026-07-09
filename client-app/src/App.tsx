@@ -15,7 +15,7 @@ import ManageTab, { classifyVoiceCommand } from "./components/ManageTab";
 let csrfToken = '';
 async function initCSRF() {
   try {
-    const res = await fetch('/api/csrf-token');
+    const res = await fetch('/api/csrf-token', { headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' } });
     const data = await res.json();
     csrfToken = data.token || '';
   } catch {}
