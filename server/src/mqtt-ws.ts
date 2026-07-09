@@ -1,8 +1,13 @@
 import mqtt from 'mqtt';
-import { stmt, db, logErrorWithLog, logStateChange, query, DB_PATH } from './db';
+import { stmt, db, logErrorWithLog, logStateChange, query } from './db';
 import { validateMqttPayload, type MqttTelemetryPayload } from './schemas';
+import type { Server as WSServer, WebSocket as WSClient } from 'ws';
+import { Server as HTTPServer } from 'http';
+import logger from './logger';
 
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
+const DEBUG_MQTT = process.env.DEBUG_MQTT === '1'; // включает подробный RAW-лог входящей телеметрии
+
 let client: mqtt.MqttClient | null = null;
 let reconnectAttempts = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -14,9 +19,6 @@ let wss: any = null;
 
 // Track last presence time per device (in-memory)
 const lastPresenceAt = new Map<string, number>();
-
-// Track device type per IEEE (from handleDeviceDiscovery)
-const deviceTypes = new Map<string, string>();
 
 export function setWSServer(wsServer: any) {
   wss = wsServer;
@@ -45,7 +47,7 @@ export function connectMQTT() {
       if (err) {
         logErrorWithLog(null, 'mqtt_subscribe_error', err.message, MQTT_URL);
       } else {
-        logger.log("[MQTT-WS] ", '🔍 Listening: zigbee2mqtt/# → DuckDB');
+        logger.log("[MQTT-WS] ", '🔍 Listening: zigbee2mqtt/# → SQLite');
       }
     });
   });
@@ -60,7 +62,7 @@ export function connectMQTT() {
   client.on('close', () => {
     const delay = Math.min(BASE_DELAY * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY);
     reconnectAttempts++;
-    
+
     if (reconnectAttempts <= 3) {
       logger.log("[MQTT-WS] ", `📡 MQTT disconnected — reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts})...`);
     } else if (reconnectAttempts === 4) {
@@ -68,7 +70,7 @@ export function connectMQTT() {
     } else if (reconnectAttempts % 10 === 0) {
       logger.log("[MQTT-WS] ", `📡 MQTT reconnecting... (attempt ${reconnectAttempts}, next delay ${delay / 1000}s)`);
     }
-    
+
     reconnectTimer = setTimeout(() => connectMQTT(), delay);
   });
 
@@ -91,8 +93,12 @@ function handleMessage(topic: string, payload: Buffer) {
         handleBridgeDevices(data);
         return;
       }
-      // bridge/event — device_interview / device_announce from Z2M
-      if (event === 'event' && data?.type && (data.type === 'device_interview' || data.type === 'device_announce' || data.type === 'device_joined')) {
+      // bridge/event — device_joined / device_interview / device_announce от Z2M.
+      // Это ЕДИНСТВЕННОЕ место, где Z2M реально публикует эти события
+      // (см. https://www.zigbee2mqtt.io/guide/usage/mqtt_topics_and_messages.html) —
+      // на обычных per-device топиках их не бывает.
+      if (event === 'event' && data?.type &&
+          (data.type === 'device_interview' || data.type === 'device_announce' || data.type === 'device_joined')) {
         handleBridgeEvent(data);
         return;
       }
@@ -105,11 +111,13 @@ function handleMessage(topic: string, payload: Buffer) {
       logErrorWithLog(null, 'mqtt_validation_error', 'Payload failed Zod validation', topic);
       return;
     }
-
-    const friendlyName = topicParts[1];
+const friendlyName = topicParts[1];
     if (!friendlyName) return;
 
-    // Device discovery
+    // Защитная ветка: по документации Z2M device_announce/device_interview приходят
+    // только на zigbee2mqtt/bridge/event, никогда на zigbee2mqtt/<friendly_name>.
+    // Эта проверка не должна срабатывать в норме — оставлена как safety net на случай
+    // нестандартной прошивки/старой версии Z2M, а не как основной путь обнаружения.
     if (data.type === 'device_announce' || data.type === 'device_interview') {
       handleDeviceDiscovery(friendlyName, data);
       return;
@@ -121,9 +129,7 @@ function handleMessage(topic: string, payload: Buffer) {
       return;
     }
 
-    // Regular telemetry
-    // 🔍 RAW log: показываем всё что пришло от Z2M
-    if (friendlyName === 'Окно левое' || data.contact !== undefined || friendlyName === 'Датчик воздуха') {
+    if (DEBUG_MQTT) {
       logger.log("[MQTT-WS] ", `🔍 RAW ${friendlyName}: ${JSON.stringify(data)}`);
     }
     handleTelemetry(friendlyName, data);
@@ -132,51 +138,40 @@ function handleMessage(topic: string, payload: Buffer) {
   }
 }
 
-// ── Device Discovery ────────────────────────────────────
-// Тикет 2+5: НЕ вставляем в devices — только в discovery_events.
-// Устройство появляется в БД только после подтверждения пользователем через
-// POST /api/discovery/:ieee/confirm (см. api.ts).
+// ── Device Discovery (safety-net path, см. комментарий в handleMessage) ─────
+// НЕ вставляем в devices — только в discovery_events. Устройство появляется
+// в БД только после подтверждения пользователем через POST /api/discovery/:ieee/confirm.
 function handleDeviceDiscovery(friendlyName: string, data: any) {
   const ieee = data.ieee_address || data.ieeeAddr || friendlyName;
   const name = friendlyName.trim();
   try {
-    // Определяем тип из exposes, если доступны
-    const detectedType = mapZ2MTypeToInternal(ieee, data.exposes || null);
+    const exposes = data.exposes || null;
+    const detectedType = mapZ2MTypeToInternal(ieee, exposes);
     const model = data.definition?.model || data.model_id || null;
     const vendor = data.definition?.vendor || null;
 
-    // Log discovery event for SSE streaming
     try {
-      stmt.insertDiscoveryEvent.run(ieee, name, model, vendor, detectedType, data.exposes ? JSON.stringify(data.exposes) : null);
+      stmt.insertDiscoveryEvent.run(ieee, name, model, vendor, detectedType, exposes ? JSON.stringify(exposes) : null);
     } catch (e: any) {
       logErrorWithLog(ieee, 'discovery_event_error', e.message);
     }
-    // Track device type
-    if (data.type) deviceTypes.set(ieee, data.type);
     logger.log("[MQTT-WS] ", `🔍 Device discovered via topic: ${friendlyName} (${model || 'pairing...'})`);
 
-    // Broadcast via WebSocket if connected
-    if (wss) {
-      const event = {
-        type: 'device_discovered',
-        ieee_address: ieee,
-        friendly_name: name,
-        model: model,
-        vendor: vendor,
-        timestamp: new Date().toISOString(),
-      };
-      const msg = JSON.stringify({ type: 'discovery', data: event });
-      wss.clients.forEach((client: any) => {
-        try { client.send(msg); } catch {}
-      });
-    }
+    broadcastDiscovery({
+      type: 'device_discovered',
+      ieee_address: ieee,
+      friendly_name: name,
+      model,
+      vendor,
+      suggested_type: detectedType,
+      exposes,
+    });
   } catch (e: any) {
     logErrorWithLog(ieee, 'discovery_error', e.message, friendlyName);
   }
 }
 
-// ── Bridge Event (device_joined / device_interview / device_announce from zigbee2mqtt/bridge/event) ──
-// Тикет 6: различаем статусы интервью
+// ── Bridge Event (device_joined / device_interview / device_announce) ──────
 function handleBridgeEvent(data: any) {
   const info = data.data;
   if (!info?.ieee_address) return;
@@ -188,21 +183,21 @@ function handleBridgeEvent(data: any) {
   try {
     switch (data.type) {
       case 'device_joined':
-        // Устройство только что подключилось к сети — мгновенный фидбек
+        // Устройство только что подключилось к сети — мгновенный фидбек в UI,
+        // до того как пройдёт (может занять секунды) интервью.
         stmt.insertDiscoveryEvent.run(ieee, name, null, null, null, null);
         logger.log("[MQTT-WS] ", `🆕 Device joined: ${name} — идёт настройка...`);
         broadcastDiscovery({ type: 'device_joined', ieee_address: ieee, friendly_name: name });
         break;
-
-      case 'device_interview':
+case 'device_interview': {
         switch (info.status) {
           case 'started':
             logger.log("[MQTT-WS] ", `🔄 Interview started: ${name} (${ieee}) — настройка...`);
             break;
-          case 'successful':
-            // Интервью успешно — у нас есть model/vendor/exposes
-            const detectedType = mapZ2MTypeToInternal(ieee, info.definition?.exposes || null);
-            stmt.insertDiscoveryEvent.run(ieee, name, model, vendor, detectedType, info.definition?.exposes ? JSON.stringify(info.definition.exposes) : null);
+          case 'successful': {
+            const exposes = info.definition?.exposes || null;
+            const detectedType = mapZ2MTypeToInternal(ieee, exposes);
+            stmt.insertDiscoveryEvent.run(ieee, name, model, vendor, detectedType, exposes ? JSON.stringify(exposes) : null);
             logger.log("[MQTT-WS] ", `✅ Interview successful: ${name} (${model}) — готов к подтверждению`);
             broadcastDiscovery({
               type: 'device_interview_success',
@@ -210,11 +205,11 @@ function handleBridgeEvent(data: any) {
               friendly_name: name,
               model, vendor,
               suggested_type: detectedType,
-              exposes: info.definition?.exposes || null,
+              exposes,
             });
             break;
-          case 'failed':
-            // Интервью провалено — показать пользователю
+          }
+          case 'failed': {
             logErrorWithLog(ieee, 'interview_failed', `Interview failed for ${name}`, JSON.stringify(info));
             logger.log("[MQTT-WS] ", `❌ Interview failed: ${name} (${ieee}) — устройство не отвечает`);
             broadcastDiscovery({
@@ -224,14 +219,18 @@ function handleBridgeEvent(data: any) {
               error: info.error || 'unknown',
             });
             break;
+          }
           default:
             logger.log("[MQTT-WS] ", `🌉 Bridge event — ${data.type}/${info.status}: ${name}`);
         }
         break;
+      }
 
       case 'device_announce':
-        // Устройство перезагрузилось/вернулось в сеть — обновляем last_seen
-        // ТОЛЬКО UPDATE — не создаём запись, если устройство не подтверждено
+        // Устройство перезагрузилось/вернулось в сеть — только обновляем last_seen.
+        // ЧИСТЫЙ UPDATE (не upsert) — если устройства нет в devices (ещё не
+        // подтверждено пользователем), эта строка не должна появиться из-за
+        // announce. Создание строки — исключительно через /api/discovery/:ieee/confirm.
         stmt.updateLastSeen.run(ieee);
         logger.log("[MQTT-WS] ", `🔄 Device announce (online): ${name}`);
         break;
@@ -248,25 +247,28 @@ function handleBridgeEvent(data: any) {
 function broadcastDiscovery(event: any) {
   if (!wss) return;
   const msg = JSON.stringify({ type: 'discovery', data: event });
-  wss.clients.forEach((client: any) => {
-    try { client.send(msg); } catch {}
+  wss.clients.forEach((c: any) => {
+    try { c.send(msg); } catch {}
   });
 }
 
-// ── Bridge Devices (process full device list on reconnect) ──
-// Тикет 2+4: используем upsertDeviceFromDiscovery (не перезаписывает manual type/room)
-// и не хардкодим room_id=1
+// ── Bridge Devices (full device list, приходит при (пере)подключении Z2M) ──
+// Использует upsertDeviceFromDiscovery: не создаёт неподтверждённые устройства
+// с нуля в потенциально неожиданных случаях... на практике Z2M присылает этот
+// список для УЖЕ известных Z2M устройств, что не то же самое, что "подтверждённые
+// пользователем" в нашем приложении. Поэтому здесь намеренно НЕ хардкодим room_id,
+// и type/room не перезаписываются, если пользователь их менял вручную.
 function handleBridgeDevices(devices: any) {
   if (!Array.isArray(devices)) return;
   for (const dev of devices) {
     if (dev.type === 'Coordinator' || dev.type === 'Router' || dev.disabled) continue;
-    const ieee = dev.ieee_address || dev.ieeeAddr;
+    const ieee = dev.ieee_address || dev.ieeeAddr || 'unknown';
     const name = dev.friendly_name?.trim() || ieee;
     const model = dev.definition?.model || dev.model_id || null;
     const vendor = dev.definition?.vendor || null;
     try {
-      stmt.upsertDeviceFromDiscovery.run(ieee, name, model, vendor, dev.type || null, null);
-      if (dev.type) deviceTypes.set(ieee, dev.type);
+      const detectedType = mapZ2MTypeToInternal(ieee, dev.definition?.exposes || null);
+      stmt.upsertDeviceFromDiscovery.run(ieee, name, model, vendor, detectedType, null);
       logger.log("[MQTT-WS] ", `📦 Bridge device: ${name} (${model})`);
     } catch (e: any) {
       logErrorWithLog(ieee, 'bridge_device_error', e.message, name);
@@ -274,18 +276,15 @@ function handleBridgeDevices(devices: any) {
   }
 }
 
-// ── Real type mapping from Zigbee2MQTT exposes ──
-// Тикет 3: вместо заглушки 'sensor' используем exposes из Z2M
-export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): string | null {
+// ── Real type mapping from Zigbee2MQTT exposes ──────────────────────────────
+export function mapZ2MTypeToInternal(_ieeeAddr: string, exposes: any[] | null): string | null {
   if (!exposes || !Array.isArray(exposes) || exposes.length === 0) return null;
 
   const types = new Set<string>();
   const features = new Set<string>();
-
-  for (const expose of exposes) {
+for (const expose of exposes) {
     if (expose.type) types.add(expose.type);
     if (expose.name) features.add(expose.name);
-    // Некоторые exposes имеют вложенные features
     if (expose.features && Array.isArray(expose.features)) {
       for (const f of expose.features) {
         if (f.type) types.add(f.type);
@@ -296,19 +295,16 @@ export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): s
     if (expose.property) features.add(expose.property);
   }
 
-  // Приоритет по типу expose
   if (types.has('light')) return 'light';
   if (types.has('cover')) return 'shutter';
   if (types.has('lock')) return 'lock';
   if (types.has('switch')) {
-    // switch с brightness/color → light, иначе plug
     if (features.has('brightness') || features.has('color')) return 'light';
     return 'plug';
   }
   if (types.has('climate')) return 'climate';
   if (types.has('fan')) return 'plug';
 
-  // По именам фич (для сенсоров)
   if (features.has('lock_state')) return 'lock';
   if (features.has('contact')) return features.has('tamper') ? 'window_sensor' : 'door_sensor';
   if (features.has('presence')) return 'presence_sensor';
@@ -316,15 +312,13 @@ export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): s
   if (features.has('water_leak')) return 'leak_sensor';
   if (features.has('co2') || features.has('voc') || features.has('pm25')) return 'air_monitor';
   if (features.has('temperature') || features.has('humidity') || features.has('pressure')) {
-    // Только числовые измерения — это сенсор
     return 'sensor';
   }
 
-  // Ничего не определили — требовать от пользователя
-  return null;
+  return null; // ничего не определили — требуем явного выбора от пользователя
 }
 
-// ── Telemetry Handler ───────────────────────────────────
+// ── Telemetry Handler ────────────────────────────────────────────────────
 function handleTelemetry(friendlyName: string, data: any) {
   let ieee = data.ieee_address || data.ieeeAddr || null;
   const raw = JSON.stringify(data);
@@ -345,28 +339,50 @@ function handleTelemetry(friendlyName: string, data: any) {
     }
   }
 
-  // Safety: ensure ieee is a real 64-bit MAC address (0x + 16 hex chars)
   if (!/^0x[0-9a-f]{16}$/i.test(ieee)) {
     logger.log("[MQTT-WS] ", `⏭️ Skipping telemetry from ${friendlyName}: invalid IEEE (${ieee})`);
     return;
   }
 
-  // Known property mappings
+  // НАХОДКА (не было в прошлом отчёте): раньше здесь стоял upsertDeviceFromDiscovery,
+  // а это INSERT ... ON CONFLICT — телеметрия от ЕЩЁ НЕ ПОДТВЕРЖДЁННОГО устройства
+  // (ieee известен, но строки в devices нет) тихо создавала запись в обход
+  // /api/discovery/:ieee/confirm, тем самым обходя весь флоу подтверждения.
+  // Правильно — обновлять last_seen ТОЛЬКО если устройство уже существует;
+  // если строки нет — updateLastSeen просто не затронет ни одной строки.
+  try {
+    stmt.updateLastSeen.run(ieee);
+  } catch {}
+// НАХОДКА (Модуль 2, при сверке со schemas.ts): раньше здесь не было co2, voc,
+  // occupancy, pm10, tamper, battery_low, formaldehyde — эти поля ВАЛИДИРУЮТСЯ
+  // Zod-схемой (MqttTelemetrySchema) и даже используются mapZ2MTypeToInternal для
+  // классификации устройства (например occupancy → motion_sensor, co2/voc → air_monitor),
+  // но сами значения никогда не сохранялись в telemetry. Из-за этого дефолтный
+  // сценарий "Вентиляция по CO₂" в принципе не мог сработать — даже если бы
+  // остальные баги (device-ключ, publishCommand) были исправлены, самих
+  // значений co2 просто не было бы в БД для оценки условия.
   const propertyMap: Record<string, { value: any; unit: string }> = {
     temperature: { value: data.temperature, unit: '°C' },
     humidity: { value: data.humidity, unit: '%' },
+    co2: { value: data.co2, unit: 'ppm' },
+    voc: { value: data.voc, unit: 'ppb' },
+    formaldehyde: { value: data.formaldehyde, unit: 'mg/m³' },
     pm25: { value: data.pm25, unit: 'µg/m³' },
+    pm10: { value: data.pm10, unit: 'µg/m³' },
     illuminance: { value: data.illuminance ?? data.illuminance_lux, unit: 'lux' },
     soil_moisture: { value: data.soil_moisture, unit: '%' },
     pressure: { value: data.pressure, unit: 'hPa' },
     battery: { value: data.battery, unit: '%' },
+    battery_low: { value: data.battery_low, unit: 'bool' },
     voltage: { value: data.voltage, unit: 'V' },
     current: { value: data.current, unit: 'A' },
     power: { value: data.power, unit: 'W' },
     energy: { value: data.energy, unit: 'kWh' },
     state: { value: data.state, unit: 'state' },
     presence: { value: data.presence ? 'present' : 'absent', unit: 'bool' },
+    occupancy: { value: data.occupancy, unit: 'bool' },
     contact: { value: data.contact ? 'open' : 'closed', unit: 'bool' },
+    tamper: { value: data.tamper, unit: 'bool' },
     water_leak: { value: data.water_leak ? 'leak' : 'dry', unit: 'bool' },
     linkquality: { value: data.linkquality, unit: 'lqi' },
   };
@@ -392,10 +408,7 @@ function handleTelemetry(friendlyName: string, data: any) {
 
   // Track state changes
   if (data.state !== undefined) {
-    query(
-      `SELECT value FROM telemetry WHERE device_ieee = ? AND property = 'state' ORDER BY ts DESC LIMIT 1`,
-      ieee
-    ).then((rows: any[]) => {
+    query(`SELECT value FROM telemetry WHERE device_ieee = ? AND property = 'state' ORDER BY ts DESC LIMIT 1`, ieee).then((rows: any[]) => {
       const prev = rows[0]?.value;
       const curr = data.state === 'ON' ? 1 : 0;
       if (prev !== undefined && prev !== curr) {
@@ -409,13 +422,6 @@ function handleTelemetry(friendlyName: string, data: any) {
     lastPresenceAt.set(ieee, Date.now());
   }
 
-  // Update device last_seen — только если устройство уже в БД (не через discovery events)
-  if (/^0x[0-9a-f]{16}$/i.test(ieee)) {
-    try {
-      stmt.upsertDeviceFromDiscovery.run(ieee, friendlyName, null, null, null, null);
-    } catch {}
-  }
-
   if (stored > 0) {
     const sample = Object.entries(propertyMap)
       .filter(([, v]) => v.value !== undefined && v.value !== null)
@@ -424,7 +430,6 @@ function handleTelemetry(friendlyName: string, data: any) {
       .join(' ');
     logger.log("[MQTT-WS] ", `📊 ${friendlyName}: ${sample}`);
 
-    // Forward to all WebSocket clients in real-time
     if (wss) {
       const wsPayload = JSON.stringify({
         type: 'mqtt',
@@ -438,15 +443,14 @@ function handleTelemetry(friendlyName: string, data: any) {
         }
       }
     }
-
-    // Evaluate scenarios against incoming telemetry
-    import('./engine').then(({ evaluateTelemetry }) => {
+import('./engine').then((mod) => {
+      const evaluateTelemetry = mod.evaluateTelemetry;
       const props: Record<string, number> = {};
       for (const [prop, meta] of Object.entries(propertyMap)) {
         const val = meta.value;
         if (val !== undefined && val !== null) {
           props[prop] = typeof val === 'boolean' ? (val ? 1 : 0)
-            : typeof val === 'string' ? (['ON','open','present','leak'].includes(val) ? 1 : 0)
+            : typeof val === 'string' ? (['ON', 'open', 'present', 'leak'].includes(val) ? 1 : 0)
             : val;
         }
       }
@@ -457,11 +461,7 @@ function handleTelemetry(friendlyName: string, data: any) {
   }
 }
 
-// ── WebSocket Server ────────────────────────────────────
-import type { Server as WSServer, WebSocket as WSClient } from 'ws';
-import { Server as HTTPServer } from 'http';
-import logger from './logger';
-
+// ── WebSocket Server ─────────────────────────────────────────────────────
 const WebSocketServer = require('ws').Server;
 
 let wsAttached = false;
@@ -469,20 +469,17 @@ let wsAttached = false;
 export function attachWebSocket(server: HTTPServer) {
   if (wsAttached) return; // Prevent double attachment
   wsAttached = true;
-  
-  // ═══ noServer mode — we handle upgrade manually for auth ═══
-  const wss: WSServer = new WebSocketServer({ noServer: true });
 
-  // Manual upgrade handler with AUTH required
+  // ═══ noServer mode — we handle upgrade manually for auth ═══
+  const wssLocal: WSServer = new WebSocketServer({ noServer: true });
+
   server.on('upgrade', (req, socket, head) => {
-    // Only handle /ws path
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
     if (url.pathname !== '/ws') {
       socket.destroy();
       return;
     }
 
-    // ── AUTH: optional — try header, then query param, then allow if no keys configured ──
     const keys = (process.env.API_KEYS || '').split(',').map(k => k.trim()).filter(Boolean);
     if (keys.length > 0) {
       const apiKey = req.headers['x-api-key'] as string
@@ -495,16 +492,14 @@ export function attachWebSocket(server: HTTPServer) {
       }
     }
 
-    wss.handleUpgrade(req, socket, head, (ws: WSClient) => {
-      wss.emit('connection', ws, req);
+    wssLocal.handleUpgrade(req, socket, head, (ws: WSClient) => {
+      wssLocal.emit('connection', ws, req);
     });
   });
 
   // Load last presence from DB for motion/presence sensors (in case MQTT missed it)
   try {
-    const { query } = require('./db');
-    query(`
-      SELECT t.device_ieee, MAX(t.ts) as last_ts
+    query(`SELECT t.device_ieee, MAX(t.ts) as last_ts
       FROM telemetry t
       JOIN devices d ON d.ieee_addr = t.device_ieee
       WHERE t.property = 'presence' AND t.value = 1
@@ -525,33 +520,42 @@ export function attachWebSocket(server: HTTPServer) {
     logErrorWithLog(null, 'load_presence_init', e.message, 'startup');
   }
 
-  wss.on('connection', (ws: WSClient) => {
+  wssLocal.on('connection', (ws: WSClient) => {
     logger.log("[MQTT-WS] ", '🔌 WebSocket client connected');
-
     ws.on('close', () => logger.log("[MQTT-WS] ", '🔌 WebSocket client disconnected'));
 
-    // Send latest telemetry on connect
     query(`SELECT * FROM telemetry ORDER BY ts DESC LIMIT 20`).then((rows: any[]) => {
       ws.send(JSON.stringify({ type: 'telemetry_init', data: rows }));
     }).catch(() => {});
   });
 
-  // Hook into MQTT to forward to all WebSocket clients
-  // (Форвардинг теперь в handleTelemetry — надёжнее, работает всегда)
-  setWSServer(wss);
+  setWSServer(wssLocal);
 
   logger.log("[MQTT-WS] ", '🔌 WebSocket: ws://localhost:8788/ws');
-  return wss;
+  return wssLocal;
 }
 
-export function publishCommand(deviceIeee: string, command: string, payload?: any) {
+export function publishCommand(deviceIeee: string, command: string, payload?: any): boolean {
   if (!client || !client.connected) {
     logErrorWithLog(deviceIeee, 'mqtt_publish_error', 'MQTT not connected', command);
     return false;
   }
+// НАХОДКА: раньше топик строился как zigbee2mqtt/${deviceIeee}/set — но по
+  // документации Z2M (https://www.zigbee2mqtt.io/guide/usage/mqtt_topics_and_messages.html)
+  // "The FRIENDLY_NAME is the IEEE-address OR, if defined, the friendly_name" —
+  // то есть после переименования устройства (а флоу подтверждения его переименовывает,
+  // см. POST /api/discovery/:ieee/confirm) команды на топик со старым ieee уже не
+  // доходят до устройства. Берём актуальный friendly_name из БД.
+  let target = deviceIeee;
+  try {
+    const row = db.prepare('SELECT friendly_name FROM devices WHERE ieee_addr = ?').get(deviceIeee) as { friendly_name: string } | undefined;
+    if (row?.friendly_name) target = row.friendly_name;
+  } catch {
+    // Если lookup не удался — используем ieee как fallback (лучше, чем ничего)
+  }
 
-  const topic = `zigbee2mqtt/${deviceIeee}/set`;
-  const msg = JSON.stringify({ state: command });
+  const topic = `zigbee2mqtt/${target}/set`;
+  const msg = JSON.stringify(payload ?? { state: command });
   client.publish(topic, msg);
   logger.log("[MQTT-WS] ", `📤 MQTT: ${topic} → ${msg}`);
   return true;
