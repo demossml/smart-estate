@@ -305,6 +305,8 @@ export const stmt: any = {
 
   setDeviceStatus: db.prepare(`UPDATE devices SET status = ?, last_seen = datetime('now') WHERE ieee_addr = ?`),
 
+  updateLastSeen: db.prepare(`UPDATE devices SET last_seen = datetime('now') WHERE ieee_addr = ?`),
+
   deleteDevice: db.prepare(`DELETE FROM devices WHERE ieee_addr = ?`),
 
   updateDevice: db.prepare(`

@@ -8,7 +8,7 @@ import { encryptToken, decryptToken } from './crypto';
 import { stmt, db, query, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
 import { toggleDemoDevice, isDemoMode } from './demo';
-import { attachWebSocket, publishCommand, lastPresenceAt } from './mqtt-ws';
+import { attachWebSocket, publishCommand, lastPresenceAt, mapZ2MTypeToInternal } from './mqtt-ws';
 import { get as httpGet } from 'http';
 import mqtt from 'mqtt';
 import cookieParser from 'cookie-parser';
@@ -647,11 +647,6 @@ app.get('/api/devices/pending', async (_req, res) => {
   }
 });
 
-function mapZ2MTypeToInternal(_ieeeAddr: string, _exposes?: any[]): string {
-  // Default to 'sensor' — user can change it when adding
-  return 'sensor';
-}
-
 // ── Phase 1: Discovery эндпоинты ─────────────────────────────
 // POST /api/discovery/start — enable permit_join
 app.post('/api/discovery/start', async (_req, res) => {
@@ -753,15 +748,16 @@ app.post('/api/discovery/:ieee/confirm', async (req, res) => {
     if (!name) return res.status(400).json({ ok: false, error: 'name is required' });
 
     // Upsert device into our DB — используем данные от пользователя
-    // Тип предзаполнен из exposes (Тикет 3), но пользователь может переопределить
-    const deviceType = type || 'sensor';
+    // Тип может быть предзаполнен из exposes (Тикет 3) на фронтенде
+    // Если type не передан — null (пользователь выберет позже)
+    const deviceType = type || null;
     stmt.upsertDevice.run(ieee, name, null, null, deviceType, roomId || null);
     // Если пользователь явно указал type или roomId — ставим manual-флаг
     if (type) {
-      db.exec(`UPDATE devices SET type_manually_set = 1 WHERE ieee_addr = '${ieee.replace(/'/g, "''")}'`);
+      db.prepare(`UPDATE devices SET type_manually_set = 1 WHERE ieee_addr = ?`).run(ieee);
     }
     if (roomId) {
-      db.exec(`UPDATE devices SET room_manually_set = 1 WHERE ieee_addr = '${ieee.replace(/'/g, "''")}'`);
+      db.prepare(`UPDATE devices SET room_manually_set = 1 WHERE ieee_addr = ?`).run(ieee);
     }
     // Mark discovery event as confirmed
     stmt.confirmDiscovery.run(ieee);
@@ -785,7 +781,7 @@ app.post('/api/discovery/:ieee/confirm', async (req, res) => {
       });
     } catch {}
 
-    res.json({ ok: true, device: { ieee_addr: ieee, friendly_name: name, room_id: roomId || 1 } });
+    res.json({ ok: true, device: { ieee_addr: ieee, friendly_name: name, room_id: roomId || null } });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'discovery_confirm');
     res.status(500).json({ ok: false, error: e.message });

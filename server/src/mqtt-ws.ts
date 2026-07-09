@@ -92,7 +92,7 @@ function handleMessage(topic: string, payload: Buffer) {
         return;
       }
       // bridge/event — device_interview / device_announce from Z2M
-      if (event === 'event' && data?.type && (data.type === 'device_interview' || data.type === 'device_announce')) {
+      if (event === 'event' && data?.type && (data.type === 'device_interview' || data.type === 'device_announce' || data.type === 'device_joined')) {
         handleBridgeEvent(data);
         return;
       }
@@ -231,7 +231,8 @@ function handleBridgeEvent(data: any) {
 
       case 'device_announce':
         // Устройство перезагрузилось/вернулось в сеть — обновляем last_seen
-        stmt.upsertDeviceFromDiscovery.run(ieee, name, model, vendor, null, null);
+        // ТОЛЬКО UPDATE — не создаём запись, если устройство не подтверждено
+        stmt.updateLastSeen.run(ieee);
         logger.log("[MQTT-WS] ", `🔄 Device announce (online): ${name}`);
         break;
 
@@ -275,7 +276,7 @@ function handleBridgeDevices(devices: any) {
 
 // ── Real type mapping from Zigbee2MQTT exposes ──
 // Тикет 3: вместо заглушки 'sensor' используем exposes из Z2M
-function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): string | null {
+export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): string | null {
   if (!exposes || !Array.isArray(exposes) || exposes.length === 0) return null;
 
   const types = new Set<string>();
