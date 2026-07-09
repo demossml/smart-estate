@@ -14,7 +14,6 @@ db.pragma('foreign_keys = ON');
 
 // ── Schema ──────────────────────────────────────────────
 db.exec(`
-  -- Устройства
   CREATE TABLE IF NOT EXISTS devices (
     ieee_addr     TEXT PRIMARY KEY,
     friendly_name TEXT NOT NULL,
@@ -24,11 +23,12 @@ db.exec(`
     room_id       INTEGER,
     params_json   TEXT DEFAULT '{}',
     status        TEXT DEFAULT 'online',
+    is_demo       INTEGER DEFAULT 0,
+    type_manually_set INTEGER DEFAULT 0,
+    room_manually_set  INTEGER DEFAULT 0,
     last_seen     TEXT,
     added_at      TEXT DEFAULT (datetime('now'))
   );
-
-  -- Телеметрия (все показания датчиков)
   CREATE TABLE IF NOT EXISTS telemetry (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     device_ieee   TEXT NOT NULL,
@@ -38,8 +38,6 @@ db.exec(`
     raw_json      TEXT,
     ts            TEXT DEFAULT (datetime('now'))
   );
-
-  -- Команды (все что отправлено устройствам)
   CREATE TABLE IF NOT EXISTS commands (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     device_ieee   TEXT NOT NULL,
@@ -51,8 +49,6 @@ db.exec(`
     sent_at       TEXT DEFAULT (datetime('now')),
     completed_at  TEXT
   );
-
-  -- Смены состояний (каждое изменение state устройства)
   CREATE TABLE IF NOT EXISTS state_changes (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     device_ieee   TEXT NOT NULL,
@@ -61,8 +57,6 @@ db.exec(`
     reason        TEXT DEFAULT 'mqtt',
     ts            TEXT DEFAULT (datetime('now'))
   );
-
-  -- Ошибки (все сбои)
   CREATE TABLE IF NOT EXISTS errors (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     device_ieee   TEXT,
@@ -71,19 +65,12 @@ db.exec(`
     context       TEXT,
     ts            TEXT DEFAULT (datetime('now'))
   );
-
-  -- Комнаты
   CREATE TABLE IF NOT EXISTS rooms (
     id            INTEGER PRIMARY KEY,
     name          TEXT NOT NULL,
     icon          TEXT DEFAULT '🏠'
   );
-
-  -- Default rooms — только Гостиная (корневая комната)
-  INSERT OR IGNORE INTO rooms (id, name, icon) VALUES
-    (1, 'Гостиная', '🏠');
-
-  -- Сценарии автоматизации
+  INSERT OR IGNORE INTO rooms (id, name, icon) VALUES (1, 'Гостиная', '🏠');
   CREATE TABLE IF NOT EXISTS scenarios (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     name          TEXT NOT NULL,
@@ -94,8 +81,6 @@ db.exec(`
     active        INTEGER DEFAULT 1,
     created_at    TEXT DEFAULT (datetime('now'))
   );
-
-  -- История исполнения сценариев
   CREATE TABLE IF NOT EXISTS scenario_executions (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     scenario_id   INTEGER NOT NULL,
@@ -105,22 +90,17 @@ db.exec(`
     error_msg     TEXT,
     ts            TEXT DEFAULT (datetime('now'))
   );
-
-  -- Группы устройств
   CREATE TABLE IF NOT EXISTS device_groups (
     id    INTEGER PRIMARY KEY AUTOINCREMENT,
     name  TEXT NOT NULL,
     type  TEXT DEFAULT 'custom',
     icon  TEXT DEFAULT '📦'
   );
-
   CREATE TABLE IF NOT EXISTS device_group_members (
     group_id    INTEGER NOT NULL,
     device_ieee TEXT NOT NULL,
     PRIMARY KEY (group_id, device_ieee)
   );
-
-  -- Уставки климата
   CREATE TABLE IF NOT EXISTS climate_setpoints (
     device_ieee  TEXT PRIMARY KEY,
     target_temp  REAL DEFAULT 22.0,
@@ -131,8 +111,6 @@ db.exec(`
     schedule_json TEXT,
     updated_at   TEXT DEFAULT (datetime('now'))
   );
-
-  -- Журнал доступа (ворота, калитка)
   CREATE TABLE IF NOT EXISTS gate_access_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     device_ieee TEXT NOT NULL,
@@ -141,8 +119,6 @@ db.exec(`
     details     TEXT,
     ts          TEXT DEFAULT (datetime('now'))
   );
-
-  -- Discovery events (for SSE streaming of found devices)
   CREATE TABLE IF NOT EXISTS discovery_events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     ieee_address  TEXT NOT NULL,
@@ -153,8 +129,6 @@ db.exec(`
     status        TEXT DEFAULT 'pending',
     created_at    TEXT DEFAULT (datetime('now'))
   );
-
-  -- AI providers (BYOK)
   CREATE TABLE IF NOT EXISTS ai_providers (
     id              TEXT PRIMARY KEY,
     provider        TEXT NOT NULL,
@@ -166,8 +140,6 @@ db.exec(`
     created_at      TEXT DEFAULT (datetime('now')),
     updated_at      TEXT DEFAULT (datetime('now'))
   );
-
-  -- Voice pending actions
   CREATE TABLE IF NOT EXISTS voice_pending_actions (
     id            TEXT PRIMARY KEY,
     text          TEXT NOT NULL,
@@ -175,8 +147,6 @@ db.exec(`
     payload_json  TEXT,
     created_at    TEXT DEFAULT (datetime('now'))
   );
-
-  -- Voice suggestions
   CREATE TABLE IF NOT EXISTS voice_suggestions (
     id            TEXT PRIMARY KEY,
     text          TEXT NOT NULL,
@@ -184,15 +154,11 @@ db.exec(`
     accepted      INTEGER DEFAULT 0,
     created_at    TEXT DEFAULT (datetime('now'))
   );
-
-  -- Used nonces (anti-replay)
   CREATE TABLE IF NOT EXISTS used_nonces (
     nonce TEXT PRIMARY KEY,
     created_at TEXT DEFAULT (datetime('now')),
     expires_at TEXT DEFAULT (datetime('now', '+5 minutes'))
   );
-
-  -- Индексы для аналитики
   CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry(ts);
   CREATE INDEX IF NOT EXISTS idx_telemetry_device ON telemetry(device_ieee, property, ts);
   CREATE INDEX IF NOT EXISTS idx_telemetry_device_ts ON telemetry(device_ieee, ts DESC);
@@ -206,8 +172,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_nonces_expires ON used_nonces(expires_at);
 `);
 
-// ── Идемпотентная миграция: is_demo ──────────────────────
-// Добавляем колонку is_demo в devices и rooms, если её нет
+// ── Idempotent migration: is_demo ──────────────────────────
+// Add is_demo column to devices and rooms if missing
 const hasDeviceDemo = db.prepare(`SELECT COUNT(*) as cnt FROM pragma_table_info('devices') WHERE name = 'is_demo'`).get() as any;
 if (!hasDeviceDemo.cnt) {
   db.exec(`ALTER TABLE devices ADD COLUMN is_demo INTEGER DEFAULT 0`);
@@ -219,14 +185,21 @@ if (!hasRoomDemo.cnt) {
   logger.log("[DB] ", '➕ Миграция: rooms.is_demo добавлена');
 }
 
-// ── Миграция: удалить старые хардкодные комнаты 2-5 (теперь только Гостиная) ──
-// При первом запуске с новым кодом — убираем кухню/спальню/ванную/улицу.
-// Устройства из них скидываем в Гостиную (id=1), чтобы не потерять реальные датчики.
+// ── Migration: remove old hardcoded rooms 2-5 ──────────────
+// Move devices from rooms 2-5 to living room (id=1)
 const legacyRoomCount = db.prepare(`SELECT COUNT(*) as cnt FROM rooms WHERE id IN (2,3,4,5)`).get() as any;
 if (legacyRoomCount.cnt > 0) {
   db.exec(`UPDATE devices SET room_id = 1 WHERE room_id IN (2,3,4,5)`);
   db.exec(`DELETE FROM rooms WHERE id IN (2,3,4,5)`);
   logger.log("[DB] ", '🧹 Миграция: удалены хардкодные комнаты 2-5, устройства перенесены в Гостиную');
+}
+
+// ── Migration: type_manually_set, room_manually_set ──
+const hasTypeManual = db.prepare(`SELECT COUNT(*) as cnt FROM pragma_table_info('devices') WHERE name = 'type_manually_set'`).get() as any;
+if (!hasTypeManual.cnt) {
+  db.exec(`ALTER TABLE devices ADD COLUMN type_manually_set INTEGER DEFAULT 0`);
+  db.exec(`ALTER TABLE devices ADD COLUMN room_manually_set INTEGER DEFAULT 0`);
+  logger.log("[DB] ", '➕ Миграция: devices.type_manually_set + room_manually_set добавлены');
 }
 
 // Default scenarios
@@ -306,8 +279,18 @@ export const stmt: any = {
     ON CONFLICT(ieee_addr) DO UPDATE SET
       friendly_name = COALESCE(excluded.friendly_name, friendly_name),
       model = COALESCE(excluded.model, model),
-      type = COALESCE(excluded.type, type),
-      room_id = COALESCE(excluded.room_id, room_id),
+      last_seen = datetime('now')
+  `),
+
+  // Для MQTT-обновлений — перезаписывает type/room_id ТОЛЬКО если они не были установлены вручную
+  upsertDeviceFromDiscovery: db.prepare(`
+    INSERT INTO devices (ieee_addr, friendly_name, model, vendor, type, room_id, params_json, status, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, '{}', 'online', datetime('now'))
+    ON CONFLICT(ieee_addr) DO UPDATE SET
+      friendly_name = COALESCE(excluded.friendly_name, friendly_name),
+      model = COALESCE(excluded.model, model),
+      type = CASE WHEN devices.type_manually_set = 0 THEN COALESCE(excluded.type, devices.type) ELSE devices.type END,
+      room_id = CASE WHEN devices.room_manually_set = 0 THEN COALESCE(excluded.room_id, devices.room_id) ELSE devices.room_id END,
       last_seen = datetime('now')
   `),
 
@@ -325,9 +308,12 @@ export const stmt: any = {
   deleteDevice: db.prepare(`DELETE FROM devices WHERE ieee_addr = ?`),
 
   updateDevice: db.prepare(`
-    UPDATE devices SET friendly_name = COALESCE(?, friendly_name),
+    UPDATE devices SET
+      friendly_name = COALESCE(?, friendly_name),
       type = COALESCE(?, type),
+      type_manually_set = CASE WHEN ? IS NOT NULL THEN 1 ELSE type_manually_set END,
       room_id = COALESCE(?, room_id),
+      room_manually_set = CASE WHEN ? IS NOT NULL THEN 1 ELSE room_manually_set END,
       params_json = COALESCE(?, params_json)
     WHERE ieee_addr = ?
   `),

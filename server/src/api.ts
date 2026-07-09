@@ -5,7 +5,7 @@ import { join } from 'path';
 import { randomBytes, createHmac } from 'crypto';
 import rateLimit from 'express-rate-limit';
 import { encryptToken, decryptToken } from './crypto';
-import { stmt, query, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
+import { stmt, db, query, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
 import { toggleDemoDevice, isDemoMode } from './demo';
 import { attachWebSocket, publishCommand, lastPresenceAt } from './mqtt-ws';
@@ -553,6 +553,7 @@ app.put('/api/devices/:id', async (req, res) => {
       ];
       if (!validTypes.includes(type)) return res.status(400).json({ ok: false, error: `Invalid type: ${type}` });
       updates.push('type = ?'); params.push(type);
+      updates.push('type_manually_set = 1');
     }
     if (room_id !== undefined) {
       if (room_id) {
@@ -560,6 +561,7 @@ app.put('/api/devices/:id', async (req, res) => {
         if (!rooms.length) return res.status(400).json({ ok: false, error: 'Room not found' });
       }
       updates.push('room_id = ?'); params.push(room_id);
+      updates.push('room_manually_set = 1');
     }
     if (!updates.length) return res.status(400).json({ ok: false, error: 'No fields to update' });
     updates.push('last_seen = datetime(\'now\')');
@@ -747,11 +749,20 @@ app.get('/api/discovery/events', async (req, res) => {
 app.post('/api/discovery/:ieee/confirm', async (req, res) => {
   try {
     const { ieee } = req.params;
-    const { name, roomId } = req.body;
+    const { name, roomId, type } = req.body;
     if (!name) return res.status(400).json({ ok: false, error: 'name is required' });
 
-    // Upsert device into our DB
-    stmt.upsertDevice.run(ieee, name, null, null, 'sensor', roomId || 1);
+    // Upsert device into our DB — используем данные от пользователя
+    // Тип предзаполнен из exposes (Тикет 3), но пользователь может переопределить
+    const deviceType = type || 'sensor';
+    stmt.upsertDevice.run(ieee, name, null, null, deviceType, roomId || null);
+    // Если пользователь явно указал type или roomId — ставим manual-флаг
+    if (type) {
+      db.exec(`UPDATE devices SET type_manually_set = 1 WHERE ieee_addr = '${ieee.replace(/'/g, "''")}'`);
+    }
+    if (roomId) {
+      db.exec(`UPDATE devices SET room_manually_set = 1 WHERE ieee_addr = '${ieee.replace(/'/g, "''")}'`);
+    }
     // Mark discovery event as confirmed
     stmt.confirmDiscovery.run(ieee);
 

@@ -9,3 +9,6 @@ data/
 client-app/node_modules/
 client-app/dist/
 .turbo/
+# Zigbee2MQTT secrets
+secret.yaml
+*.secret.yaml
