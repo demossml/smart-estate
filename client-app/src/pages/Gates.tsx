@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { DoorClosed, DoorOpen, Lock, Unlock } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { DoorClosed, DoorOpen, Lock, Unlock, AlertTriangle } from 'lucide-react';
 import { api } from '../api/client';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
@@ -23,6 +23,15 @@ export default function Gates() {
   const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
   const [busy, setBusy] = useState<Record<string, 'open' | 'close' | null>>({});
+  // НАХОДКА (Модуль 8): раньше при ошибке команды состояние тихо
+  // откатывалось назад без единого сообщения пользователю (комментарий в
+  // коде так и гласил: "Silently revert — no error text"). Для управления
+  // физической безопасностью (ворота) молчаливый провал команды — хуже,
+  // чем громкая ошибка: пользователь не понимает, реально ли ворота
+  // открылись/закрылись. Теперь показываем текст ошибки с бэкенда
+  // (после фикса Модуля 3 он осмысленный, например "MQTT недоступен,
+  // ворота не открыты", а не просто код статуса).
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const timer = window.setTimeout(async () => {
@@ -41,8 +50,8 @@ export default function Gates() {
   }, []);
 
   const command = async (id: string, action: 'open' | 'close') => {
-    // Mark busy
     setBusy(prev => ({ ...prev, [id]: action }));
+    setErrors(prev => ({ ...prev, [id]: '' }));
 
     // Optimistic update
     setGates(prev => prev.map(gate =>
@@ -62,13 +71,16 @@ export default function Gates() {
             }
           : gate
       ));
-    } catch {
-      // Silently revert — no error text
+    } catch (error) {
+      // Откатываем оптимистичное обновление — И показываем, почему.
+      const message = error instanceof Error ? error.message : 'Команда не выполнена';
       setGates(prev => prev.map(gate =>
         gate.id === id
           ? { ...gate, status: action === 'open' ? 'closed' : 'open', lastAction: gate.lastAction || '' }
           : gate
       ));
+      setErrors(prev => ({ ...prev, [id]: message }));
+      logClient('error', `Ворота ${id}: команда ${action} не выполнена`, message);
     } finally {
       setBusy(prev => ({ ...prev, [id]: null }));
     }
@@ -93,12 +105,14 @@ export default function Gates() {
             const isClosing = busy[gate.id] === 'close';
             const isOpening = busy[gate.id] === 'open';
             const isBusy = isClosing || isOpening;
+            const errorMsg = errors[gate.id];
 
             // Tile background
             let tileBg = 'bg-amber-950/20 border-amber-900/20';
             if (opened) tileBg = 'bg-green/10 border-green/20';
             if (isClosing) tileBg = 'bg-amber-950/40 border-amber-900/30';
             if (isOpening) tileBg = 'bg-green/20 border-green/30';
+            if (errorMsg) tileBg = 'bg-red-950/30 border-red-900/40';
 
             // Icon color
             let iconColor = 'text-amber-400';
@@ -113,7 +127,7 @@ export default function Gates() {
             if (isClosing) { statusText = 'Закрывается…'; statusColor = 'text-amber-200'; }
             if (isOpening) { statusText = 'Открывается…'; statusColor = 'text-green'; }
 
-            // Button styles: only ONE colored at a time
+            // Button styles
             const openActive = isOpening || (opened && !isBusy);
             const closeActive = isClosing || (!opened && !isBusy);
 
@@ -141,9 +155,16 @@ export default function Gates() {
                   </div>
                   <StatusBadge status={gate.online ? 'online' : 'offline'} />
                 </div>
-                <p className="text-xs text-text-dim mb-3">{gate.lastAction || 'Журнал пуст'}</p>
+
+                {errorMsg ? (
+                  <p className="text-xs text-red-400 mb-3 flex items-center gap-1.5">
+                    <AlertTriangle size={13} /> {errorMsg}
+                  </p>
+                ) : (
+                  <p className="text-xs text-text-dim mb-3">{gate.lastAction || 'Журнал пуст'}</p>
+                )}
+
                 <div className="grid grid-cols-2 gap-2">
-                  {/* Open button */}
                   <button
                     onClick={() => command(gate.id, 'open')}
                     disabled={isBusy}
@@ -152,7 +173,6 @@ export default function Gates() {
                     <Unlock size={18} />
                     Открыть
                   </button>
-                  {/* Close button */}
                   <button
                     onClick={() => command(gate.id, 'close')}
                     disabled={isBusy}

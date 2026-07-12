@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Search, Plus, X, Trash2, Radar, Pencil, Loader2, MapPin, RefreshCw } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Search, Plus, X, Trash2, Radar, Pencil, Loader2, MapPin, RefreshCw, AlertTriangle } from 'lucide-react';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { Skeleton } from '../components/ui/Skeleton';
 import { RoomPicker } from '../components/ui/RoomPicker';
@@ -7,6 +7,7 @@ import { RoomAddModal } from '../components/ui/RoomAddModal';
 import { api } from '../api/client';
 import { DEVICE_TYPE_ICONS, DEVICE_TYPE_LABELS, CircleDot } from '../lib/icon-map';
 import { useMode } from '../hooks/useMode';
+import { logClient } from '../lib/logger';
 import type { Device } from '../types';
 
 type ModalKind = 'add' | 'edit' | 'discover' | null;
@@ -16,7 +17,14 @@ interface PendingDevice {
   friendly_name: string;
   model: string;
   vendor: string;
-  type: string;
+  // НАХОДКА (Модуль 8): поле раньше называлось type, но реальный бэкенд
+  // (после фикса Модуля 7 — /api/devices/pending читает discovery_events)
+  // возвращает suggested_type, который может быть null, если тип не
+  // удалось однозначно определить по exposes. Раньше это несовпадение имён
+  // означало, что d.type был всегда undefined → каждое импортированное
+  // устройство молча получало 'sensor' независимо от реального типа.
+  suggested_type: string | null;
+  exposes?: any[] | null;
 }
 
 export default function Devices() {
@@ -27,6 +35,10 @@ export default function Devices() {
   const [modal, setModal] = useState<ModalKind>(null);
   const [rooms, setRooms] = useState<{ id: number; name: string; icon: string }[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
+  // НАХОДКА (Модуль 8): addDevice/saveEdit/removeDevice/importSelected раньше
+  // имели catch {} — полностью молчаливый провал без единого следа даже в
+  // консоли. Теперь ошибки логируются и показываются пользователю.
+  const [formError, setFormError] = useState('');
 
   const [formName, setFormName] = useState('');
   const [formType, setFormType] = useState('light');
@@ -40,6 +52,7 @@ export default function Devices() {
   const [discovering, setDiscovering] = useState(false);
   const [discoverMsg, setDiscoverMsg] = useState('');
   const [selectedPending, setSelectedPending] = useState<Set<string>>(new Set());
+  const pollRef = useRef<number | null>(null);
 
   useEffect(() => {
     loadDevices();
@@ -55,6 +68,7 @@ export default function Devices() {
         }
       })
       .catch(() => {});
+    return () => { if (pollRef.current) window.clearInterval(pollRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -75,16 +89,22 @@ export default function Devices() {
   const addDevice = async () => {
     if (!formName.trim()) return;
     setBusy('add');
+    setFormError('');
     try {
       const addr = formAddr.trim() || `manual:${Date.now()}`;
       await api.createDevice(addr, formName.trim(), formType, formRoom);
       resetAddForm(); setModal(null); await loadDevices();
-    } catch {} finally { setBusy(null); }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Не удалось добавить устройство';
+      setFormError(msg);
+      logClient('error', 'Ошибка добавления устройства', msg);
+    } finally { setBusy(null); }
   };
 
   const saveEdit = async () => {
     if (!editDevice) return;
     setBusy('edit');
+    setFormError('');
     try {
       await api.updateDevice(editDevice.id, {
         friendly_name: editDevice.name,
@@ -92,31 +112,73 @@ export default function Devices() {
         room_id: rooms.find(r => r.name === editDevice.room)?.id,
       });
       setEditDevice(null); setModal(null); await loadDevices();
-    } catch {} finally { setBusy(null); }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Не удалось сохранить изменения';
+      setFormError(msg);
+      logClient('error', 'Ошибка сохранения устройства', msg);
+    } finally { setBusy(null); }
   };
 
   const removeDevice = async (id: string) => {
     if (!confirm('Удалить устройство? Данные телеметрии будут потеряны.')) return;
     setBusy(id);
-    try { await api.deleteDevice(id); setDevices(prev => prev.filter(d => d.id !== id)); }
-    catch {} finally { setBusy(null); }
+    try {
+      await api.deleteDevice(id);
+      setDevices(prev => prev.filter(d => d.id !== id));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Не удалось удалить устройство';
+      logClient('error', 'Ошибка удаления устройства', msg);
+      alert(msg);
+    } finally { setBusy(null); }
   };
+
+  // НАХОДКА (Модуль 8, СЕРЬЁЗНАЯ): раньше здесь ожидался res.discovered/
+  // res.reason — но реальный POST /api/discovery/start возвращает только
+  // {ok, permit_join, time} (проверено построчно в api.ts). Обращение к
+  // res.discovered.length на undefined кидало TypeError, попадавший в catch
+  // и ВСЕГДА показывавший "Ошибка сканирования" — независимо от того,
+  // сработал ли permit_join на самом деле. Устройства в Zigbee2MQTT
+  // появляются асинхронно (по мере физического нажатия кнопки на датчике),
+  // поэтому правильный флоу — включить permit_join, затем ПОЛЛИНГОМ
+  // опрашивать /api/devices/pending, пока окно сопряжения открыто.
+  const DISCOVER_WINDOW_MS = 25_000; // окно поиска в UI (backend permit_join держит дольше — 254с)
+  const POLL_INTERVAL_MS = 2_000;
 
   const startDiscover = async () => {
     setDiscovering(true);
-    setDiscoverMsg('Включён режим сопряжения… Ждём 10 секунд…');
+    setDiscoverMsg('Включён режим сопряжения… Нажмите кнопку на устройстве.');
     setSelectedPending(new Set());
+    if (pollRef.current) window.clearInterval(pollRef.current);
+
     try {
-      const res = await api.discoverDevices();
-      if (res.reason === 'zigbee2mqtt_unavailable') {
-        setDiscoverMsg('Zigbee2MQTT недоступен (режим DEMO).');
-        setPendingDevices([]);
-      } else {
-        setDiscoverMsg(res.discovered.length ? `Найдено: ${res.discovered.length}` : 'Новые устройства не найдены.');
-        setPendingDevices(res.discovered);
+      await api.discoverDevices(); // только включает permit_join, ничего не возвращает по сути
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Не удалось включить сопряжение';
+      setDiscoverMsg(msg);
+      setDiscovering(false);
+      logClient('error', 'Ошибка старта discovery', msg);
+      return;
+    }
+
+    const poll = async () => {
+      try {
+        const res = await api.getPendingDevices();
+        setPendingDevices(res.pending || []);
+        if ((res.pending || []).length > 0) {
+          setDiscoverMsg(`Найдено: ${res.pending.length}`);
+        }
+      } catch {
+        // не прерываем поллинг из-за одной неудачной попытки
       }
-    } catch { setDiscoverMsg('Ошибка сканирования.'); }
-    finally { setDiscovering(false); }
+    };
+
+    await poll(); // первая проверка сразу
+    pollRef.current = window.setInterval(poll, POLL_INTERVAL_MS);
+    window.setTimeout(() => {
+      if (pollRef.current) { window.clearInterval(pollRef.current); pollRef.current = null; }
+      setDiscovering(false);
+      setDiscoverMsg(prev => pendingDevices.length > 0 ? prev : 'Новые устройства не найдены. Попробуйте ещё раз.');
+    }, DISCOVER_WINDOW_MS);
   };
 
   const importSelected = async () => {
@@ -124,26 +186,36 @@ export default function Devices() {
     let count = 0;
     for (const d of pendingDevices) {
       if (!selectedPending.has(d.ieee_address)) continue;
-      try { await api.createDevice(d.ieee_address, d.friendly_name, mapZ2MType(d.type), undefined); count++; }
-      catch {}
+      try {
+        // НАХОДКА: используем suggested_type, посчитанный бэкендом через
+        // реальный анализ exposes (mapZ2MTypeToInternal в mqtt-ws.ts) —
+        // не локальный грубый мэппер (см. ниже, почему он удалён). Если
+        // suggested_type пуст — не подставляем 'sensor' по умолчанию молча,
+        // а требуем ручного выбора (тот же принцип, что в Модуле 3).
+        if (!d.suggested_type) {
+          logClient('warn', `Тип для ${d.friendly_name} не определён автоматически — пропущено, отредактируйте вручную после импорта`);
+        }
+        await api.createDevice(d.ieee_address, d.friendly_name, d.suggested_type || 'sensor', undefined);
+        count++;
+      } catch (error) {
+        logClient('error', `Не удалось импортировать ${d.friendly_name}`, error instanceof Error ? error.message : String(error));
+      }
     }
     setModal(null); setPendingDevices([]); setBusy(null);
     if (count > 0) await loadDevices();
   };
 
-  const openEdit = (d: Device) => { setEditDevice({ ...d }); setModal('edit'); };
-  const resetAddForm = () => { setFormName(''); setFormType('light'); setFormRoom(1); setFormAddr(''); };
+  const openEdit = (d: Device) => { setEditDevice({ ...d }); setModal('edit'); setFormError(''); };
+  const resetAddForm = () => { setFormName(''); setFormType('light'); setFormRoom(1); setFormAddr(''); setFormError(''); };
 
   const handleCreateRoomFromPicker = async (name: string, iconKey: string) => {
     await api.createRoom(name, iconKey);
     setShowAddRoom(false);
-    // Обновить список комнат и автоматом выбрать созданную
     api.getRooms().then(r => {
       setRooms(r.rooms);
       const created = r.rooms.find((ro: any) => ro.name === name);
       if (created) setFormRoom(created.id);
     }).catch(() => {});
-    // Триггер для Dashboard — диспатчим событие
     window.dispatchEvent(new Event('room-created'));
   };
 
@@ -252,6 +324,12 @@ export default function Devices() {
             placeholder="manual:…"
             className="w-full bg-bg border border-surface-hover rounded-card px-3 py-2.5 text-text text-sm mb-4 outline-none focus:border-blue font-mono" />
 
+          {formError && (
+            <p className="text-xs text-red-400 mb-3 flex items-center gap-1.5">
+              <AlertTriangle size={13} /> {formError}
+            </p>
+          )}
+
           <button onClick={addDevice} disabled={!formName.trim() || busy === 'add'}
             className={`w-full min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 transition-colors
               ${formName.trim() ? 'bg-blue text-white tap-active' : 'bg-surface-hover text-text-dim cursor-not-allowed'}`}>
@@ -293,6 +371,12 @@ export default function Devices() {
             IEEE: <code className="text-text font-mono">{editDevice.id}</code>
           </div>
 
+          {formError && (
+            <p className="text-xs text-red-400 mb-3 flex items-center gap-1.5">
+              <AlertTriangle size={13} /> {formError}
+            </p>
+          )}
+
           <button onClick={saveEdit} disabled={!editDevice.name.trim() || busy === 'edit'}
             className={`w-full min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 transition-colors
               ${editDevice.name.trim() ? 'bg-blue text-white tap-active' : 'bg-surface-hover text-text-dim cursor-not-allowed'}`}>
@@ -303,11 +387,14 @@ export default function Devices() {
 
       {/* ═══ DISCOVER MODAL ═══ */}
       {modal === 'discover' && (
-        <Modal onClose={() => { setModal(null); setPendingDevices([]); }} title="Найти устройства">
+        <Modal onClose={() => { setModal(null); setPendingDevices([]); if (pollRef.current) window.clearInterval(pollRef.current); }} title="Найти устройства">
           {discovering ? (
             <div className="flex flex-col items-center gap-3 py-6">
               <Loader2 size={32} className="text-green animate-spin" />
               <p className="text-sm text-text-dim text-center">{discoverMsg}</p>
+              {pendingDevices.length > 0 && (
+                <p className="text-xs text-green">Найдено уже: {pendingDevices.length} — можно продолжать ждать или выбрать сейчас</p>
+              )}
             </div>
           ) : (
             <>
@@ -328,7 +415,9 @@ export default function Devices() {
                             <div className="text-sm font-medium text-text truncate">{d.friendly_name}</div>
                             <div className="text-xs text-text-dim">{d.vendor} · {d.model}</div>
                           </div>
-                          <span className="text-xs bg-surface-hover px-2 py-0.5 rounded-full text-text-dim">{d.type}</span>
+                          <span className="text-xs bg-surface-hover px-2 py-0.5 rounded-full text-text-dim">
+                            {d.suggested_type || 'тип не определён'}
+                          </span>
                         </label>
                       );
                     })}
@@ -365,16 +454,6 @@ export default function Devices() {
     </div>
   );
 }
-
-function mapZ2MType(z2mType: string): string {
-  const m: Record<string, string> = {
-    light: 'light', switch: 'light', dimmer: 'light',
-    sensor: 'sensor', plug: 'plug',
-    cover: 'gate', lock: 'lock', climate: 'climate',
-  };
-  return m[z2mType] || 'sensor';
-}
-
 function Modal({ children, onClose, title }: { children: React.ReactNode; onClose: () => void; title: string }) {
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center sm:items-center pt-8 sm:pt-0" onClick={onClose}>
