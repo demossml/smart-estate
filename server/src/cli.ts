@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { query, DB_PATH } from '../src/db';
+import { publishCommand } from '../src/mqtt-ws';
 
 const cmd = process.argv[2];
 const arg = process.argv[3];
@@ -7,8 +8,11 @@ const arg = process.argv[3];
 async function main() {
   switch (cmd) {
     case 'devices': {
+      // НАХОДКА (Модуль 6): раньше показывались вообще все устройства,
+      // включая демо (is_demo=1), без разделения — легко перепутать, если
+      // сервер сейчас в демо-режиме или был в нём раньше. Явно помечаем.
       const rows = await query(`
-        SELECT friendly_name, model, type, status, last_seen
+        SELECT friendly_name, model, type, status, last_seen, is_demo
         FROM devices ORDER BY status DESC, last_seen DESC
       `);
       console.log(`🦆 ${DB_PATH}`);
@@ -17,7 +21,8 @@ async function main() {
       for (const d of rows) {
         const status = d.status === 'online' ? '🟢' : '🔴';
         const seen = d.last_seen ? new Date(d.last_seen).toLocaleString('ru-RU') : '—';
-        console.log(`${status} ${d.friendly_name.padEnd(30)} ${(d.model||'').padEnd(20)} ${seen}`);
+        const demoTag = d.is_demo ? ' [ДЕМО]' : '';
+        console.log(`${status} ${(d.friendly_name + demoTag).padEnd(35)} ${(d.model||'').padEnd(20)} ${seen}`);
       }
       break;
     }
@@ -46,15 +51,38 @@ async function main() {
     case 'on':
     case 'off': {
       if (!arg) { console.log('Usage: cli on/off <device_ieee>'); break; }
-      console.log(`📤 Sending ${cmd.toUpperCase()} to ${arg}...`);
-      console.log('   (MQTT команда будет отправлена после подключения Zigbee2MQTT)');
-      // Логируем команду
-      await query(
+      const command = cmd.toUpperCase();
+
+      // НАХОДКА (тот же баг, что в Модуле 3 — api.ts): раньше здесь только
+      // писалась запись 'pending' в commands и печаталось сообщение
+      // "MQTT команда будет отправлена после подключения Zigbee2MQTT" —
+      // publishCommand() не вызывался вообще, команда оставалась 'pending'
+      // навсегда, ничего физически не происходило.
+      const result = await query(
         `INSERT INTO commands (device_ieee, command, status, source)
-         VALUES (?, ?, 'pending', 'cli')`,
-        arg, cmd.toUpperCase()
+         VALUES (?, ?, 'sent', 'cli')`,
+        arg, command
       );
-      console.log('   ✅ Команда записана в SQLite');
+
+      const sent = publishCommand(arg, command);
+
+      if (sent) {
+        console.log(`📤 ${command} → ${arg}: отправлено по MQTT`);
+        await query(
+          `UPDATE commands SET status='success', completed_at=CURRENT_TIMESTAMP
+           WHERE device_ieee = ? AND command = ? AND status='sent'
+           ORDER BY sent_at DESC LIMIT 1`,
+          arg, command
+        ).catch(() => {});
+      } else {
+        console.log(`❌ MQTT не подключен — команда НЕ отправлена (записана как ошибка)`);
+        await query(
+          `UPDATE commands SET status='error', error_msg='MQTT not connected', completed_at=CURRENT_TIMESTAMP
+           WHERE device_ieee = ? AND command = ? AND status='sent'
+           ORDER BY sent_at DESC LIMIT 1`,
+          arg, command
+        ).catch(() => {});
+      }
       break;
     }
 
@@ -85,8 +113,12 @@ async function main() {
     }
 
     case 'stats': {
-      const totalDevices = await query(`SELECT COUNT(*) as cnt FROM devices`);
-      const onlineDevices = await query(`SELECT COUNT(*) as cnt FROM devices WHERE status = 'online'`);
+      // НАХОДКА (Модуль 6): счётчики устройств не исключали демо — если
+      // сервер когда-либо был в демо-режиме и демо-данные не были очищены,
+      // "totalDevices"/"onlineDevices" включали демо-устройства без пометки.
+      const totalDevices = await query(`SELECT COUNT(*) as cnt FROM devices WHERE is_demo = 0`);
+      const onlineDevices = await query(`SELECT COUNT(*) as cnt FROM devices WHERE status = 'online' AND is_demo = 0`);
+      const demoDevices = await query(`SELECT COUNT(*) as cnt FROM devices WHERE is_demo = 1`);
       const totalTelemetry = await query(`SELECT COUNT(*) as cnt FROM telemetry`);
       const todayTelemetry = await query(`SELECT COUNT(*) as cnt FROM telemetry WHERE ts >= CURRENT_DATE`);
       const totalCommands = await query(`SELECT COUNT(*) as cnt FROM commands`);
@@ -99,7 +131,10 @@ async function main() {
 
       console.log(`🦆 ${DB_PATH}`);
       console.log('─'.repeat(40));
-      console.log(`Устройства:       ${onlineDevices[0]?.cnt || 0} онлайн / ${totalDevices[0]?.cnt || 0} всего`);
+      console.log(`Устройства:       ${onlineDevices[0]?.cnt || 0} онлайн / ${totalDevices[0]?.cnt || 0} всего (реальные)`);
+      if (Number(demoDevices[0]?.cnt || 0) > 0) {
+        console.log(`                  + ${demoDevices[0].cnt} демо-устройств (не учтены выше)`);
+      }
       console.log(`Телеметрия:       ${todayTelemetry[0]?.cnt || 0} сегодня / ${totalTelemetry[0]?.cnt || 0} всего`);
       console.log(`Команд:           ${totalCommands[0]?.cnt || 0}`);
       console.log(`Ошибок:           ${error24h[0]?.cnt || 0} за 24ч / ${errorCount[0]?.cnt || 0} всего`);
@@ -148,7 +183,7 @@ async function main() {
       for (const s of scenarios) {
         const active = s.active ? '🟢' : '🔴';
         console.log(`${active} #${s.id} ${s.active ? '✓' : '✗'} ${s.name}`);
-        console.log(`   ${s.description}`);
+        console.log(`   ${s.description || '(без описания)'}`);
         console.log('');
       }
       break;
@@ -175,15 +210,15 @@ async function main() {
 
   npm run cli scenarios               Список сценариев
   npm run cli scenario-history <id>   История исполнений сценария
-  npm run cli devices              Список устройств
+  npm run cli devices              Список устройств (реальные, демо помечены отдельно)
   npm run cli telemetry [device]   Последние показания
-  npm run cli on <device_ieee>     Включить реле
-  npm run cli off <device_ieee>    Выключить реле
+  npm run cli on <device_ieee>     Включить реле (реально отправляет MQTT-команду)
+  npm run cli off <device_ieee>    Выключить реле (реально отправляет MQTT-команду)
   npm run cli events [limit]       Последние события
   npm run cli stats                Статистика БД
   npm run cli audit <device_ieee>  Полный аудит устройства
 `);
-    }
+  }
 }
 
 main().catch(console.error);

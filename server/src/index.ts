@@ -1,6 +1,6 @@
 import http from 'http';
 import app from './api';
-import { connectMQTT, attachWebSocket } from './mqtt-ws';
+import { connectMQTT, attachWebSocket, disconnectMQTT } from './mqtt-ws';
 import { startScheduler, stopScheduler } from './scheduler';
 import { stmt, DB_PATH, logErrorWithLog } from './db';
 import logger from './logger';
@@ -83,18 +83,47 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
-// Graceful shutdown
-process.on('SIGINT', () => {
-  logger.log("[INDEX] ", '\n🛑 Shutting down...');
-  stopScheduler();
-  server.close();
-  process.exit(0);
-});
+// ── Graceful shutdown ─────────────────────────────────────
+//
+// НАХОДКА (Модуль 6): раньше server.close() вызывался без ожидания коллбэка,
+// а process.exit(0) шёл СРАЗУ на следующей строке — close() практически не
+// успевал ничего сделать, все текущие HTTP-запросы и WebSocket-соединения
+// обрывались резко, а не завершались штатно. Теперь ждём реального закрытия
+// (с таймаутом на случай зависших keep-alive соединений) и явно отключаем
+// MQTT перед выходом.
 
-process.on('SIGTERM', () => {
+let shuttingDown = false;
+
+function gracefulShutdown(signal: string): void {
+  if (shuttingDown) return; // повторный сигнал во время шатдауна — игнорируем
+  shuttingDown = true;
+
+  logger.log("[INDEX] ", `\n🛑 ${signal}: завершение работы...`);
+
   stopScheduler();
-  server.close();
-  process.exit(0);
-});
+  disconnectMQTT();
+
+  // Даём server.close() реальный шанс закрыть соединения, но не ждём вечно —
+  // если за 5 секунд не закрылось (например, зависшие SSE/WS соединения),
+  // выходим принудительно, а не висим бесконечно.
+  const forceExitTimer = setTimeout(() => {
+    logger.log("[INDEX] ", '⏱️ Таймаут graceful shutdown — принудительный выход');
+    process.exit(0);
+  }, 5000);
+  forceExitTimer.unref(); // не держим процесс живым только из-за этого таймера
+
+  server.close((err) => {
+    if (err) {
+      logger.error("[INDEX] ", 'Ошибка при закрытии сервера:', err.message);
+    } else {
+      logger.log("[INDEX] ", '✅ Сервер закрыт штатно');
+    }
+    clearTimeout(forceExitTimer);
+    process.exit(0);
+  });
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 export default server;

@@ -43,7 +43,6 @@ export async function startScheduler(): Promise<void> {
   await reloadScheduledScenarios();
   updateSunTimes();
 
-  // Every tick: check cron, interval, and sunset/sunrise
   tickInterval = setInterval(() => {
     schedulerTick().catch(e => logErrorWithLog(null, 'scheduler_error', e.message));
   }, TICK_MS);
@@ -79,6 +78,21 @@ export async function reloadScheduledScenarios(): Promise<void> {
         }
 
         const existing = scheduledScenarios.find(s => s.id === row.id);
+
+        // НАХОДКА: раньше default last_fired для НОВОГО (ещё не виденного)
+        // сценария был Date.now() для ЛЮБОГО типа расписания. Для sunset/sunrise
+        // это баг: shouldFireSunEvent сравнивает last_fired.toDateString() ===
+        // today.toDateString() — а last_fired = "сейчас" ВСЕГДА равен today,
+        // независимо от того, наступил ли закат физически. Получается, что
+        // при КАЖДОМ рестарте сервера сценарии по закату/рассвету ложно
+        // считаются "уже сработавшими сегодня" и не срабатывают весь
+        // оставшийся день. Для cron — то же самое, default 0 безопасен
+        // (просто означает "ещё ни разу не срабатывал").
+        // Для interval — 0 был бы опасен: (now - 0) >= intervalMs истинно
+        // сразу же, сценарий выстрелит мгновенно при каждом рестарте. Поэтому
+        // для interval оставляем Date.now() (старт отсчёта с текущего момента).
+        const defaultLastFired = schedule.type === 'interval' ? Date.now() : 0;
+
         newScenarios.push({
           id: row.id,
           name: row.name,
@@ -86,7 +100,7 @@ export async function reloadScheduledScenarios(): Promise<void> {
           actions,
           has_triggers: !!(row.triggers_json),
           triggers_json: row.triggers_json,
-          last_fired: existing?.last_fired ?? Date.now(),
+          last_fired: existing?.last_fired ?? defaultLastFired,
         });
       } catch {
         logErrorWithLog(null, 'scheduler_parse_error',
@@ -107,7 +121,6 @@ export async function reloadScheduledScenarios(): Promise<void> {
 async function schedulerTick(): Promise<void> {
   const now = Date.now();
 
-  // Update sun times once per hour
   const currentHour = new Date().getHours();
   if (currentHour === 0 && new Date().getMinutes() < 1) {
     updateSunTimes();
@@ -119,11 +132,9 @@ async function schedulerTick(): Promise<void> {
       if (shouldFire) {
         logger.log("[SCHEDULER] ", `⏰ [schedule #${sc.id}] ${sc.name} — ${sc.schedule.type}`);
 
-        // If scenario also has telemetry triggers, evaluate them
         if (sc.has_triggers && sc.triggers_json) {
           const triggers = parseTriggers(sc.triggers_json);
           if (triggers && triggers.conditions.length > 0) {
-            // Build telemetry map from latest values
             const map = new Map<string, number>();
             await enrichTelemetryForConditions(map, triggers.conditions);
 
@@ -135,7 +146,6 @@ async function schedulerTick(): Promise<void> {
           }
         }
 
-        // Fire actions
         const execResult = await executeActions(sc.actions, sc.name);
         logScenarioExec(
           sc.id,
@@ -200,7 +210,6 @@ function shouldFireCron(sc: ScheduledScenario, now: number): boolean {
     if (!cronMatch(f.value, f.cron)) return false;
   }
 
-  // Check cooldown: only fire once per minute window
   const lastMinute = new Date(sc.last_fired).getMinutes();
   const lastHour = new Date(sc.last_fired).getHours();
   if (lastMinute === fields.minute && lastHour === fields.hour &&
@@ -214,24 +223,20 @@ function shouldFireCron(sc: ScheduledScenario, now: number): boolean {
 function cronMatch(value: number, pattern: string): boolean {
   if (pattern === '*') return true;
 
-  // Handle comma-separated: "1,3,5"
   if (pattern.includes(',')) {
     return pattern.split(',').some(p => cronMatch(value, p.trim()));
   }
 
-  // Handle range: "1-5"
   if (pattern.includes('-')) {
     const [low, high] = pattern.split('-').map(Number);
     return value >= low && value <= high;
   }
 
-  // Handle step: "*/5"
   if (pattern.includes('*/')) {
     const step = parseInt(pattern.split('*/')[1]);
     return value % step === 0;
   }
 
-  // Exact match
   return parseInt(pattern) === value;
 }
 
@@ -244,12 +249,13 @@ function shouldFireSunEvent(sc: ScheduledScenario, now: number, event: 'sunset' 
   const offsetMs = (sc.schedule.offset_minutes || 0) * 60_000;
   const fireTime = targetTime.getTime() + offsetMs;
 
-  // Fire window: +/- 30 seconds around target
   const windowMs = TICK_MS + 5_000;
   if (now >= fireTime - windowMs && now <= fireTime + windowMs) {
-    // Already fired today?
     const fireDate = new Date(fireTime);
     const lastDate = new Date(sc.last_fired);
+    // sc.last_fired по умолчанию теперь 0 (epoch, 1970 год) для ранее не
+    // сработавших сценариев — toDateString() никогда не совпадёт с today
+    // случайно, только если сценарий ДЕЙСТВИТЕЛЬНО уже сработал сегодня.
     if (lastDate.toDateString() === fireDate.toDateString()) return false;
     return true;
   }
@@ -263,7 +269,6 @@ function shouldFireInterval(sc: ScheduledScenario, now: number): boolean {
   const value = sc.schedule.value;
   if (!value) return false;
 
-  // Parse "every Xm" or "every Xh"
   const match = value.match(/^every\s+(\d+)\s*(m|min|h|hour)s?$/i);
   if (!match) return false;
 
@@ -284,7 +289,6 @@ function shouldFireInterval(sc: ScheduledScenario, now: number): boolean {
 
 function updateSunTimes(): void {
   try {
-    // Use suncalc if available, otherwise estimate
     const suncalc = require('suncalc');
     const today = new Date();
     const times = suncalc.getTimes(today, LAT, LON);
@@ -295,7 +299,6 @@ function updateSunTimes(): void {
       logger.log("[SCHEDULER] ", `🌅 Sunrise: ${sunriseTime.toLocaleTimeString('ru-RU')} | Sunset: ${sunsetTime.toLocaleTimeString('ru-RU')}`);
     }
   } catch {
-    // Fallback: rough estimate for Moscow
     const now = new Date();
     const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86400000);
     const declination = 23.45 * Math.sin((2 * Math.PI / 365) * (dayOfYear - 81));
@@ -317,6 +320,11 @@ function updateSunTimes(): void {
 }
 
 // ── Telemetry Enrichment for Combined Triggers ────────────
+//
+// НАХОДКА: та же проблема, что чинили в engine.ts — device в условии может
+// быть типом-заглушкой ("air_monitor"), а не реальным ieee. Раньше запрос
+// шёл напрямую WHERE device_ieee = cond.device, что не находило ничего для
+// условий с типом. Теперь резолвим через JOIN с devices.type, как в engine.ts.
 
 async function enrichTelemetryForConditions(
   map: Map<string, number>,
@@ -331,12 +339,26 @@ async function enrichTelemetryForConditions(
     Array.from(needed).map(async (key) => {
       const [device, property] = key.split(':');
       try {
-        const rows = await query(
+        // НАХОДКА (Модуль 5, demo.ts): регекс "0x"+16hex не узнавал demo:xxx
+        // идентификаторы. Теперь — сначала буквальный поиск (работает для
+        // любого формата ieee_addr), и только если не нашли — резолвинг по типу.
+        const literal = await query(
           `SELECT value FROM telemetry WHERE device_ieee = ? AND property = ?
            ORDER BY ts DESC LIMIT 1`,
           device, property
         );
-        if (rows.length > 0) map.set(key, rows[0].value);
+        if (literal.length > 0) {
+          map.set(key, literal[0].value);
+          return;
+        }
+        const byType = await query(
+          `SELECT t.value FROM telemetry t
+           JOIN devices d ON d.ieee_addr = t.device_ieee
+           WHERE d.type = ? AND t.property = ?
+           ORDER BY t.ts DESC LIMIT 1`,
+          device, property
+        );
+        if (byType.length > 0) map.set(key, byType[0].value);
       } catch {}
     })
   );

@@ -11,6 +11,7 @@ db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 db.pragma('cache_size = -8000');  // 8 MB
 db.pragma('foreign_keys = ON');
+
 // ── Schema ──────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS devices (
@@ -201,6 +202,7 @@ if (!hasTypeManual.cnt) {
   db.exec(`ALTER TABLE devices ADD COLUMN room_manually_set INTEGER DEFAULT 0`);
   logger.log("[DB] ", '➕ Миграция: devices.type_manually_set + room_manually_set добавлены');
 }
+
 // ── Migration: discovery_events.suggested_type / exposes_json ──
 // Раньше suggested_type/exposes уходили только в WebSocket-broadcast и терялись,
 // если никто не был подключён в момент interview или страница была перезагружена.
@@ -211,6 +213,7 @@ if (!hasSuggestedType.cnt) {
   db.exec(`ALTER TABLE discovery_events ADD COLUMN exposes_json TEXT`);
   logger.log("[DB] ", '➕ Миграция: discovery_events.suggested_type + exposes_json добавлены');
 }
+
 // Default scenarios
 const defaultScenarios = db.prepare(`SELECT COUNT(*) as cnt FROM scenarios`) as any;
 if (defaultScenarios.get().cnt === 0) {
@@ -424,6 +427,12 @@ export const stmt: any = {
   // Nonce management
   insertNonce: db.prepare(`INSERT OR IGNORE INTO used_nonces (nonce, expires_at) VALUES (?, datetime('now', '+5 minutes'))`),
   getNonce: db.prepare(`SELECT nonce FROM used_nonces WHERE nonce = ? AND expires_at > datetime('now')`),
+  // НАХОДКА (Модуль 6, index.ts): этот стейтмент вызывался каждый час из
+  // index.ts (`stmt.cleanupExpiredNonces.run()`), но не существовал вообще —
+  // TypeError ловился try/catch и тихо логировался как ошибка каждый час,
+  // used_nonces никогда не чистился этим путём (спасало только вероятностное
+  // удаление в crypto.ts при каждом 10-м вызове checkAndRecordNonce).
+  cleanupExpiredNonces: db.prepare(`DELETE FROM used_nonces WHERE expires_at < datetime('now')`),
 
   // Discovery events
   // Сигнатура расширена: (ieee, friendly_name, model, vendor, suggested_type, exposes_json)
@@ -459,6 +468,7 @@ function sqliteCompat(sql: string): string {
   if (!sql || typeof sql !== 'string') return sql;
 
   let queryStr = sql.trim();
+
   queryStr = queryStr.replace(
     /CURRENT_TIMESTAMP\s*-\s*INTERVAL\s*['"](\d+)\s+(hours?|minutes?|seconds?|days?|weeks?)['"]/gi,
     (_match, num, unit) => {
@@ -478,7 +488,7 @@ function sqliteCompat(sql: string): string {
     /INTERVAL\s+(\d+)\s+(HOURS?|MINUTES?|DAYS?|SECONDS?|WEEKS?)/gi,
     (_match, num, unit) => {
       const u = unit.toLowerCase().replace(/s$/, '');
-      return `-${num} ${u}s`;
+      return `'-${num} ${u}s'`;
     }
   );
   queryStr = queryStr.replace(
@@ -567,6 +577,7 @@ export function logStateChange(device_ieee: string, old_state: string, new_state
   stmt.insertStateChange.run(device_ieee, old_state, new_state, reason);
   logger.log("[DB] ", `🔄 ${device_ieee}: ${old_state} → ${new_state} (${reason})`);
 }
+
 export function logCommand(device_ieee: string, command: string, payload: string, source: string = 'api'): number {
   const info = stmt.insertCommand.run(device_ieee, command, payload, source);
   const id = info.lastInsertRowid as number;

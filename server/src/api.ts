@@ -8,7 +8,9 @@ import { encryptToken, decryptToken } from './crypto';
 import { stmt, db, query, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
 import { toggleDemoDevice, isDemoMode } from './demo';
-import { attachWebSocket, publishCommand, lastPresenceAt } from './mqtt-ws';
+import { attachWebSocket, sendDeviceCommand as publishCommand, lastPresenceAt } from './mqtt-ws';
+import { sendDeviceCommand as sendDeviceCommandAsync, parseActions } from './actions';
+import { parseTriggers } from './triggers';
 import { get as httpGet } from 'http';
 import mqtt from 'mqtt';
 import cookieParser from 'cookie-parser';
@@ -141,6 +143,10 @@ if (!process.env.API_KEYS && process.env.ALLOW_INSECURE_DEV !== '1') {
 }
 let authLogged = false;
 app.use((req, res, next) => {
+  // Auth middleware ТОЛЬКО для /api/ роутов — статика и корневой HTML
+  // должны быть доступны без ключа (браузер не может отправить кастомный
+  // заголовок при навигации по ссылке).
+  if (!req.path.startsWith('/api/')) return next();
   const enforceAuth = !!(process.env.API_KEYS || '');
   if (!enforceAuth) return optionalAuth(req, res, next);
   if (!authLogged) {
@@ -356,8 +362,11 @@ app.post('/api/devices/:id/on', commandLimiter, async (req, res) => {
   const { id } = req.params;
   try {
     const cmdId = logCommand(id, 'ON', '{}', 'api');
-    // MQTT publish будет добавлен после интеграции с Zigbee2MQTT
-    // Пока эмулируем успех
+    const sent = publishCommand(id, 'ON');
+    if (!sent) {
+      await query(`UPDATE commands SET status = 'error', error_msg = 'MQTT not connected', completed_at = CURRENT_TIMESTAMP WHERE id = ?`, cmdId);
+      return res.status(503).json({ ok: false, error: 'MQTT недоступен, команда не отправлена', command_id: cmdId });
+    }
     await query(
       `UPDATE commands SET status = 'success', completed_at = CURRENT_TIMESTAMP WHERE id = ?`,
       cmdId
@@ -375,6 +384,11 @@ app.post('/api/devices/:id/off', commandLimiter, async (req, res) => {
   const { id } = req.params;
   try {
     const cmdId = logCommand(id, 'OFF', '{}', 'api');
+    const sent = publishCommand(id, 'OFF');
+    if (!sent) {
+      await query(`UPDATE commands SET status = 'error', error_msg = 'MQTT not connected', completed_at = CURRENT_TIMESTAMP WHERE id = ?`, cmdId);
+      return res.status(503).json({ ok: false, error: 'MQTT недоступен, команда не отправлена', command_id: cmdId });
+    }
     await query(
       `UPDATE commands SET status = 'success', completed_at = CURRENT_TIMESTAMP WHERE id = ?`,
       cmdId
@@ -422,9 +436,9 @@ app.post('/api/devices', async (req, res) => {
          type = EXCLUDED.type,
          room_id = EXCLUDED.room_id,
          last_seen = datetime('now')`,
-      ieee_addr, friendly_name, type, Number(room_id) || 1
+      ieee_addr, friendly_name, type, room_id ? Number(room_id) : null
     );
-    res.status(201).json({ ok: true, device: { ieee_addr, friendly_name, type, room_id: Number(room_id) || 1, status: 'online' } });
+    res.status(201).json({ ok: true, device: { ieee_addr, friendly_name, type, room_id: room_id ? Number(room_id) : null, status: 'online' } });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'devices_create');
     res.status(500).json({ ok: false, error: e.message });
@@ -1145,6 +1159,11 @@ app.get('/api/gates', async (_req, res) => {
 app.post('/api/gates/:id/open', commandLimiter, async (req, res) => {
   try {
     const cmdId = logCommand(req.params.id, 'OPEN', '{}', 'gate_api');
+    const sent = publishCommand(req.params.id, 'OPEN');
+    if (!sent) {
+      await query("UPDATE commands SET status='error', error_msg='MQTT not connected', completed_at=CURRENT_TIMESTAMP WHERE id=?", cmdId);
+      return res.status(503).json({ ok: false, error: 'MQTT недоступен, ворота не открыты', command_id: cmdId });
+    }
     await query("INSERT INTO gate_access_log (id,device_ieee,action,source,details) VALUES (NULL,?,?,?,?)",
       req.params.id, 'open', 'api', req.body.reason || null);
     await query("UPDATE commands SET status='success',completed_at=CURRENT_TIMESTAMP WHERE id=?", cmdId);
@@ -1161,6 +1180,11 @@ app.post('/api/gates/:id/open', commandLimiter, async (req, res) => {
 app.post('/api/gates/:id/close', commandLimiter, async (req, res) => {
   try {
     const cmdId = logCommand(req.params.id, 'CLOSE', '{}', 'gate_api');
+    const sent = publishCommand(req.params.id, 'CLOSE');
+    if (!sent) {
+      await query("UPDATE commands SET status='error', error_msg='MQTT not connected', completed_at=CURRENT_TIMESTAMP WHERE id=?", cmdId);
+      return res.status(503).json({ ok: false, error: 'MQTT недоступен, ворота не закрыты', command_id: cmdId });
+    }
     await query("INSERT INTO gate_access_log (id,device_ieee,action,source,details) VALUES (NULL,?,?,?,?)",
       req.params.id, 'close', 'api', req.body.reason || null);
     await query("UPDATE commands SET status='success',completed_at=CURRENT_TIMESTAMP WHERE id=?", cmdId);
@@ -1236,6 +1260,15 @@ app.post('/api/scenarios', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'name, triggers_json, actions_json required' });
     }
 
+    // Валидация: проверяем, что triggers_json и actions_json парсятся в ожидаемую
+    // структуру. Раньше невалидный JSON тихо сохранялся — сценарий молча
+    // пропускался reloadScenarios(). Теперь честный 400 (Модуль 7, Находка 3).
+    const parsedTriggers = parseTriggers(triggers_json);
+    const parsedActions = parseActions(actions_json);
+    if (!parsedTriggers || !parsedActions) {
+      return res.status(400).json({ ok: false, error: 'triggers_json или actions_json невалидны (не парсятся в ожидаемую структуру)' });
+    }
+
     const maxId = await query('SELECT COALESCE(MAX(id),0)+1 as next_id FROM scenarios');
     const id = maxId[0].next_id;
 
@@ -1274,10 +1307,23 @@ app.put('/api/scenarios/:id', async (req, res) => {
     const params: any[] = [];
     if (name !== undefined) { updates.push('name = ?'); params.push(name); }
     if (description !== undefined) { updates.push('description = ?'); params.push(description); }
-    if (triggers_json !== undefined) { updates.push('triggers_json = ?'); params.push(triggers_json); }
-    if (actions_json !== undefined) { updates.push('actions_json = ?'); params.push(actions_json); }
+    if (triggers_json !== undefined) {
+      // Валидация на обновление (Модуль 7, Находка 3)
+      const parsedTriggers = parseTriggers(triggers_json);
+      if (!parsedTriggers) {
+        return res.status(400).json({ ok: false, error: 'triggers_json невалиден (не парсится в ожидаемую структуру)' });
+      }
+      updates.push('triggers_json = ?'); params.push(triggers_json);
+    }
+    if (actions_json !== undefined) {
+      const parsedActions = parseActions(actions_json);
+      if (!parsedActions) {
+        return res.status(400).json({ ok: false, error: 'actions_json невалиден (не парсится в ожидаемую структуру)' });
+      }
+      updates.push('actions_json = ?'); params.push(actions_json);
+    }
     if (schedule_json !== undefined) { updates.push('schedule_json = ?'); params.push(schedule_json); }
-    if (active !== undefined) { updates.push('active = ?'); params.push(active); }
+    if (active !== undefined) { updates.push('active = ?'); params.push(active ? 1 : 0); }
 
     if (updates.length > 0) {
       params.push(id);
@@ -1725,9 +1771,8 @@ app.post('/api/ai/providers', aiProvidersRateLimit, async (req, res) => {
       ? token.slice(0, 3) + '…' + token.slice(-4)
       : '***';
 
-    // Simple AES-like obfuscation for at-rest storage (not real crypto — for production use crypto.ts)
-    const encoded = Buffer.from(token).toString('base64');
-    const tokenEnc = encoded; // In production would be AES-256-GCM
+    // Encrypt with AES-256-GCM from crypto.ts (was base64 before — Модуль 7, Находка 2)
+    const tokenEnc = encryptToken(token);
 
     await query(
       'INSERT INTO ai_providers (id, provider, token_enc, base_url, model, status) VALUES (?, ?, ?, ?, ?, ?)',
@@ -1770,7 +1815,7 @@ app.post('/api/ai/providers/:id/test', aiProvidersRateLimit, async (req, res) =>
     if (!rows.length) return res.status(404).json({ ok: false, error: 'Provider not found' });
 
     const prov = rows[0];
-    const token = Buffer.from(prov.token_enc, 'base64').toString();
+    const token = decryptToken(prov.token_enc);
 
     // Simple test call based on provider type
     let testOk = false;

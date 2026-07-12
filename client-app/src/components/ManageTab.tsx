@@ -3,6 +3,7 @@ import { Plus, Trash2, RadioTower, Bot, Check, X, Loader2, CircleCheck, CircleX,
 import { DEVICE_TYPES } from "./DeviceTile";
 import { ROOM_ICONS, ROOM_ICON_LIST } from "./HomeWidgets";
 import RoomDevicesManager from "./RoomDevicesManager";
+import ConnectionSettings from "./ConnectionSettings";
 
 /* ---- AI_PROVIDERS ---- */
 const AI_PROVIDERS_LIST = [
@@ -115,6 +116,8 @@ export default function ManageTab({
     <div className="se-tab-pad">
       <div className="se-tab-title">Управление</div>
       <div className="se-tab-caption">Комнаты, устройства, поиск, AI-агент</div>
+
+      <ConnectionSettings onModeChanged={() => window.location.reload()} />
 
       {/* ROOMS & DEVICES */}
       <div className="se-manage-section">

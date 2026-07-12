@@ -189,7 +189,6 @@ function handleBridgeEvent(data: any) {
         logger.log("[MQTT-WS] ", `🆕 Device joined: ${name} — идёт настройка...`);
         broadcastDiscovery({ type: 'device_joined', ieee_address: ieee, friendly_name: name });
         break;
-
       case 'device_interview': {
         switch (info.status) {
           case 'started':
@@ -277,7 +276,18 @@ function handleBridgeDevices(devices: any) {
 }
 
 // ── Real type mapping from Zigbee2MQTT exposes ──────────────────────────────
-export function mapZ2MTypeToInternal(_ieeeAddr: string, exposes: any[] | null): string | null {
+export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): string | null {
+  // 1. Сначала проверяем suggested_type из discovery_events (пользователь уже выбрал тип)
+  try {
+    const event = db.prepare(
+      `SELECT suggested_type FROM discovery_events WHERE ieee_addr = ? ORDER BY id DESC LIMIT 1`
+    ).get(ieeeAddr) as { suggested_type: string } | undefined;
+    if (event?.suggested_type && event.suggested_type !== 'unknown') return event.suggested_type;
+  } catch {
+    // discovery_events может не существовать — игнорируем
+  }
+
+  // 2. Fallback: анализ exposes
   if (!exposes || !Array.isArray(exposes) || exposes.length === 0) return null;
 
   const types = new Set<string>();
@@ -297,7 +307,7 @@ export function mapZ2MTypeToInternal(_ieeeAddr: string, exposes: any[] | null): 
   }
 
   if (types.has('light')) return 'light';
-  if (types.has('cover')) return 'shutter';
+  if (types.has('cover')) return 'gate';  // В этом доме cover-устройства — ворота/гараж, не шторы (Модуль 8, Находка 14)
   if (types.has('lock')) return 'lock';
   if (types.has('switch')) {
     if (features.has('brightness') || features.has('color')) return 'light';
@@ -319,7 +329,7 @@ export function mapZ2MTypeToInternal(_ieeeAddr: string, exposes: any[] | null): 
   return null; // ничего не определили — требуем явного выбора от пользователя
 }
 
-// ── Telemetry Handler ────────────────────────────────────────────────────
+// ── Telemetry Handler ────────────────────────────────────
 function handleTelemetry(friendlyName: string, data: any) {
   let ieee = data.ieee_address || data.ieeeAddr || null;
   const raw = JSON.stringify(data);
@@ -487,8 +497,8 @@ export function attachWebSocket(server: HTTPServer) {
 
     const keys = (process.env.API_KEYS || '').split(',').map(k => k.trim()).filter(Boolean);
     if (keys.length > 0) {
-      const apiKey = req.headers['x-api-key'] as string
-         || new URL(req.url || '/', `http://${req.headers.host}`).searchParams.get('api_key') as string;
+      const apiKey = req.headers['x-api-key'] as string ||
+        new URL(req.url || '/', `http://${req.headers.host}`).searchParams.get('api_key') as string;
       if (!apiKey || !keys.includes(apiKey)) {
         logger.log("[MQTT-WS] ", `🔌 WebSocket rejected: no valid auth (IP: ${req.socket.remoteAddress})`);
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -541,24 +551,17 @@ export function attachWebSocket(server: HTTPServer) {
   return wssLocal;
 }
 
-export function publishCommand(deviceIeee: string, command: string, payload?: any): boolean {
+export function sendDeviceCommand(deviceIeee: string, command: string, payload?: any): boolean {
   if (!client || !client.connected) {
     logErrorWithLog(deviceIeee, 'mqtt_publish_error', 'MQTT not connected', command);
     return false;
   }
 
-  // НАХОДКА: раньше топик строился как zigbee2mqtt/${deviceIeee}/set — но по
-  // документации Z2M (https://www.zigbee2mqtt.io/guide/usage/mqtt_topics_and_messages.html)
-  // "The FRIENDLY_NAME is the IEEE-address OR, if defined, the friendly_name" —
-  // то есть после переименования устройства (а флоу подтверждения его переименовывает,
-  // см. POST /api/discovery/:ieee/confirm) команды на топик со старым ieee уже не
-  // доходят до устройства. Берём актуальный friendly_name из БД.
-  let target = deviceIeee;
-  try {
-    const row = db.prepare('SELECT friendly_name FROM devices WHERE ieee_addr = ?').get(deviceIeee) as { friendly_name: string } | undefined;
-    if (row?.friendly_name) target = row.friendly_name;
-  } catch {
-    // Если lookup не удался — используем ieee как fallback (лучше, чем ничего)
+  // Сначала буквальный поиск по ieee/name, потом резолвинг по типу
+  const { target } = resolveDeviceTarget(deviceIeee);
+  if (!target) {
+    logErrorWithLog(deviceIeee, 'mqtt_publish_error', `Device not found: ${deviceIeee}`, command);
+    return false;
   }
 
   const topic = `zigbee2mqtt/${target}/set`;
@@ -568,7 +571,32 @@ export function publishCommand(deviceIeee: string, command: string, payload?: an
   return true;
 }
 
-export { client, lastPresenceAt };
+/**
+ * Resolve device target: first by exact ieee/name match, then by type (sorted by lqi DESC).
+ * Returns { target: string | null } — the friendly_name to use in MQTT topic.
+ */
+function resolveDeviceTarget(query: string): { target: string | null } {
+  // 1. Буквальный поиск по ieee_addr или friendly_name
+  const exact = db.prepare(
+    `SELECT friendly_name FROM devices WHERE ieee_addr = ? OR friendly_name = ? LIMIT 1`
+  ).get(query, query) as { friendly_name: string } | undefined;
+  if (exact?.friendly_name) return { target: exact.friendly_name };
+
+  // 2. Поиск по типу (модели) — берём устройство с лучшим LQI
+  const byType = db.prepare(
+    `SELECT d.friendly_name FROM devices d
+     LEFT JOIN telemetry t ON t.device_ieee = d.ieee_addr AND t.property = 'lqi'
+     WHERE d.type = ? OR d.model = ?
+     ORDER BY t.value DESC NULLS LAST
+     LIMIT 1`
+  ).get(query, query) as { friendly_name: string } | undefined;
+  if (byType?.friendly_name) return { target: byType.friendly_name };
+
+  // 3. Fallback — используем query как есть (для обратной совместимости)
+  return { target: query };
+}
+
+export { client, lastPresenceAt, sendDeviceCommand as publishCommand };
 
 /** Gracefully disconnect MQTT (used when switching to demo mode) */
 export function disconnectMQTT(): void {

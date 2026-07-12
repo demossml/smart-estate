@@ -1,13 +1,40 @@
 const BASE = '/api';
 
+/* ─── API Key ───
+ * НАХОДКА (Модуль 8, главная за весь фронтенд): localStorage.getItem('apiKey')
+ * использовался ТОЛЬКО при запросе CSRF-токена — ни на один реальный
+ * запрос (/devices, /scenarios, /gates и т.д.) заголовок X-API-Key никогда
+ * не отправлялся. При этом НИГДЕ в приложении нет localStorage.setItem('apiKey', ...) —
+ * то есть ключу неоткуда взяться в принципе, это не просто пропущенный заголовок,
+ * а полностью отсутствующий UX-флоу входа.
+ * После фикса бэкенда (Модуль 1: API_KEYS обязателен, сервер не стартует без него)
+ * это означает, что фронтенд не смог бы авторизоваться НИ НА ОДНОМ запросе —
+ * всё приложение отвечало бы 401.
+ * Здесь чиню техническую часть (реально отправлять заголовок, если ключ есть
+ * в localStorage) — но САМ способ, которым пользователь вводит ключ в
+ * приложение (экран настроек? QR-код? PIN?) — открытый вопрос, я не стал
+ * изобретать UI для этого сам. См. PATCH_INSTRUCTIONS.md, Модуль 8.
+ */
+export function getApiKey(): string {
+  return localStorage.getItem('apiKey') || '';
+}
+
+export function setApiKey(key: string): void {
+  localStorage.setItem('apiKey', key);
+}
+
+/* ─── Online state ─── */
+// Должно быть объявлено ДО initCSRF(), так как request() использует isOnline
+let isOnline = navigator.onLine;
+window.addEventListener('online', () => { isOnline = true; });
+window.addEventListener('offline', () => { isOnline = false; });
+
 /* ─── CSRF Token ─── */
-// Soft mode: API пропускает запросы без CSRF-токена (см. middleware в api.ts)
-// Если понадобится строгая защита — нужно передавать X-API-Key при запросе токена
 let csrfToken = '';
 
 async function initCSRF(): Promise<void> {
   try {
-    const res = await fetch('/api/csrf-token', { headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' } });
+    const res = await fetch('/api/csrf-token', { headers: { 'X-API-Key': getApiKey() } });
     const data = await res.json();
     csrfToken = data.token || '';
   } catch {
@@ -16,11 +43,6 @@ async function initCSRF(): Promise<void> {
 }
 // Fetch on load
 initCSRF();
-
-// Track online/offline
-window.addEventListener('online', () => { isOnline = true; });
-window.addEventListener('offline', () => { isOnline = false; });
-isOnline = navigator.onLine;
 
 /* ─── Device lookup cache (for climate setpoints) ─── */
 let deviceCache: import('../types').Device[] | null = null;
@@ -33,44 +55,62 @@ async function getDeviceCache(): Promise<import('../types').Device[]> {
 }
 
 /** Simulated data when API is unavailable (offline/demo mode) */
-let isOnline = true;
 
 export function setOnline(state: boolean) {
   isOnline = state;
 }
 
 export function getOnline() {
-  return isOnline;
-}
 
+/**
+ * НАХОДКА: раньше `if (!res.ok) throw new Error(...)` использовал только
+ * res.status/statusText, полностью отбрасывая JSON-тело ответа. После фиксов
+ * бэкенда (Модуль 3/7) многие эндпоинты теперь возвращают осмысленный
+ * `{ok:false, error:"MQTT недоступен, команда не отправлена"}` при 503 —
+ * но пользователь видел бы только "503 Service Unavailable" без объяснения.
+ * Теперь пытаемся распарсить тело ответа даже при ошибке и используем
+ * error-поле, если оно есть.
+ */
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!isOnline) {
     throw new Error('OFFLINE');
   }
-  
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
-  
+
   try {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'X-API-Key': getApiKey(),
       ...(options?.headers as Record<string, string> || {}),
     };
-    
+
     // Add CSRF token for mutating requests
     const method = options?.method || 'GET';
     if (csrfToken && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
       headers['X-CSRF-Token'] = csrfToken;
     }
-    
+
     const res = await fetch(`${BASE}${path}`, {
       ...options,
       headers,
       signal: controller.signal,
       credentials: 'include',
     });
-    
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+
+    if (!res.ok) {
+      // Пытаемся достать осмысленное сообщение из тела ответа перед тем,
+      // как падать на голый статус-код.
+      let serverMessage: string | undefined;
+      try {
+        const body = await res.clone().json();
+        serverMessage = body?.error;
+      } catch {
+        // Тело не JSON или пустое — используем только статус
+      }
+      throw new Error(serverMessage || `${res.status} ${res.statusText}`);
+    }
     try {
       return (await res.json()) as T;
     } catch (cause) {
@@ -312,10 +352,18 @@ export const api = {
     return setpointsData.rooms.map(s => mapSetpoint(s, deviceMap.get(s.device_ieee)));
   },
 
+  // НАХОДКА (Модуль 8): раньше отправлялось { targetTemp, mode } (camelCase),
+  // а бэкенд (PUT /api/climate/:device_ieee) деструктурирует req.body как
+  // { target_temp, mode, ... } — snake_case. targetTemp просто игнорировался
+  // (undefined), апдейт молча не применялся, бэкенд отвечал 200 OK с
+  // НЕИЗМЕНЁННЫМ setpoint — пользователь думал, что температура сохранилась,
+  // а на деле ничего не менялось. Подтверждено: pages/Climate.tsx использует
+  // именно этот метод. App.tsx (свой отдельный, дублирующий клиент) уже
+  // отправлял правильное имя поля — рассинхрон между двумя копиями клиента.
   updateClimate: (id: string, targetTemp: number, mode: import('../types').ClimateSetpoint['mode']) =>
     request(`/climate/${id}`, {
       method: 'PUT',
-      body: JSON.stringify({ targetTemp, mode }),
+      body: JSON.stringify({ target_temp: targetTemp, mode }),
     }),
 
   getGates: async () => {
@@ -346,6 +394,12 @@ export const api = {
       body: JSON.stringify({ logs }),
     }),
 
+  // НАХОДКА: /api/rooms/:id/light/toggle НЕ СУЩЕСТВУЕТ на бэкенде (проверено
+  // построчным grep по api.ts) — этот вызов всегда возвращал 404. Либо нужно
+  // реализовать этот эндпоинт на бэкенде (найти все устройства типа 'light'
+  // в комнате и переключить каждое), либо убрать кнопку из UI, если фича
+  // была задумана, но не доделана. Не стал молча чинить в одностороннем
+  // порядке — решение зависит от того, действительно ли фича нужна.
   toggleLight: (roomId: string) =>
     request(`/rooms/${roomId}/light/toggle`, { method: 'POST' }),
 
@@ -355,6 +409,9 @@ export const api = {
   deviceOff: (id: string) =>
     request(`/devices/${id}/off`, { method: 'POST' }),
 
+  // НАХОДКА: /api/rooms/:id/override ТОЖЕ не существует на бэкенде. Та же
+  // ситуация — нужно либо реализовать (временно заблокировать автоматику
+  // для комнаты на N минут), либо убрать из UI.
   overrideRoom: (roomId: string, duration: number) =>
     request(`/rooms/${roomId}/override`, {
       method: 'POST',
@@ -407,8 +464,14 @@ export const api = {
   getPendingDevices: () =>
     request<{ ok: boolean; pending: any[]; reason?: string }>('/devices/pending'),
 
+  // НАХОДКА: /api/devices/discover ТОЖЕ не существует — но здесь есть рабочий
+  // эквивалент под другим именем: POST /api/discovery/start (permit_join).
+  // Это не "фича не доделана", а просто рассинхрон имён между фронтом и
+  // бэкендом — почти наверняка баг, не забытая фича. Указываю правильный
+  // путь ниже; если после проверки на реальном UI это ломает что-то ещё
+  // (например, ответ имеет другую форму) — сверьте поля.
   discoverDevices: () =>
-    request<{ ok: boolean; permit_join: boolean; discovered: any[]; reason?: string }>('/devices/discover', {
+    request<{ ok: boolean; permit_join: boolean; discovered: any[]; reason?: string }>('/discovery/start', {
       method: 'POST',
     }),
 
@@ -417,4 +480,10 @@ export const api = {
 
   getDashboardV2: () =>
     request<{ ok: boolean; metrics: any; energy_today: number; air_status: string; rooms: any[] }>('/dashboard/v2'),
+
+  // НАХОДКА (Модуль 8, Находка 12): график энергопотребления в Dashboard.tsx
+  // всегда рисовал захардкоженные FALLBACK_TREND — этот эндпоинт не вызывался
+  // вообще. Бэкенд уже отдаёт корректные почасовые данные.
+  getEnergyTrend: () =>
+    request<{ ok: boolean; trend: { hour: string; power: number }[] }>('/energy/trend'),
 };

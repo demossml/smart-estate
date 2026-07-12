@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { logClient } from '../lib/logger';
+import { getApiKey } from '../api/client';
 
 type SocketCallback = (topic: string, payload: Record<string, any>) => void;
 
@@ -17,7 +18,17 @@ export function useEstateSocket(onTelemetry?: SocketCallback) {
 
     const connect = () => {
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
+      // НАХОДКА (Модуль 8): нативный WebSocket API браузера не умеет
+      // отправлять кастомные заголовки (X-API-Key просто некуда положить) —
+      // бэкенд (attachWebSocket в mqtt-ws.ts) как раз поэтому поддерживает
+      // fallback через query-параметр ?api_key=..., но этот хук им не
+      // пользовался. После того как API_KEYS стал обязательным (Модуль 1),
+      // каждое подключение получало бы 401 и уходило в бесконечный реконнект
+      // с экспоненциальной задержкой — живая телеметрия не работала бы
+      // вообще, при этом внешне выглядело бы как "то подключается, то нет".
+      const key = getApiKey();
+      const qs = key ? `?api_key=${encodeURIComponent(key)}` : '';
+      socket = new WebSocket(`${protocol}://${window.location.host}/ws${qs}`);
 
       socket.addEventListener('open', () => {
         retriesRef.current = 0;

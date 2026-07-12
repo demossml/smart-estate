@@ -33,6 +33,7 @@ const FALLBACK_TREND = [0.3, 0.2, 0.2, 0.1, 0.2, 0.5, 1.1, 1.8, 2.2, 2.4, 2.0, 1
 export default function Dashboard() {
   const navigate = useNavigate();
   const { large } = useLargeMode();
+  const [trend, setTrend] = useState<{ hour: string; power: number }[]>([]);
   const { mode, toggle: toggleMode, loading: modeLoading } = useMode();
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceListening, setVoiceListening] = useState(false);
@@ -55,6 +56,7 @@ export default function Dashboard() {
     setV2Error(false);
     try {
       setDashboardV2(await api.getDashboardV2());
+      api.getEnergyTrend().then(r => { if (r.ok) setTrend(r.trend); }).catch(() => {});
       setV2Loading(false);
       return;
     } catch (e) {
@@ -575,7 +577,7 @@ export default function Dashboard() {
         <div className="bg-black/30 rounded-xl overflow-hidden" style={{ padding: 2 }}>
           <div className="flex items-end gap-[2px] mx-0.5 my-2.5 h-14" aria-hidden="true">
             {Array.from({ length: 24 }).map((_, i) => {
-              const val = FALLBACK_TREND[i] ?? 0;
+              const val = (trend[i]?.power ?? FALLBACK_TREND[i] ?? 0);
               const height = Math.max(3, (val / 3.2) * 100);
               return <div key={i} className="flex-1 bg-blue/40 rounded-sm" style={{ height: `${height}%`, minHeight: 2 }} title={`${i}:00 — ${val.toFixed(1)} кВт`} />;
             })}

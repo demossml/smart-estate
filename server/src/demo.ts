@@ -62,7 +62,7 @@ const DEMO_DEVICES: DemoDevice[] = [
   {
     ieee_addr: 'demo:living_temp',
     name: 'Датчик температуры',
-    type: 'temp_sensor',
+    type: 'sensor',
     room: 'Гостиная (демо)',
     properties: [
       { property: 'temperature', unit: '°C', min: 18, max: 28, current: 21.5, direction: 1 },
@@ -88,7 +88,7 @@ const DEMO_DEVICES: DemoDevice[] = [
   {
     ieee_addr: 'demo:kitchen_temp',
     name: 'Датчик температуры',
-    type: 'temp_sensor',
+    type: 'sensor',
     room: 'Кухня (демо)',
     properties: [
       { property: 'temperature', unit: '°C', min: 19, max: 30, current: 22.0, direction: 1 },
@@ -117,9 +117,12 @@ const DEMO_DEVICES: DemoDevice[] = [
     ],
   },
   {
+    // НАХОДКА (Модуль 5): type был 'fan' — это не значение, которое реальный
+    // классификатор (mapZ2MTypeToInternal) может присвоить устройству. Вытяжка
+    // управляется как реле on/off, ближе всего к 'plug' в текущей таксономии.
     ieee_addr: 'demo:kitchen_fan',
     name: 'Вытяжка',
-    type: 'fan',
+    type: 'plug',
     room: 'Кухня (демо)',
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
@@ -142,7 +145,7 @@ const DEMO_DEVICES: DemoDevice[] = [
   {
     ieee_addr: 'demo:bedroom_temp',
     name: 'Датчик температуры',
-    type: 'temp_sensor',
+    type: 'sensor',
     room: 'Спальня (демо)',
     properties: [
       { property: 'temperature', unit: '°C', min: 18, max: 26, current: 20.0, direction: -1 },
@@ -161,7 +164,7 @@ const DEMO_DEVICES: DemoDevice[] = [
   {
     ieee_addr: 'demo:bath_temp',
     name: 'Датчик влажности',
-    type: 'temp_sensor',
+    type: 'sensor',
     room: 'Ванная (демо)',
     properties: [
       { property: 'temperature', unit: '°C', min: 18, max: 28, current: 23.0, direction: 1 },
@@ -169,9 +172,11 @@ const DEMO_DEVICES: DemoDevice[] = [
     ],
   },
   {
+    // НАХОДКА (Модуль 5): type был 'temp_sensor' — явный копипаст, это датчик
+    // протечки, не температуры. Правильный тип — 'leak_sensor'.
     ieee_addr: 'demo:bath_leak',
     name: 'Датчик протечки',
-    type: 'temp_sensor',
+    type: 'leak_sensor',
     room: 'Ванная (демо)',
     properties: [{ property: 'water_leak', unit: 'bool', min: 0, max: 0, current: 0, direction: 0 }],
   },
@@ -185,9 +190,11 @@ const DEMO_DEVICES: DemoDevice[] = [
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 1, direction: 0 }],
   },
   {
+    // НАХОДКА (Модуль 5): type был 'temp_sensor' — тоже копипаст, устройство
+    // сообщает occupancy/illuminance, это датчик движения, не температуры.
     ieee_addr: 'demo:hall_motion',
     name: 'Датчик движения',
-    type: 'temp_sensor',
+    type: 'motion_sensor',
     room: 'Коридор (демо)',
     properties: [
       { property: 'occupancy', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 },
@@ -195,9 +202,11 @@ const DEMO_DEVICES: DemoDevice[] = [
     ],
   },
   {
+    // НАХОДКА (Модуль 5): type был 'temp_sensor' — тоже копипаст, это контакт
+    // входной двери, правильный тип — 'door_sensor'.
     ieee_addr: 'demo:main_door',
     name: 'Входная дверь',
-    type: 'temp_sensor',
+    type: 'door_sensor',
     room: 'Коридор (демо)',
     properties: [{ property: 'contact', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
@@ -209,6 +218,15 @@ const DEMO_DEVICES: DemoDevice[] = [
     properties: [{ property: 'state', unit: 'bool', min: 0, max: 1, current: 0, direction: 0 }],
   },
   // Ворота и калитка
+  // НАХОДКА (при чтении Модуля 5, связано с Модулем 3): тип 'gate' здесь и
+  // в валидаторе ручного создания устройства (api.ts) есть, но реальный
+  // авто-классификатор mapZ2MTypeToInternal (mqtt-ws.ts) никогда не выдаёт
+  // 'gate' — только light/shutter/lock/plug/climate/sensor/*_sensor/air_monitor.
+  // Это значит настоящее реле ворот, будучи распознанным автоматически,
+  // получит type='plug', а не 'gate', и не попадёт на страницу "Ворота"
+  // (там фильтр WHERE type IN ('gate','lock')) без ручной правки пользователем.
+  // Не чиню здесь — это отдельный вопрос о том, какие типы actuator'ов вообще
+  // должны существовать в классификаторе (см. PATCH_INSTRUCTIONS.md, Модуль 3).
   {
     ieee_addr: 'demo:main_gate',
     name: 'Въездные ворота',
@@ -238,14 +256,10 @@ export function isDemoMode(): boolean {
  * Only inserts if rooms/devices don't already exist.
  */
 export async function seedDemoData(): Promise<{ rooms: number; devices: number }> {
-  // Clean up old data — только демо-устройства, никогда не трогаем реальные
-  // is_demo=1 (новый формат) + ieee_addr LIKE 'demo:%' (старый формат)
   await query("DELETE FROM devices WHERE is_demo = 1");
   await query("DELETE FROM devices WHERE ieee_addr LIKE 'demo:%'");
   await query("DELETE FROM telemetry WHERE device_ieee LIKE 'demo:%'");
 
-  // Rooms — insert only if id >= 100 doesn't exist yet
-  // Явный id из DEMO_ROOMS, без поиска по имени (чтобы не коллизировать с комнатами 1-5)
   let roomCount = 0;
   const roomIdByName = new Map<string, number>();
   for (const r of DEMO_ROOMS) {
@@ -253,10 +267,10 @@ export async function seedDemoData(): Promise<{ rooms: number; devices: number }
       'INSERT OR IGNORE INTO rooms (id, name, icon, is_demo) VALUES (?, ?, ?, 1)',
       r.id, r.name, r.icon
     );
-    // Убедимся что комната создана (если была IGNORE — значит уже есть)
     roomIdByName.set(r.name, r.id);
     roomCount++;
   }
+
   let deviceCount = 0;
   for (const d of DEMO_DEVICES) {
     const roomId = roomIdByName.get(d.room) || null;
@@ -268,22 +282,25 @@ export async function seedDemoData(): Promise<{ rooms: number; devices: number }
     deviceCount++;
   }
 
-  // Init telemetry sequence
   const maxSeq = await query('SELECT COALESCE(MAX(id), 0) as mx FROM telemetry');
   _telemetrySeq = BigInt(maxSeq[0]?.mx || 100000) + BigInt(1);
 
   // Seed initial state=0 for gate/lock devices (so GatesCard sees them as closed)
+  // НАХОДКА: раньше строился сырой SQL с интерполяцией ${d.ieee_addr} прямо в
+  // строку запроса. Здесь конкретно ieee_addr берётся из хардкодного массива
+  // DEMO_DEVICES (не пользовательский ввод), поэтому не эксплуатируется, но
+  // это плохой паттерн — параметризовано для консистентности с остальным кодом.
   for (const d of DEMO_DEVICES) {
     if (d.type === 'gate' || d.type === 'lock') {
       const seq = _telemetrySeq++;
       await query(
         `INSERT INTO telemetry (id, device_ieee, property, value, unit, raw_json, ts)
-         VALUES (${seq}, '${d.ieee_addr}', 'state', 0, 'bool', '{}', CURRENT_TIMESTAMP)`
+         VALUES (?, ?, 'state', 0, 'bool', '{}', CURRENT_TIMESTAMP)`,
+        seq.toString(), d.ieee_addr
       ).catch(() => {});
     }
   }
 
-  // Init climate setpoints for temp sensors
   const tempSensors = DEMO_DEVICES.filter(d => d.properties.some(p => p.property === 'temperature'));
   for (const d of tempSensors) {
     const existing = await query('SELECT COUNT(*) as cnt FROM climate_setpoints WHERE device_ieee = ?', d.ieee_addr);
@@ -328,10 +345,7 @@ export async function startDemo(): Promise<void> {
   _isDemoActive = true;
   logger.log("[DEMO] ", '🎭 DEMO MODE: симуляция датчиков активна (каждые 3 сек)');
 
-  // Generate first batch immediately
   await generateTelemetry();
-
-  // Then every 3 seconds
   intervalId = setInterval(generateTelemetry, 3000);
 }
 
@@ -344,21 +358,16 @@ export async function stopDemo(): Promise<void> {
     intervalId = null;
   }
   _isDemoActive = false;
-  // Clean up ALL demo data — устройства, телеметрию, сценарии, комнаты
   try {
-    // Сначала зависимые таблицы
     await query(`DELETE FROM commands WHERE device_ieee LIKE 'demo:%' OR device_ieee IN (SELECT ieee_addr FROM devices WHERE is_demo = 1)`);
     await query(`DELETE FROM errors WHERE device_ieee LIKE 'demo:%' OR device_ieee IN (SELECT ieee_addr FROM devices WHERE is_demo = 1)`);
     await query(`DELETE FROM climate_setpoints WHERE device_ieee LIKE 'demo:%' OR device_ieee IN (SELECT ieee_addr FROM devices WHERE is_demo = 1)`);
     await query(`DELETE FROM device_group_members WHERE device_ieee LIKE 'demo:%' OR device_ieee IN (SELECT ieee_addr FROM devices WHERE is_demo = 1)`);
     await query(`DELETE FROM state_changes WHERE device_ieee LIKE 'demo:%' OR device_ieee IN (SELECT ieee_addr FROM devices WHERE is_demo = 1)`);
     await query(`DELETE FROM telemetry WHERE device_ieee LIKE 'demo:%'`);
-    // Сами устройства — и новые (is_demo=1), и старые (префикс demo:)
     await query(`DELETE FROM devices WHERE is_demo = 1`);
     await query(`DELETE FROM devices WHERE ieee_addr LIKE 'demo:%'`);
-    // Демо-комнаты (id >= 100 или is_demo = 1)
     await query(`DELETE FROM rooms WHERE id >= 100 OR is_demo = 1`);
-    // Демо-сценарии
     await query(`DELETE FROM scenario_executions WHERE scenario_id IN (SELECT id FROM scenarios WHERE name LIKE 'Демо:%')`);
     await query(`DELETE FROM scenarios WHERE name LIKE 'Демо:%'`);
     logger.log("[DEMO] ", '🧹 DEMO MODE: все демо-данные очищены');
@@ -380,15 +389,19 @@ export async function toggleDemoDevice(ieee_addr: string, state: 'ON' | 'OFF'): 
     const newVal = state === 'ON' ? 1 : 0;
     stateProp.current = newVal;
 
-    // Log to DB
     await logCommand(ieee_addr, state, '{}', 'demo');
     await logStateChange(ieee_addr, state === 'ON' ? 'OFF' : 'ON', state, 'demo_toggle');
 
-    // Write telemetry so frontend sees state change immediately
+    // НАХОДКА (СЕРЬЁЗНАЯ): раньше здесь была прямая интерполяция строки —
+    // `VALUES (${seq}, '${ieee_addr}', ...)` — а ieee_addr приходит из
+    // req.params.id (POST /api/devices/:id/on, /api/gates/:id/open и т.п.),
+    // то есть из URL, под контролем вызывающего. Это реальная SQL-инъекция,
+    // пусть и ограниченная демо-режимом. Теперь — параметризованный запрос.
     const seq = _telemetrySeq++;
     await query(
       `INSERT INTO telemetry (id, device_ieee, property, value, unit, raw_json, ts)
-       VALUES (${seq}, '${ieee_addr}', 'state', ${newVal}, 'bool', '{}', CURRENT_TIMESTAMP)`
+       VALUES (?, ?, 'state', ?, 'bool', '{}', CURRENT_TIMESTAMP)`,
+      seq.toString(), ieee_addr, newVal
     );
   }
 
@@ -401,37 +414,30 @@ export async function toggleDemoDevice(ieee_addr: string, state: 'ON' | 'OFF'): 
 
 async function generateTelemetry(): Promise<void> {
   const now = new Date().toISOString();
-  const batch: string[] = [];
+  const rows: Array<[string, string, string, number, string, string, string]> = [];
 
   for (const device of DEMO_DEVICES) {
     for (const prop of device.properties) {
-      // Skip boolean state/contact — these are events, not metrics
       if (prop.property === 'contact') continue;
       if (prop.property === 'state') continue;
 
-      // Update value with smooth random walk
       const step = (Math.random() - 0.5) * (prop.max - prop.min) * 0.05;
       prop.current += step;
 
-      // Bounce off bounds
       if (prop.current >= prop.max) { prop.current = prop.max - 0.1; prop.direction = -1; }
       if (prop.current <= prop.min) { prop.current = prop.min + 0.1; prop.direction = 1; }
 
-      // Add some noise
       prop.current += (Math.random() - 0.5) * 0.15;
       prop.current = +prop.current.toFixed(2);
 
-      // Special: motion sensor occasionally triggers
       if (prop.property === 'occupancy') {
         prop.current = Math.random() < 0.15 ? 1 : 0;
       }
 
-      // Special: water leak always 0 (safe)
       if (prop.property === 'water_leak') {
         prop.current = 0;
       }
 
-      // Special: illuminance follows day cycle (approximate, UTC+8)
       const hourUTC = new Date().getUTCHours();
       const localHour = (hourUTC + 8) % 24;
       if (prop.property === 'illuminance') {
@@ -441,17 +447,20 @@ async function generateTelemetry(): Promise<void> {
       }
 
       const seq = _telemetrySeq++;
-      batch.push(
-        `(${seq}, '${device.ieee_addr}', '${prop.property}', ${prop.current}, '${prop.unit}', '{}', '${now}')`
-      );
+      rows.push([seq.toString(), device.ieee_addr, prop.property, prop.current, prop.unit, '{}', now]);
     }
   }
 
-  // Bulk insert for performance
-  if (batch.length > 0) {
+  // Bulk insert — параметризованный (было: сборка строки через интерполяцию;
+  // данные здесь не пользовательские, но параметризация дешёвая и убирает
+  // соблазн скопировать этот паттерн в контекст, где вход внешний).
+  if (rows.length > 0) {
     try {
+      const placeholders = rows.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const flatParams = rows.flat();
       await query(
-        `INSERT INTO telemetry (id, device_ieee, property, value, unit, raw_json, ts) VALUES ${batch.join(', ')}`
+        `INSERT INTO telemetry (id, device_ieee, property, value, unit, raw_json, ts) VALUES ${placeholders}`,
+        ...flatParams
       );
     } catch {
       // Ignore insert errors (e.g. if sequence collides)
@@ -474,7 +483,21 @@ async function generateTelemetry(): Promise<void> {
     await evaluateTelemetry(ieee, props).catch(() => {});
   }
 
-  // Apply scenario-driven commands to demo device state by checking scenario_executions
+  // Apply scenario-driven commands to demo device state by checking scenario_executions.
+  //
+  // НАХОДКА (архитектурная, для сведения — не исправлял без обсуждения):
+  // это ВТОРОЙ, независимый механизм применения действий сценария к демо-
+  // устройствам, отдельный от executeActions()/publishCommand() (Модуль 3).
+  // Он существует, видимо, потому что publishCommand() не может ничего
+  // "включить" для демо-устройств — они не подключены к реальному MQTT.
+  // Побочный эффект после фикса Модуля 3: executeMqttAction теперь честно
+  // логирует ошибку "MQTT not connected" при каждом срабатывании демо-сценария
+  // (т.к. в демо-режиме MQTT-клиент реально не подключен) — сама демо-логика
+  // при этом продолжает работать через этот отдельный путь ниже, ошибка не
+  // мешает функциональности, но будет шуметь в логах/errors во время демо.
+  // Если это нежелательно — можно проверять isDemoMode() в executeMqttAction
+  // и не логировать ошибку в этом случае, но это отдельное решение, не стал
+  // принимать его в одностороннем порядке.
   const recentExecs = await query(
     `SELECT se.*, s.name as scenario_name, s.actions_json FROM scenario_executions se
      JOIN scenarios s ON s.id = se.scenario_id
@@ -509,7 +532,8 @@ async function generateTelemetry(): Promise<void> {
       const seq = _telemetrySeq++;
       await query(
         `INSERT INTO telemetry (id, device_ieee, property, value, unit, raw_json, ts)
-         VALUES (${seq}, 'demo:kitchen_fan', 'state', ${stateProp.current}, 'bool', '{}', '${now}')`
+         VALUES (?, 'demo:kitchen_fan', 'state', ?, 'bool', '{}', ?)`,
+        seq.toString(), stateProp.current, now
       );
     }
   }

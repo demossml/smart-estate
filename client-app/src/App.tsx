@@ -10,6 +10,7 @@ import DeviceDetailSheet from "./components/DeviceDetailSheet";
 import AssignDiscoveredModal from "./components/AssignDiscoveredModal";
 import { StatusStrip, FavoritesGrid, RunningNow, ROOM_ICONS } from "./components/HomeWidgets";
 import ManageTab, { classifyVoiceCommand } from "./components/ManageTab";
+import { useMode } from './hooks/useMode';
 
 // ── CSRF ──
 let csrfToken = '';
@@ -23,11 +24,21 @@ async function initCSRF() {
 initCSRF();
 
 async function apiSimple(path: string, options?: RequestInit) {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-API-Key': localStorage.getItem('apiKey') || '',
+  };
   const method = options?.method || 'GET';
   if (csrfToken && (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE')) headers['X-CSRF-Token'] = csrfToken;
   const res = await fetch(`/api${path}`, { headers, ...options });
-  if (!res.ok) throw new Error(`API ${res.status}: ${await res.text().catch(() => '')}`);
+  if (!res.ok) {
+    let msg = `API ${res.status}`;
+    try {
+      const body = await res.clone().json();
+      if (body?.error) msg = body.error;
+    } catch { /* тело не JSON */ }
+    throw new Error(msg);
+  }
   return res.json();
 }
 const api = apiSimple;
@@ -96,7 +107,7 @@ export default function SmartEstateApp() {
   const [showAddRoom, setShowAddRoom] = useState(false);
   const [presetRoomId, setPresetRoomId] = useState<number | null>(null);
   const [detailDevice, setDetailDevice] = useState<any>(null);
-  const [mode, setMode] = useState("live");
+  const { mode, toggle: toggleMode, loading: modeLoading } = useMode();
 
   // discovery state
   const [discovering, setDiscovering] = useState(false);
@@ -519,7 +530,7 @@ export default function SmartEstateApp() {
             <div className="se-logo">УМНАЯ УСАДЬБА</div>
             <div className="se-logo-sub">SmartEstate · {roomsWithDevices.length} комнат · {devices.length} устройств</div>
           </div>
-          <button className="se-mode-pill" onClick={() => setMode((m) => (m === "live" ? "demo" : "live"))}>
+          <button className="se-mode-pill" onClick={async () => { await toggleMode(); await loadData(); }} disabled={modeLoading}>
             <span className={"se-mode-dot" + (mode === "live" ? " se-mode-dot--live" : "")} />
             {mode === "live" ? "Live" : "Demo"}
           </button>
