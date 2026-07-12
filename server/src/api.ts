@@ -132,13 +132,17 @@ app.use((req, res, next) => {
   }
   next();
 });
-
-// Auth: API_KEYS обязателен всегда, если явно не включён небезопасный dev-режим.
-// Раньше проверка срабатывала только при NODE_ENV=production — легко забываемая
-// переменная при деплое через systemd/docker. Теперь проверка безусловна.
+// ── Auth: API_KEYS + CSRF обязательны ──────────────────────────────────
+// API_KEYS обязателен всегда, кроме явного ALLOW_INSECURE_DEV=1 (Модуль 1)
 if (!process.env.API_KEYS && process.env.ALLOW_INSECURE_DEV !== '1') {
   console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: переменная API_KEYS обязательна. ' +
     'Для локальной разработки без ключей явно установите ALLOW_INSECURE_DEV=1.');
+  process.exit(1);
+}
+// CSRF_SECRET — зеркальное правило (Модуль 8, Вариант А)
+if (!process.env.CSRF_SECRET && process.env.ALLOW_INSECURE_DEV !== '1') {
+  console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: переменная CSRF_SECRET обязательна. ' +
+    'Для локальной разработки без CSRF явно установите ALLOW_INSECURE_DEV=1.');
   process.exit(1);
 }
 let authLogged = false;
