@@ -113,6 +113,82 @@ function demoFilter(alias: string): string {
   return `(${alias}.is_demo IS NULL OR ${alias}.is_demo = 0)`;
 }
 
+// ── Разбиение time-условия на schedule_json (Этап 2) ────
+//
+// scenario-codec.ts (фронтенд) кладёт условие "по времени" ПРЯМО внутрь
+// массива conditions в triggers_json: {type:'schedule', kind, offset_minutes,
+// time, cron}. TriggerCondition на бэкенде (triggers.ts) такую структуру
+// не понимает вообще (ждёт {device, property, operator, value}) — она
+// нужна scheduler.ts, который читает ОТДЕЛЬНУЮ колонку schedule_json.
+// Эта функция достаёт condition с type:'schedule' (если есть, максимум одно)
+// из triggers_json, конвертирует в формат ScheduleConfig из scheduler.ts,
+// возвращает раздельно triggers_json (без schedule-условия) и schedule_json.
+
+interface SplitResult {
+  triggers_json: string;
+  schedule_json: string | null;
+  error?: string;
+}
+
+function timeStrToCron(timeStr: string | undefined): string | null {
+  if (!timeStr) return null;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(timeStr.trim());
+  if (!m) return null;
+  const hour = parseInt(m[1], 10), minute = parseInt(m[2], 10);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return `${minute} ${hour} * * *`;
+}
+
+function splitScheduleFromTriggers(rawTriggersJson: string): SplitResult {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(rawTriggersJson);
+  } catch {
+    return { triggers_json: rawTriggersJson, schedule_json: null, error: 'triggers_json не является валидным JSON' };
+  }
+  if (!parsed || !Array.isArray(parsed.conditions)) {
+    // Пустой/старый формат — ничего не разбиваем, пусть обычная валидация ниже разберётся
+    return { triggers_json: rawTriggersJson, schedule_json: null };
+  }
+
+  const scheduleConds = parsed.conditions.filter((c: any) => c?.type === 'schedule');
+  const otherConds = parsed.conditions.filter((c: any) => c?.type !== 'schedule');
+
+  if (scheduleConds.length === 0) {
+    return { triggers_json: rawTriggersJson, schedule_json: null };
+  }
+  if (scheduleConds.length > 1) {
+    return { triggers_json: rawTriggersJson, schedule_json: null, error: 'В сценарии разрешено не более одного условия по времени' };
+  }
+
+  const sc = scheduleConds[0];
+  let scheduleConfig: any;
+  switch (sc.kind) {
+    case 'sunset':
+      scheduleConfig = { type: 'sunset', offset_minutes: sc.offset_minutes || 0 };
+      break;
+    case 'sunrise':
+      scheduleConfig = { type: 'sunrise', offset_minutes: sc.offset_minutes || 0 };
+      break;
+    case 'cron':
+      if (!sc.cron) return { triggers_json: rawTriggersJson, schedule_json: null, error: 'Условие типа cron требует поле cron' };
+      scheduleConfig = { type: 'cron', value: sc.cron };
+      break;
+    case 'time': {
+      const cronExpr = timeStrToCron(sc.time);
+      if (!cronExpr) return { triggers_json: rawTriggersJson, schedule_json: null, error: `Некорректное время "${sc.time}", ожидается формат ЧЧ:ММ` };
+      scheduleConfig = { type: 'cron', value: cronExpr };
+      break;
+    }
+    default:
+      return { triggers_json: rawTriggersJson, schedule_json: null, error: `Неизвестный тип условия времени: "${sc.kind}"` };
+  }
+
+  const triggers_json = JSON.stringify({ logic: parsed.logic || 'ANY', conditions: otherConds });
+  const schedule_json = JSON.stringify(scheduleConfig);
+  return { triggers_json, schedule_json };
+}
+
 // CSRF middleware: проверка только на мутациях
 app.use((req, res, next) => {
   // GET/HEAD/voice — безопасные методы
@@ -1259,10 +1335,23 @@ app.post('/api/scenarios/:id/toggle', commandLimiter, async (req, res) => {
 // ── POST /api/scenarios ─────────────────────────────────
 app.post('/api/scenarios', async (req, res) => {
   try {
-    const { name, description, triggers_json, actions_json, schedule_json, active } = req.body;
-    if (!name || !triggers_json || !actions_json) {
+    const { name, description, triggers_json: rawTriggersJson, actions_json, schedule_json: explicitScheduleJson, active } = req.body;
+    if (!name || !rawTriggersJson || !actions_json) {
       return res.status(400).json({ ok: false, error: 'name, triggers_json, actions_json required' });
     }
+
+    // Этап 2: разбираем time-условие (если есть) в schedule_json ДО обычной
+    // валидации — иначе parseTriggers() отклонит structure {type:'schedule',...}
+    // как невалидную (она и правда невалидна для triggers_json, но валидна
+    // после переноса в schedule_json).
+    const split = splitScheduleFromTriggers(rawTriggersJson);
+    if (split.error) {
+      return res.status(400).json({ ok: false, error: split.error });
+    }
+    const triggers_json = split.triggers_json;
+    // Явно переданный schedule_json (на будущее, если понадобится) имеет
+    // приоритет над автоматически извлечённым из triggers_json.
+    const schedule_json = explicitScheduleJson || split.schedule_json;
 
     // Валидация: проверяем, что triggers_json и actions_json парсятся в ожидаемую
     // структуру. Раньше невалидный JSON тихо сохранялся — сценарий молча
@@ -1312,12 +1401,25 @@ app.put('/api/scenarios/:id', async (req, res) => {
     if (name !== undefined) { updates.push('name = ?'); params.push(name); }
     if (description !== undefined) { updates.push('description = ?'); params.push(description); }
     if (triggers_json !== undefined) {
-      // Валидация на обновление (Модуль 7, Находка 3)
-      const parsedTriggers = parseTriggers(triggers_json);
+      // Этап 2: та же логика разбиения time-условия, что в POST.
+      const split = splitScheduleFromTriggers(triggers_json);
+      if (split.error) {
+        return res.status(400).json({ ok: false, error: split.error });
+      }
+      const parsedTriggers = parseTriggers(split.triggers_json);
       if (!parsedTriggers) {
         return res.status(400).json({ ok: false, error: 'triggers_json невалиден (не парсится в ожидаемую структуру)' });
       }
-      updates.push('triggers_json = ?'); params.push(triggers_json);
+      updates.push('triggers_json = ?'); params.push(split.triggers_json);
+      // Если в присланных условиях нашлось time-условие — обновляем и
+      // schedule_json тоже, даже если клиент явно его не передавал.
+      if (split.schedule_json && schedule_json === undefined) {
+        updates.push('schedule_json = ?'); params.push(split.schedule_json);
+      } else if (split.schedule_json === null && schedule_json === undefined && existing[0].schedule_json) {
+        // Если пользователь убрал time-условие — затираем старый schedule_json,
+        // чтобы сценарий не продолжал срабатывать по старому расписанию.
+        updates.push('schedule_json = NULL');
+      }
     }
     if (actions_json !== undefined) {
       const parsedActions = parseActions(actions_json);

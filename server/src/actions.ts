@@ -4,11 +4,14 @@ import logger from './logger';
 
 // Action types
 export interface ScenarioAction {
-  type: 'mqtt' | 'notify';
+  type: 'mqtt' | 'notify' | 'group';
   device?: string;
   command?: string;
   payload?: any;
   message?: string;
+  // Поля для type: 'group' (Этап 2 — реализация group-действий из scenario-codec.ts)
+  room_id?: number;
+  device_type?: string;
 }
 
 
@@ -20,6 +23,8 @@ export async function executeAction(action: ScenarioAction, scenarioName: string
       return executeMqttAction(action, scenarioName);
     case 'notify':
       return executeNotifyAction(action, scenarioName);
+    case 'group':
+      return executeGroupAction(action, scenarioName);
     default:
       logger.warn("[ACTIONS] ", `⚠️ Unknown action type: ${(action as any).type}`);
       return false;
@@ -131,6 +136,65 @@ async function executeMqttAction(action: ScenarioAction, scenarioName: string): 
   return allOk;
 }
 
+// ── Group Action (Этап 2) ────────────────────────────────
+//
+// Реализация group-действий из scenario-codec.ts: {type:'group', room_id,
+// device_type, command} → резолвим ВСЕ устройства указанного типа в
+// указанной комнате, отправляем команду каждому через тот же паттерн, что
+// executeMqttAction (log + publishCommand + обновление статуса).
+async function executeGroupAction(action: ScenarioAction, scenarioName: string): Promise<boolean> {
+  if (action.room_id == null || !action.device_type || !action.command) {
+    logErrorWithLog(null, 'scenario_action_error',
+      'Group-действие требует room_id, device_type и command', scenarioName);
+    return false;
+  }
+
+  let members: { ieee_addr: string }[];
+  try {
+    members = await query(
+      `SELECT ieee_addr FROM devices WHERE room_id = ? AND type = ?`,
+      action.room_id, action.device_type
+    );
+  } catch (e: any) {
+    logErrorWithLog(null, 'scenario_action_error', e.message, scenarioName);
+    return false;
+  }
+
+  if (members.length === 0) {
+    // Та же философия, что и resolveActionTargets выше: явная ошибка вместо
+    // тихого "успеха", если ни одного подходящего устройства не нашлось —
+    // сценарий может быть настроен на комнату/тип, где устройств больше нет
+    // (переехали, удалили, переименовали тип).
+    logErrorWithLog(null, 'scenario_action_error',
+      `Нет устройств типа "${action.device_type}" в комнате #${action.room_id} — команда не отправлена`, scenarioName);
+    return false;
+  }
+
+  let allOk = true;
+  for (const { ieee_addr } of members) {
+    const cmdId = logCommand(ieee_addr, action.command, '{}', 'scenario_group');
+    const sent = publishCommand(ieee_addr, action.command);
+
+    if (sent) {
+      logStateChange(ieee_addr, '?', action.command, `scenario:${scenarioName}`);
+      await query(
+        `UPDATE commands SET status = 'success', completed_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        cmdId
+      ).catch(() => {});
+      logger.log("[ACTIONS] ", `🎬 [${scenarioName}] группа → ${ieee_addr}: ${action.command}`);
+    } else {
+      allOk = false;
+      await query(
+        `UPDATE commands SET status = 'error', error_msg = 'MQTT not connected', completed_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        cmdId
+      ).catch(() => {});
+      logErrorWithLog(ieee_addr, 'scenario_action_error', 'publishCommand вернул false (MQTT не подключен?)', scenarioName);
+    }
+  }
+
+  return allOk;
+}
+
 async function executeNotifyAction(action: ScenarioAction, scenarioName: string): Promise<boolean> {
   if (!action.message) {
     logErrorWithLog(null, 'scenario_action_error', 'Missing message', scenarioName);
@@ -183,7 +247,7 @@ export function parseActions(json: string): ScenarioAction[] | null {
     const parsed = JSON.parse(json);
     if (!Array.isArray(parsed)) return null;
     for (const a of parsed) {
-      if (!a.type || !['mqtt', 'notify'].includes(a.type)) return null;
+      if (!a.type || !['mqtt', 'notify', 'group'].includes(a.type)) return null;
     }
     return parsed as ScenarioAction[];
   } catch {
