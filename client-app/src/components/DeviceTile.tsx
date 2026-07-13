@@ -12,6 +12,16 @@ export const DEVICE_TYPES: Record<string, { label: string; category: string; ico
   light: { label: "Освещение", category: "light", icon: Lightbulb },
   plug: { label: "Розетка", category: "plug", icon: PlugIcon },
   gate_controller: { label: "Ворота", category: "gate", icon: DoorClosed },
+  // НАХОДКА (Модуль 8): реальный бэкенд-классификатор (mapZ2MTypeToInternal
+  // в mqtt-ws.ts), demo.ts и SQL-фильтр GET /api/gates (WHERE type IN
+  // ('gate','lock')) — все используют строку 'gate', не 'gate_controller'.
+  // Только этот файл (DEVICE_TYPES) использовал 'gate_controller' — а он
+  // используется практически везде (RoomCard, HomeWidgets/избранное,
+  // AddDeviceModal, AssignDiscoveredModal, DeviceDetailSheet, ManageTab).
+  // Без этого алиаса реальные ворота отображались бы без иконки/лейбла
+  // почти во всём приложении. lib/icon-map.ts уже содержал 'gate' как
+  // "старый тип (поддержка обратной совместимости)" — здесь та же логика.
+  gate: { label: "Ворота", category: "gate", icon: DoorClosed },
   climate: { label: "Кондиционер", category: "climate", icon: Thermometer },
 };
 
@@ -52,6 +62,7 @@ export function defaultFieldsFor(type: string): Record<string, any> {
     case "plug":
       return { state: false, ratedPower: 340, energy: 2.1, current: 1.4, linkquality: 91 };
     case "gate_controller":
+    case "gate":
       return { state: "closed", linkquality: 74 };
     case "climate":
       return { state: false, targetTemp: 22, currentTemp: 23.4, mode: "cool", linkquality: 89 };
@@ -73,7 +84,7 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
   const meta = DEVICE_TYPES[device.type];
   if (!meta) return null;
   const Icon = meta.icon;
-  const interactive = ["light", "plug", "gate_controller", "climate"].includes(device.type);
+  const interactive = ["light", "plug", "gate_controller", "gate", "climate"].includes(device.type);
 
   return (
     <div className={"se-tile" + (interactive ? " se-tile--interactive" : "")} onClick={() => onOpenDetail?.(device)} role="button">
@@ -82,8 +93,8 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
         <div className="se-tile-name">{device.name}</div>
         {interactive && device.type !== "climate" && (
           <button
-            className={"se-switch" + ((device.type === "gate_controller" ? device.state === "open" : device.state) ? " se-switch--on" : "")}
-            onClick={(e) => { e.stopPropagation(); onToggle?.(device.id, device.type === "gate_controller" ? (device.state === "open" ? "closed" : "open") : undefined); }}
+            className={"se-switch" + (((device.type === "gate_controller" || device.type === "gate") ? device.state === "open" : device.state) ? " se-switch--on" : "")}
+            onClick={(e) => { e.stopPropagation(); onToggle?.(device.id, (device.type === "gate_controller" || device.type === "gate") ? (device.state === "open" ? "closed" : "open") : undefined); }}
             aria-label="переключить"
           >
             <span className="se-switch-knob" />
@@ -142,7 +153,7 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
           </div>
         ) : null}
 
-        {device.type === "gate_controller" ? (
+        {device.type === "gate_controller" || device.type === "gate" ? (
           <span className={"se-badge" + (device.state === "open" ? " se-badge--alert" : " se-badge--ok")}>
             {device.state === "open" ? "Открыты" : "Закрыты"}
           </span>

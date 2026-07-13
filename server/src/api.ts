@@ -1552,40 +1552,38 @@ app.post('/api/groups/:id/remove-device', commandLimiter, async (req, res) => {
   }
 });
 
-// POST /api/groups/:id/all-on — включить всю группу
+// POST /api/groups/:id/all-on — включить всю группу (Модуль 7)
 app.post('/api/groups/:id/all-on', commandLimiter, async (req, res) => {
   try {
     const members = await query(
       'SELECT device_ieee FROM device_group_members WHERE group_id = ?', req.params.id
     );
     let fired = 0;
+    let failed = 0;
     for (const m of members) {
-      const cmdId = logCommand(m.device_ieee, 'ON', '{}', 'group_command');
-      await query("UPDATE commands SET status='success',completed_at=CURRENT_TIMESTAMP WHERE id=?", cmdId);
-      logStateChange(m.device_ieee, 'OFF', 'ON', `group:${req.params.id}`);
-      fired++;
+      const result = await sendDeviceCommandAsync(m.device_ieee, 'ON', `group:${req.params.id}`, 'OFF', 'ON');
+      if (result.ok) fired++; else failed++;
     }
-    res.json({ ok: true, group_id: req.params.id, devices_controlled: fired });
+    res.json({ ok: true, group_id: req.params.id, devices_controlled: fired, devices_failed: failed });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'group_all_on');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// POST /api/groups/:id/all-off
+// POST /api/groups/:id/all-off (Модуль 7)
 app.post('/api/groups/:id/all-off', commandLimiter, async (req, res) => {
   try {
     const members = await query(
       'SELECT device_ieee FROM device_group_members WHERE group_id = ?', req.params.id
     );
     let fired = 0;
+    let failed = 0;
     for (const m of members) {
-      const cmdId = logCommand(m.device_ieee, 'OFF', '{}', 'group_command');
-      await query("UPDATE commands SET status='success',completed_at=CURRENT_TIMESTAMP WHERE id=?", cmdId);
-      logStateChange(m.device_ieee, 'ON', 'OFF', `group:${req.params.id}`);
-      fired++;
+      const result = await sendDeviceCommandAsync(m.device_ieee, 'OFF', `group:${req.params.id}`, 'ON', 'OFF');
+      if (result.ok) fired++; else failed++;
     }
-    res.json({ ok: true, group_id: req.params.id, devices_controlled: fired });
+    res.json({ ok: true, group_id: req.params.id, devices_controlled: fired, devices_failed: failed });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'group_all_off');
     res.status(500).json({ ok: false, error: e.message });

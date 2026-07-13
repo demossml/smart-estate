@@ -305,14 +305,20 @@ export default function SmartEstateApp() {
     } catch (e: any) { console.error('Remove from room error:', e); }
   }, [loadData]);
 
-  // ── Add device to room (RoomDevicesManager) ──
-  const addDeviceToRoom = useCallback(async ({ type, name, params }: { type: string; name: string; params: Record<string, any> }) => {
+  // ── Add device to room (RoomDevicesManager) — Модуль 8, Находка 24 ──
+  const addDeviceToRoom = useCallback(async ({ type, name, roomId }: { type: string; name: string; params: Record<string, any>; roomId?: string | number }) => {
     try {
-      // Find first room or let user pick — for now use a temporary flow
-      // The actual API call happens in the modal flow (reusing confirmAddDevice)
-      setPresetRoomId(null);
-    } catch (e: any) { console.error('Add device error:', e); }
-  }, []);
+      const ieee_addr = `manual:${Date.now()}`;
+      await api('/devices', {
+        method: 'POST',
+        body: JSON.stringify({ ieee_addr, friendly_name: name, type, room_id: roomId || null }),
+      });
+      await loadData();
+    } catch (e: any) {
+      alert('Ошибка при добавлении устройства: ' + (e.message || 'неизвестная ошибка'));
+      console.error('Add device to room error:', e);
+    }
+  }, [loadData]);
   const deleteRoom = useCallback(async (id: string) => {
     try { await api(`/rooms/${id}`, { method: 'DELETE' }); await loadData(); }
     catch (e: any) { console.error('Delete room error:', e); }

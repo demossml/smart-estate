@@ -61,6 +61,16 @@ const PARAM_SCHEMAS: Record<string, { label: string; params: any[] }> = {
       { key: "autoCloseDelayMin", label: "Задержка автозакрытия", control: "slider", min: 1, max: 30, step: 1, unit: "мин", default: 5 },
     ],
   },
+  // НАХОДКА (Модуль 8): вторая копия "gate" для обратной совместимости
+  // (бэкенд использует 'gate', а не 'gate_controller'; через alias
+  // ворота не теряют настройки "Автозакрытие"/"Задержка автозакрытия")
+  gate: {
+    label: "Ворота",
+    params: [
+      { key: "autoClose", label: "Автозакрытие", control: "toggle", default: true },
+      { key: "autoCloseDelayMin", label: "Задержка автозакрытия", control: "slider", min: 1, max: 30, step: 1, unit: "мин", default: 5 },
+    ],
+  },
 
   climate: {
     label: "Кондиционер",
@@ -272,7 +282,7 @@ export default function RoomDevicesManager({ room, devices, onAddDevice, onSaveP
         <AddDeviceSheet
           onClose={() => setShowAdd(false)}
           onAdd={(type, name) => {
-            onAddDevice({ type, name, params: defaultParamsFor(type) });
+            onAddDevice({ type, name, params: defaultParamsFor(type), roomId: room.id });
             setShowAdd(false);
           }}
         />

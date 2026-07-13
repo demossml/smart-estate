@@ -13,7 +13,7 @@ const AI_PROVIDERS_LIST = [
   { id: "ollama", name: "Ollama (локально)", needsBaseUrl: true, models: ["своя локальная модель"] },
 ];
 
-/* ---- Voice NLU classifier (as in reference) ---- */
+/* ---- Voice NLU classifier ---- */
 const VERB_ON = ["включи", "включить", "запусти", "открой", "открыть"];
 const VERB_OFF = ["выключи", "выключить", "останови", "закрой", "закрыть"];
 
@@ -24,11 +24,11 @@ export function classifyVoiceCommand(text: string, devices: any[]): any {
   const hasOn = VERB_ON.some((v) => t.includes(v));
   const hasOff = VERB_OFF.some((v) => t.includes(v));
 
-  if (device && (hasOn || hasOff) && ["light", "plug", "gate_controller", "climate"].includes(device.type)) {
+  if (device && (hasOn || hasOff) && ["light", "plug", "gate_controller", "gate", "climate"].includes(device.type)) {
     return {
       handled: true,
       deviceId: device.id,
-      newState: device.type === "gate_controller" ? (hasOn ? "open" : "closed") : hasOn,
+      newState: (device.type === "gate_controller" || device.type === "gate") ? (hasOn ? "open" : "closed") : hasOn,
       resultText: `Выполнено локально по grammar-интенту NLU (без AI): «${device.name}» → ${hasOn ? "включено" : "выключено"}.`,
     };
   }
@@ -76,7 +76,6 @@ interface VoiceState {
   onDismissSuggestion: (id: string) => void;
   briefing: string;
 }
-
 interface ManageTabProps {
   rooms: any[];
   devices: any[];
