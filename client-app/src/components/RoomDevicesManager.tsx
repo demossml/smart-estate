@@ -61,9 +61,11 @@ const PARAM_SCHEMAS: Record<string, { label: string; params: any[] }> = {
       { key: "autoCloseDelayMin", label: "Задержка автозакрытия", control: "slider", min: 1, max: 30, step: 1, unit: "мин", default: 5 },
     ],
   },
-  // НАХОДКА (Модуль 8): вторая копия "gate" для обратной совместимости
-  // (бэкенд использует 'gate', а не 'gate_controller'; через alias
-  // ворота не теряют настройки "Автозакрытие"/"Задержка автозакрытия")
+  // НАХОДКА (Модуль 8, Находка 22 продолжается): та же проблема, что в
+  // DeviceTile.tsx — реальный бэкенд-классификатор/demo.ts/API используют
+  // 'gate', не 'gate_controller'. Без алиаса реальные ворота получали бы
+  // пустую схему параметров (без "Автозакрытие"), хотя явно для этого
+  // спроектированы.
   gate: {
     label: "Ворота",
     params: [
@@ -88,7 +90,6 @@ const PARAM_SCHEMAS: Record<string, { label: string; params: any[] }> = {
 };
 
 export { PARAM_SCHEMAS };
-
 function defaultParamsFor(type: string): Record<string, any> {
   const schema = PARAM_SCHEMAS[type];
   if (!schema) return {};
@@ -241,7 +242,7 @@ function DeviceRow({ device, onOpenConfig }: DeviceRowProps) {
 interface RoomDevicesManagerProps {
   room: any;
   devices: any[];
-  onAddDevice: (device: { type: string; name: string; params: Record<string, any> }) => void;
+  onAddDevice: (device: { type: string; name: string; params: Record<string, any>; roomId: string | number }) => void;
   onSaveParams: (id: string, params: Record<string, any>) => void;
   onRemoveFromRoom: (id: string) => void;
   onDeleteDevice: (id: string) => void;
@@ -282,6 +283,9 @@ export default function RoomDevicesManager({ room, devices, onAddDevice, onSaveP
         <AddDeviceSheet
           onClose={() => setShowAdd(false)}
           onAdd={(type, name) => {
+            // НАХОДКА: раньше room.id вообще не передавался дальше — App.tsx
+            // не мог узнать, в какую комнату добавляется устройство, даже
+            // если бы сам вызов API был реализован.
             onAddDevice({ type, name, params: defaultParamsFor(type), roomId: room.id });
             setShowAdd(false);
           }}
@@ -297,7 +301,6 @@ interface AddDeviceSheetProps {
   onClose: () => void;
   onAdd: (type: string, name: string) => void;
 }
-
 function AddDeviceSheet({ onClose, onAdd }: AddDeviceSheetProps) {
   const [type, setType] = useState<string | null>(null);
   const [name, setName] = useState("");
