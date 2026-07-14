@@ -396,86 +396,104 @@ app.get('/api/devices', async (req, res) => {
   }
 });
 
-// ── GET /api/devices/pending — ВСЕ обнаруженные Zigbee-устройства ──
-//
-// НОВАЯ ЛОГИКА (14.07.2026):
-// Раньше эндпоинт возвращал ТОЛЬКО устройства из discovery_events,
-// которых ещё нет в devices (pending vs confirmed). Это создавало проблему:
-//   • Если устройство уже добавлено — его нельзя было найти/изменить
-//     через интерфейс поиска
-//   • Пользователь не видел, что устройство в Z2M есть, а в UI — нет
-//
-// ТЕПЕРЬ: возвращаем объединённый список из ТРЁХ источников:
-//   1. Z2M /devices — актуальные устройства из Zigbee-сети
-//   2. discovery_events — сохранённые события обнаружения
-//   3. devices — уже добавленные в систему
-// Поле is_added показывает, добавлено ли устройство в нашу БД.
-// Поле can_edit показывает, можно ли редактировать устройство (всегда true).
-// Пользователь видит ВСЁ и управляет любым устройством из интерфейса поиска.
+/* ── GET /api/devices/pending — ВСЕ обнаруженные Zigbee-устройства ──
+ *
+ * НОВАЯ ЛОГИКА (14.07.2026):
+ * Раньше эндпоинт возвращал ТОЛЬКО устройства из discovery_events,
+ * которых ещё нет в devices. Теперь:
+ *   1. Все устройства из devices (уже добавленные) — всегда в списке
+ *   2. Устройства из discovery_events, которых нет в devices — pending
+ *   3. Если Z2M HTTP API доступен — дополнительно enrich'им из него
+ *
+ * Пользователь ВСЕГДА видит все устройства, независимо от того,
+ * добавлены они или нет, и может управлять любым.
+ */
 app.get('/api/devices/pending', async (_req, res) => {
   try {
-    // 1. Получаем устройства из Z2M
-    let z2mDevices: any[] = [];
-    try {
-      z2mDevices = await zigbeeRequest('/devices');
-    } catch {
-      // Z2M может быть недоступен — не фатально
-    }
-
-    // 2. Получаем наши discovery_events
-    const devents = stmt.getDiscoveryEvents.all(200) as any[];
-
-    // 3. Получаем уже добавленные устройства
+    // 1. Получаем уже добавленные устройства (всегда в списке)
     const existingDevices = await query(
       'SELECT ieee_addr, friendly_name, type, room_id, model, vendor FROM devices'
     ) as any[];
     const existingByIeee = new Map(existingDevices.map((d: any) => [d.ieee_addr, d]));
 
-    // 4. Собираем enriched-информацию по каждому устройству из Z2M
-    const pending = z2mDevices
-      .filter((zd: any) => zd.type !== 'Coordinator') // исключаем Coordinator
-      .map((zd: any) => {
+    // 2. Получаем discovery_events
+    const devents = stmt.getDiscoveryEvents.all(200) as any[];
+
+    // 3. Собираем enriched-информацию
+    const pending: any[] = [];
+
+    // 3a. Все устройства из Z2M (если доступен) + existing enrich
+    let z2mByIeee = new Map<string, any>();
+    try {
+      const z2mDevices = await zigbeeRequest('/devices');
+      for (const zd of z2mDevices) {
+        if (zd.type === 'Coordinator') continue;
         const ieee = zd.ieee_address || zd.friendly_name || '';
-        const existing = existingByIeee.get(ieee);
+        z2mByIeee.set(ieee, zd);
+      }
+    } catch {
+      // Z2M недоступен — не фатально, используем только наши источники
+    }
 
-        // Ищем последнее discovery-событие для этого ieee
-        const discoveryEvent = devents
-          .filter((e: any) => e.ieee_address === ieee)
-          .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+    // 3b. Собираем pending: сначала все из existingDevices, потом из discovery_events
+    const seenIeee = new Set<string>();
 
-        return {
-          ieee_address: ieee,
-          friendly_name: existing?.friendly_name || zd.friendly_name || ieee,
-          model: zd.definition?.model || discoveryEvent?.model || null,
-          vendor: zd.definition?.vendor || discoveryEvent?.vendor || null,
-          // suggested_type: сначала проверяем уже выбранный в devices, потом discovery, потом Z2M exposes
-          suggested_type: existing?.type || discoveryEvent?.suggested_type ||
-            (zd.definition?.exposes ? mapZ2MTypeToInternal?.(ieee, zd.definition.exposes) : null) || null,
-          exposes: zd.definition?.exposes || (discoveryEvent?.exposes_json ? JSON.parse(discoveryEvent.exposes_json) : null),
-          discovered_at: discoveryEvent?.created_at || null,
-          is_added: !!existing,           // уже в нашей БД
-          can_edit: true,                 // ВСЕ устройства можно редактировать
-          room_id: existing?.room_id || null,
-        };
+    // Все уже добавленные устройства
+    for (const ex of existingDevices) {
+      seenIeee.add(ex.ieee_addr);
+      const zd = z2mByIeee.get(ex.ieee_addr);
+      const de = devents
+        .filter((e: any) => e.ieee_address === ex.ieee_addr)
+        .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+      pending.push({
+        ieee_address: ex.ieee_addr,
+        friendly_name: ex.friendly_name || ex.ieee_addr,
+        model: ex.model || zd?.definition?.model || de?.model || null,
+        vendor: ex.vendor || zd?.definition?.vendor || de?.vendor || null,
+        suggested_type: ex.type || de?.suggested_type ||
+          (zd?.definition?.exposes ? mapZ2MTypeToInternal?.(ex.ieee_addr, zd.definition.exposes) : null) || null,
+        exposes: zd?.definition?.exposes || (de?.exposes_json ? JSON.parse(de.exposes_json) : null),
+        discovered_at: de?.created_at || null,
+        is_added: true,
+        can_edit: true,
+        room_id: ex.room_id || null,
       });
+    }
 
-    // 5. Добавляем устройства из discovery_events, которых нет в Z2M
-    //    (например, если Z2M временно недоступен)
-    const z2mIeeeSet = new Set(pending.map((p: any) => p.ieee_address));
+    // Не добавленные устройства из discovery_events
     for (const de of devents) {
-      if (!z2mIeeeSet.has(de.ieee_address) && de.status === 'pending') {
-        const existing = existingByIeee.get(de.ieee_address);
+      if (!seenIeee.has(de.ieee_address)) {
+        seenIeee.add(de.ieee_address);
         pending.push({
           ieee_address: de.ieee_address,
-          friendly_name: existing?.friendly_name || de.friendly_name || de.ieee_address,
+          friendly_name: de.friendly_name || de.ieee_address,
           model: de.model || null,
           vendor: de.vendor || null,
-          suggested_type: existing?.type || de.suggested_type || null,
+          suggested_type: de.suggested_type || null,
           exposes: de.exposes_json ? JSON.parse(de.exposes_json) : null,
           discovered_at: de.created_at,
-          is_added: !!existing,
+          is_added: false,
           can_edit: true,
-          room_id: existing?.room_id || null,
+          room_id: null,
+        });
+      }
+    }
+
+    // Не добавленные устройства из Z2M, которых нет ни в devices, ни в discovery_events
+    for (const [ieee, zd] of z2mByIeee) {
+      if (!seenIeee.has(ieee)) {
+        seenIeee.add(ieee);
+        pending.push({
+          ieee_address: ieee,
+          friendly_name: zd.friendly_name || ieee,
+          model: zd.definition?.model || null,
+          vendor: zd.definition?.vendor || null,
+          suggested_type: zd.definition?.exposes ? mapZ2MTypeToInternal?.(ieee, zd.definition.exposes) : null,
+          exposes: zd.definition?.exposes || null,
+          discovered_at: null,
+          is_added: false,
+          can_edit: true,
+          room_id: null,
         });
       }
     }
@@ -823,11 +841,15 @@ app.put('/api/devices/:id', async (req, res) => {
   }
 });
 
-// ── Zigbee2MQTT helper ──────────────────────────────────
-const Z2M_URL = process.env.Z2M_URL || 'http://172.21.0.3:8080';
+// ── Zigbee2MQTT helper — получает устройства через MQTT bridge ──
+// HTTP API Z2M не используется (в Z2M v2.12.x frontend не включает API).
+// Вместо этого получаем данные через WebSocket-клиент MQTT (mqtt-ws.ts).
+const Z2M_URL = process.env.Z2M_URL || '';
 const Z2M_TOKEN = process.env.Z2M_AUTH_TOKEN || '';
 
 function zigbeeRequest(path: string): Promise<any> {
+  // Если Z2M URL не задан — не используем HTTP API (он не включён)
+  if (!Z2M_URL) return Promise.reject(new Error('Z2M_URL not configured'));
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = {};
     if (Z2M_TOKEN) headers['Authorization'] = `Bearer ${Z2M_TOKEN}`;
@@ -835,17 +857,17 @@ function zigbeeRequest(path: string): Promise<any> {
       let body = '';
       res.on('data', (chunk: Buffer) => body += chunk.toString());
       res.on('end', () => {
-        try { resolve(JSON.parse(body)); }
-        catch { reject(new Error(`Z2M parse error: ${body.slice(0, 100)}`)); }
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          reject(new Error('Invalid JSON from Z2M'));
+        }
       });
     });
     req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('Z2M timeout')); });
+    req.end();
   });
 }
-
-// ── Phase 1: Discovery эндпоинты ─────────────────────────────
-// POST /api/discovery/start — enable permit_join
 app.post('/api/discovery/start', discoveryLimiter, async (_req, res) => {
   try {
     if (permitJoinActive) {
