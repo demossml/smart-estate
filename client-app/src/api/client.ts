@@ -61,6 +61,8 @@ export function setOnline(state: boolean) {
 }
 
 export function getOnline() {
+  return isOnline;
+}
 
 /**
  * НАХОДКА: раньше `if (!res.ok) throw new Error(...)` использовал только
@@ -486,4 +488,17 @@ export const api = {
   // вообще. Бэкенд уже отдаёт корректные почасовые данные.
   getEnergyTrend: () =>
     request<{ ok: boolean; trend: { hour: string; power: number }[] }>('/energy/trend'),
+
+  // ── Zigbee статус (донгл, MQTT, permit_join) ──
+  getZigbeeStatus: () =>
+    request<ZigbeeStatus>('/zigbee/status'),
 };
+
+export interface ZigbeeStatus {
+  ok: boolean;
+  mqtt_connected: boolean;
+  permit_join: boolean;
+  permit_join_time_left: number;
+  devices_total: number;
+  devices_online: number;
+}

@@ -1,5 +1,5 @@
-import React, { useMemo } from "react";
-import { Thermometer, Lightbulb, ShieldCheck, Zap, Workflow, Home, DoorOpen, Sofa, Bed, UtensilsCrossed, TreePine } from "lucide-react";
+import React from "react";
+import { Thermometer, Lightbulb, ShieldCheck, Zap, Workflow, DoorOpen, Sofa, Bed, UtensilsCrossed, TreePine } from "lucide-react";
 import DeviceTile from "./DeviceTile";
 
 /* ---- ROOM_ICONS (shared) ---- */
@@ -38,7 +38,12 @@ export function StatusStrip({ devices }: StatusStripProps) {
   const securityIssues = devices.filter(
     (d: any) => ((d.type === "window_sensor" || d.type === "door_sensor") && d.contact === "open") || (d.type === "leak_sensor" && d.leak)
   ).length;
-  const kw = devices.filter((d: any) => d.type === "plug" && d.state).reduce((s: number, p: any) => s + p.ratedPower, 0) / 1000;
+  // НАХОДКА: поле ratedPower не существует нигде — ни в типе Device, ни в
+  // маппинге api/client.ts (реальное поле называется power, telemetry.power).
+  // p.ratedPower был всегда undefined → s + undefined = NaN → виджет
+  // "Энергия" буквально показывал "NaN кВт" на главном экране, как только
+  // хотя бы одна розетка была включена.
+  const kw = devices.filter((d: any) => d.type === "plug" && d.state).reduce((s: number, p: any) => s + (p.power || 0), 0) / 1000;
 
   const items = [
     { icon: Thermometer, label: "Климат", value: `${avgTemp}°`, tone: "normal" },
@@ -91,7 +96,6 @@ interface RunningNowProps {
   scenarios: any[];
   devices: any[];
 }
-
 export function RunningNow({ scenarios, devices }: RunningNowProps) {
   const running = scenarios.filter((s: any) => s.active && SCENARIO_MATCHERS[s.condition]?.(devices));
   return (

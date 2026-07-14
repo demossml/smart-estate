@@ -28,11 +28,26 @@ async function checkConnection(key: string): Promise<{ ok: boolean; error?: stri
   }
 }
 
+async function saveKeyToServer(key: string): Promise<boolean> {
+  try {
+    const res = await fetch("/api/api-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": key },
+      body: JSON.stringify({ key_name: "x-api-key", key_value: key }),
+    });
+    const data = await res.json();
+    return data.ok === true;
+  } catch {
+    return false;
+  }
+}
+
 export default function ConnectionSettings({ onModeChanged }: { onModeChanged?: (mode: "live" | "demo") => void }) {
   const [keyInput, setKeyInput] = useState(getApiKey());
   const [showKey, setShowKey] = useState(false);
   const [status, setStatus] = useState<ConnectionStatus>("unknown");
   const [errorMsg, setErrorMsg] = useState("");
+  const [saving, setSaving] = useState(false);
   const { mode, toggle, loading: switching } = useMode();
 
   const refreshStatus = useCallback(async (key: string) => {
@@ -54,8 +69,22 @@ export default function ConnectionSettings({ onModeChanged }: { onModeChanged?: 
   }, [refreshStatus]);
 
   const handleSave = async () => {
-    setApiKey(keyInput.trim());
-    await refreshStatus(keyInput.trim());
+    const key = keyInput.trim();
+    if (!key) return;
+
+    setSaving(true);
+    // Сохраняем в localStorage для быстрой работы в сессии
+    setApiKey(key);
+
+    // Сохраняем на сервер в SQLite
+    const saved = await saveKeyToServer(key);
+    if (!saved) {
+      // Сервер сохранить не удалось, но локально ключ уже есть — пробуем подключиться
+      console.warn("API key not saved to server, using localStorage fallback");
+    }
+
+    await refreshStatus(key);
+    setSaving(false);
   };
 
   const handleToggleMode = async () => {
@@ -71,8 +100,9 @@ export default function ConnectionSettings({ onModeChanged }: { onModeChanged?: 
         устройствами. Задаётся администратором сервера (переменная API_KEYS).
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
-        <div style={{ position: "relative", flex: 1 }}>
+      {/* ── Поле ввода (над кнопкой) ── */}
+      <div style={{ marginTop: 10 }}>
+        <div style={{ position: "relative" }}>
           <input
             type={showKey ? "text" : "password"}
             value={keyInput}
@@ -92,10 +122,21 @@ export default function ConnectionSettings({ onModeChanged }: { onModeChanged?: 
             {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
           </button>
         </div>
-        <button className="se-primary-btn" onClick={handleSave} disabled={!keyInput.trim() || status === "checking"}>
-          {status === "checking" ? <Loader2 size={14} className="se-spin" /> : "Сохранить"}
+      </div>
+
+      {/* ── Кнопка сохранить (под полем) ── */}
+      <div style={{ marginTop: 8 }}>
+        <button
+          className="se-primary-btn"
+          onClick={handleSave}
+          disabled={!keyInput.trim() || status === "checking" || saving}
+          style={{ width: "100%" }}
+        >
+          {saving || status === "checking" ? <Loader2 size={14} className="se-spin" /> : null}
+          {saving ? "Сохранение..." : status === "checking" ? "Проверка..." : "Сохранить"}
         </button>
       </div>
+
       <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
         {status === "ok" && <><CircleCheck size={15} color="#5CC98A" /> <span style={{ color: "#5CC98A" }}>Подключено</span></>}
         {status === "error" && <><CircleX size={15} color="#E0665A" /> <span style={{ color: "#E0665A" }}>{errorMsg}</span></>}

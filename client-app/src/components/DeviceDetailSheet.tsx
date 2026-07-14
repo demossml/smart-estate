@@ -62,13 +62,38 @@ interface DeviceDetailSheetProps {
   onAdjustTemp: (id: string, delta: number) => void;
   onSlider: (id: string, field: string, value: number) => void;
 }
-
 export default function DeviceDetailSheet({ device, room, onClose, onToggle, onAdjustTemp, onSlider }: DeviceDetailSheetProps) {
   const meta = DEVICE_TYPES[device.type];
-  if (!meta) return null;
+  // НАХОДКА (Модуль 8): раньше при нераспознанном device.type (например,
+  // если бэкенд не смог определить тип по exposes и специально оставил
+  // null, требуя ручной настройки — см. Модуль 3) весь компонент делал
+  // return null — тап по устройству не открывал НИЧЕГО, без единой
+  // подсказки пользователю, что происходит и что делать. Теперь показываем
+  // понятное сообщение вместо тишины.
+  if (!meta) {
+    return (
+      <div className="se-modal-overlay" onClick={onClose}>
+        <div className="se-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="se-modal-head">
+            <div className="se-modal-title">{device.friendly_name || device.ieee_addr?.slice(0, 12)}</div>
+            <button className="se-icon-btn" onClick={onClose}><X size={16} strokeWidth={1.8} /></button>
+          </div>
+          <div className="se-briefing" style={{ marginTop: 4 }}>
+            Тип устройства не определён автоматически (device.type: {String(device.type) || 'не задан'}).
+            Откройте вкладку "Управление" → карточку этого устройства в списке комнаты, чтобы указать тип вручную.
+          </div>
+        </div>
+      </div>
+    );
+  }
   const Icon = meta.icon;
   const detailKey = device.type === 'motion_sensor' ? 'motion' : (device.type === 'air_monitor' ? 'air' : meta.category);
-  const interactive = ["light", "plug", "gate_controller", "climate"].includes(device.type);
+  // НАХОДКА: 'gate' добавлен к 'gate_controller' — реальный бэкенд-классификатор
+  // и demo.ts используют 'gate' (см. Находку 22), без этого добавления
+  // ворота открывались бы (иконка/лейбл теперь есть, meta не null), но
+  // кнопка открыть/закрыть не отображалась бы вообще.
+  const isGate = device.type === "gate_controller" || device.type === "gate";
+  const interactive = ["light", "plug", "gate_controller", "gate", "climate"].includes(device.type);
 
   // Для air_monitor — динамические поля из данных устройства
   const airFields = device.type === 'air_monitor' ? getActiveAirFields(device) : [];
@@ -98,8 +123,8 @@ export default function DeviceDetailSheet({ device, room, onClose, onToggle, onA
           </div>
           {interactive && device.type !== "climate" && (
             <button
-              className={"se-switch" + ((device.type === "gate_controller" ? device.state === "open" : device.state) ? " se-switch--on" : "")}
-              onClick={() => onToggle(device.id, device.type === "gate_controller" ? (device.state === "open" ? "closed" : "open") : undefined)}
+              className={"se-switch" + ((isGate ? device.state === "open" : device.state) ? " se-switch--on" : "")}
+              onClick={() => onToggle(device.id, isGate ? (device.state === "open" ? "closed" : "open") : undefined)}
             >
               <span className="se-switch-knob" />
             </button>
@@ -172,7 +197,6 @@ export default function DeviceDetailSheet({ device, room, onClose, onToggle, onA
             </div>
           )}
         </div>
-
         <style>{`
           .se-detail-hero { display: flex; align-items: center; gap: 12px; padding: 6px 0 16px; border-bottom: 1px solid rgba(255,255,255,0.06); margin-bottom: 14px; }
           .se-detail-hero-icon { width: 44px; height: 44px; border-radius: 12px; background: rgba(201,162,75,0.08); border: 1px solid rgba(201,162,75,0.2); color: #C9A24B; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }

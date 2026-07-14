@@ -2,8 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Plus, X, ArrowLeft, Check, Loader2, Radio, Wifi } from "lucide-react";
 import { DEVICE_TYPES } from "./DeviceTile";
 import { ROOM_ICONS, ROOM_ICON_LIST } from "./HomeWidgets";
-
-const API = "/api";
+import { api } from "../api/client";
 
 /* ———————————————————————— AddDeviceModal ———————————————————————— */
 interface PendingDevice {
@@ -11,7 +10,12 @@ interface PendingDevice {
   friendly_name: string;
   model: string;
   vendor: string;
-  type: string;
+  // НАХОДКА (Модуль 8): та же регрессия, что была в Devices.tsx (Находка 15),
+  // только в отдельном, независимом файле — реальный ответ бэкенда после
+  // Модуля 7 содержит suggested_type, не type. Раньше p.type здесь был
+  // всегда undefined → каждое устройство молча получало тип 'sensor'
+  // независимо от того, что реально определил бэкенд по exposes.
+  suggested_type: string | null;
 }
 
 interface AddDeviceModalProps {
@@ -35,10 +39,14 @@ export default function AddDeviceModal({ rooms, presetRoomId, onClose, onConfirm
   const [discovering, setDiscovering] = useState(false);
 
   useEffect(() => {
-    fetch(`${API}/devices/pending`)
-      .then(r => r.json())
+    // НАХОДКА: раньше здесь был сырой fetch(`${API}/devices/pending`) без
+    // X-API-Key — после Модуля 1 всегда получал бы 401, пойманный в .catch,
+    // и показывал бы "Новых устройств не найдено" даже когда они есть.
+    // api.getPendingDevices() уже несёт правильные заголовки (Модуль 8,
+    // api/client.ts) и не дублирует эту логику ещё раз локально.
+    api.getPendingDevices()
       .then(data => {
-        if (data.ok) setPending(data.pending || []);
+        if (data.ok) setPending((data.pending || []) as PendingDevice[]);
       })
       .catch(() => {})
       .finally(() => setPendingLoading(false));
@@ -54,7 +62,7 @@ export default function AddDeviceModal({ rooms, presetRoomId, onClose, onConfirm
     setTimeout(() => {
       onConfirm({
         ieee_addr: selectedDevice?.ieee_address || name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase(),
-        type: type || selectedDevice?.type || "sensor",
+        type: type || selectedDevice?.suggested_type || "sensor",
         name: name.trim() || selectedDevice?.friendly_name || "device",
         roomMode,
         roomId,
@@ -98,7 +106,7 @@ export default function AddDeviceModal({ rooms, presetRoomId, onClose, onConfirm
                   <button
                     key={p.ieee_address}
                     className={"se-pending-item" + (selectedDevice?.ieee_address === p.ieee_address ? " se-pending-item--active" : "")}
-                    onClick={() => { setSelectedDevice(p); setType(p.type || "sensor"); }}
+                    onClick={() => { setSelectedDevice(p); setType(p.suggested_type || "sensor"); }}
                   >
                     <div className="se-pending-left">
                       <Wifi size={15} strokeWidth={1.5} color="#5CC98A" />

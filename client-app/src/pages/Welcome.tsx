@@ -4,6 +4,7 @@ import {
   Home, Wifi, WifiOff, Database, Activity,
   Download, ArrowRight, Shield, Mic, Zap, Check
 } from 'lucide-react';
+import { getApiKey } from '../api/client';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -56,7 +57,7 @@ export default function Welcome() {
 
     const check = async () => {
       try {
-        const res = await fetch('/api/status', { signal });
+        const res = await fetch('/api/status', { signal, headers: { 'X-API-Key': getApiKey() } });
         if (res.ok) {
           const d = await res.json();
           if (d.ok && mounted) {

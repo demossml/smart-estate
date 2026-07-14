@@ -42,6 +42,7 @@ export function connectMQTT() {
 
   client.on('connect', () => {
     reconnectAttempts = 0;
+    mqttConnected = true;
     logger.log("[MQTT-WS] ", `📡 MQTT connected: ${MQTT_URL}`);
     client!.subscribe('zigbee2mqtt/#', (err) => {
       if (err) {
@@ -60,6 +61,7 @@ export function connectMQTT() {
   });
 
   client.on('close', () => {
+    mqttConnected = false;
     const delay = Math.min(BASE_DELAY * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY);
     reconnectAttempts++;
 
@@ -100,6 +102,25 @@ function handleMessage(topic: string, payload: Buffer) {
       if (event === 'event' && data?.type &&
           (data.type === 'device_interview' || data.type === 'device_announce' || data.type === 'device_joined')) {
         handleBridgeEvent(data);
+        return;
+      }
+      // Отслеживаем permit_join для /api/zigbee/status
+      if (event === 'response/permit_join' && data) {
+        // Z2M публикует: {"data":{"time":120},"status":"ok"} — нет поля "value"
+        logger.log("[MQTT-WS] ", `📡 permit_join response: ${JSON.stringify(data)}`);
+        permitJoinActive = data.status === 'ok' && !!data.data;
+        permitJoinTimeLeft = data.data?.time || 0;
+        return;
+      }
+      // Синхронизируем реальное состояние permit_join из health info Z2M
+      // Чтобы не расходиться когда таймаут закрыл сеть, а мы не получили ответа
+      if (event === 'info' && data) {
+        const z2mPermitJoin = data.permit_join === true;
+        if (permitJoinActive !== z2mPermitJoin) {
+          logger.log("[MQTT-WS] ", `🔄 permit_join sync: SmartE=${permitJoinActive} → Z2M=${z2mPermitJoin}`);
+          permitJoinActive = z2mPermitJoin;
+          if (!z2mPermitJoin) permitJoinTimeLeft = 0;
+        }
         return;
       }
       logger.log("[MQTT-WS] ", `🌉 Bridge: ${event}`);
@@ -597,6 +618,28 @@ function resolveDeviceTarget(query: string): { target: string | null } {
 }
 
 export { client, lastPresenceAt, sendDeviceCommand as publishCommand };
+
+/** MQTT connection status (для /api/zigbee/status) */
+export let mqttConnected = false;
+/** Permit join активен? */
+export let permitJoinActive = false;
+/** Осталось секунд permit_join */
+export let permitJoinTimeLeft = 0;
+
+/**
+ * Опубликовать команду permit_join через основное MQTT-подключение.
+ */
+export function publishPermitJoin(value: boolean, time: number = 120): boolean {
+  if (!client || !client.connected) {
+    logger.log("[MQTT-WS] ", '📡 MQTT not connected, cannot publish permit_join');
+    return false;
+  }
+  const topic = 'zigbee2mqtt/bridge/request/permit_join';
+  const payload = JSON.stringify({ value, time });
+  client.publish(topic, payload, { qos: 1 });
+  logger.log("[MQTT-WS] ", `📡 permit_join published: ${topic} → ${payload}`);
+  return true;
+}
 
 /** Gracefully disconnect MQTT (used when switching to demo mode) */
 export function disconnectMQTT(): void {

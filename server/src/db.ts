@@ -142,6 +142,12 @@ db.exec(`
     created_at      TEXT DEFAULT (datetime('now')),
     updated_at      TEXT DEFAULT (datetime('now'))
   );
+  CREATE TABLE IF NOT EXISTS api_keys (
+    key_name    TEXT PRIMARY KEY,
+    key_value   TEXT NOT NULL,
+    updated_at  TEXT DEFAULT (datetime('now'))
+  );
+  INSERT OR IGNORE INTO api_keys (key_name, key_value) VALUES ('x-api-key', '');
   CREATE TABLE IF NOT EXISTS voice_pending_actions (
     id            TEXT PRIMARY KEY,
     text          TEXT NOT NULL,

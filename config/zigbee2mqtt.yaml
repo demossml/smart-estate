@@ -16,10 +16,23 @@ advanced:
   pan_id: 6754
   channel: 11
   report_payload_formatter: attribute
-  # GENERATE — автогенерация безопасного ключа при первом запуске
-  # ⚠️ ВНИМАНИЕ: смена ключа потребует переподключения (re-pair)
-  # всех уже спаренных Zigbee-устройств.
-  network_key: GENERATE
+  network_key:
+    - 72
+    - 107
+    - 221
+    - 249
+    - 13
+    - 142
+    - 230
+    - 136
+    - 100
+    - 51
+    - 155
+    - 196
+    - 80
+    - 125
+    - 130
+    - 0
 device_options: {}
 version: 5
 devices:

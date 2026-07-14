@@ -10,6 +10,7 @@ import DeviceDetailSheet from "./components/DeviceDetailSheet";
 import AssignDiscoveredModal from "./components/AssignDiscoveredModal";
 import { StatusStrip, FavoritesGrid, RunningNow, ROOM_ICONS } from "./components/HomeWidgets";
 import ManageTab, { classifyVoiceCommand } from "./components/ManageTab";
+import ZigbeeStatusIndicator from "./components/ZigbeeStatusIndicator";
 import { useMode } from './hooks/useMode';
 
 // ── CSRF ──
@@ -540,6 +541,7 @@ export default function SmartEstateApp() {
             <span className={"se-mode-dot" + (mode === "live" ? " se-mode-dot--live" : "")} />
             {mode === "live" ? "Live" : "Demo"}
           </button>
+          <ZigbeeStatusIndicator />
         </div>
 
         {tab === "home" && (
@@ -866,4 +868,20 @@ const css = `
 .se-toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%); z-index: 9999; display: flex; align-items: center; gap: 8px; background: rgba(16,20,18,0.95); border: 1px solid rgba(92,201,138,0.35); border-radius: 12px; padding: 12px 20px; font-size: 13px; color: #E9E4D8; backdrop-filter: blur(12px); box-shadow: 0 8px 32px rgba(0,0,0,0.6); animation: se-toast-in 0.3s ease-out; }
 .se-toast svg { color: #5CC98A; flex-shrink: 0; }
 @keyframes se-toast-in { from { opacity: 0; transform: translateX(-50%) translateY(12px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+
+/* ── Zigbee Status Indicator ── */
+.se-zigbee-indicator { display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 20px; padding: 6px 10px; cursor: pointer; color: inherit; font-family: inherit; font-size: 11px; position: relative; margin-right: 6px; }
+.se-zigbee-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.se-zigbee-dot--on { background: #7FE0A8; box-shadow: 0 0 6px rgba(127,224,168,0.5); }
+.se-zigbee-dot--off { background: #D9695F; }
+.se-zigbee-pulse { position: absolute; left: 8px; width: 8px; height: 8px; border-radius: 50%; background: #C9A24B; animation: se-zbee-pulse 1.5s ease-in-out infinite; opacity: 0.6; pointer-events: none; }
+@keyframes se-zbee-pulse { 0%,100% { opacity: 0.3; transform: scale(1); } 50% { opacity: 0.9; transform: scale(2.2); } }
+.se-zigbee-count { color: #B7BDB4; font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+.se-zigbee-popover { position: absolute; top: calc(100% + 8px); right: 0; background: #1F221E; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 12px 14px; min-width: 200px; z-index: 100; }
+.se-zigbee-popover-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #D8D3C6; margin-bottom: 10px; }
+.se-zigbee-popover-row { display: flex; justify-content: space-between; align-items: center; font-size: 11px; padding: 5px 0; color: #B7BDB4; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.se-zigbee-popover-row:last-child { border-bottom: none; }
+.se-zigbee-popover-val { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; }
+.se-zigbee-popover-val--ok { color: #7FE0A8; }
+.se-zigbee-popover-val--bad { color: #D9695F; }
 `;

@@ -5,10 +5,10 @@ import { join } from 'path';
 import { randomBytes, createHmac } from 'crypto';
 import rateLimit from 'express-rate-limit';
 import { encryptToken, decryptToken } from './crypto';
-import { stmt, db, query, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
+import { stmt, db, query, exec, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
 import { toggleDemoDevice, isDemoMode } from './demo';
-import { attachWebSocket, sendDeviceCommand as publishCommand, lastPresenceAt } from './mqtt-ws';
+import { attachWebSocket, sendDeviceCommand as publishCommand, publishPermitJoin, lastPresenceAt, mqttConnected, permitJoinActive, permitJoinTimeLeft } from './mqtt-ws';
 import { sendDeviceCommand as sendDeviceCommandAsync, parseActions } from './actions';
 import { parseTriggers } from './triggers';
 import { get as httpGet } from 'http';
@@ -266,6 +266,55 @@ app.get('/api/status', async (_req, res) => {
     });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'status');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── GET /api/zigbee/status — статус Zigbee-сети (Донгл, MQTT, permit_join) ──
+app.get('/api/zigbee/status', async (_req, res) => {
+  try {
+    const devices = await query('SELECT COUNT(*) as cnt FROM devices');
+    const online = await query("SELECT COUNT(*) as cnt FROM devices WHERE status = 'online'");
+    res.json({
+      ok: true,
+      mqtt_connected: mqttConnected,
+      permit_join: permitJoinActive,
+      permit_join_time_left: permitJoinTimeLeft,
+      devices_total: devices[0]?.cnt || 0,
+      devices_online: online[0]?.cnt || 0,
+    });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'zigbee_status');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── GET /api/api-keys ────────────────────────────────────
+app.get('/api/api-keys', async (req, res) => {
+  try {
+    const rows = await query('SELECT key_name, key_value FROM api_keys ORDER BY key_name');
+    res.json({ ok: true, keys: rows });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'api_keys_get');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── POST /api/api-keys ───────────────────────────────────
+app.post('/api/api-keys', async (req, res) => {
+  try {
+    const { key_name, key_value } = req.body;
+    if (!key_name || key_value === undefined) {
+      return res.status(400).json({ ok: false, error: 'Требуются key_name и key_value' });
+    }
+    await exec(
+      "INSERT INTO api_keys (key_name, key_value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key_name) DO UPDATE SET key_value = excluded.key_value, updated_at = datetime('now')",
+      [key_name, key_value]
+    );
+    logger.info(`API key "${key_name}" saved/updated`);
+    res.json({ ok: true });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'api_keys_post');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -720,19 +769,13 @@ function zigbeeRequest(path: string): Promise<any> {
 // POST /api/discovery/start — enable permit_join
 app.post('/api/discovery/start', async (_req, res) => {
   try {
-    const client = mqtt.connect('mqtt://localhost:1883', {
-      clientId: 'smart-estate-discovery-' + Date.now(),
-      clean: true,
-      connectTimeout: 5000,
-    });
-    await new Promise<void>((resolve, reject) => {
-      client.on('connect', () => {
-        client.publish('zigbee2mqtt/bridge/request/permit_join', JSON.stringify({ value: true, time: 254 }), { qos: 1 });
-        setTimeout(() => { client.end(true); resolve(); }, 300);
-      });
-      client.on('error', (err: Error) => { client.end(true); reject(err); });
-    });
-    res.json({ ok: true, permit_join: true, time: 254 });
+    if (permitJoinActive) {
+      return res.json({ ok: true, permit_join: true, time: permitJoinTimeLeft, already_open: true });
+    }
+    if (!publishPermitJoin(true, 120)) {
+      return res.status(503).json({ ok: false, error: 'MQTT not connected' });
+    }
+    res.json({ ok: true, permit_join: true, time: 120 });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'discovery_start');
     res.status(500).json({ ok: false, error: e.message });
@@ -742,18 +785,7 @@ app.post('/api/discovery/start', async (_req, res) => {
 // POST /api/discovery/stop — disable permit_join
 app.post('/api/discovery/stop', async (_req, res) => {
   try {
-    const client = mqtt.connect('mqtt://localhost:1883', {
-      clientId: 'smart-estate-discovery-' + Date.now(),
-      clean: true,
-      connectTimeout: 5000,
-    });
-    await new Promise<void>((resolve, reject) => {
-      client.on('connect', () => {
-        client.publish('zigbee2mqtt/bridge/request/permit_join', JSON.stringify({ value: false }), { qos: 1 });
-        setTimeout(() => { client.end(true); resolve(); }, 300);
-      });
-      client.on('error', (err: Error) => { client.end(true); reject(err); });
-    });
+    publishPermitJoin(false, 0);
     res.json({ ok: true, permit_join: false });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'discovery_stop');
@@ -2040,11 +2072,12 @@ app.post('/api/voice', commandLimiter, async (req, res) => {
         if (room) {
           const roomDevices = devices.filter((d: any) => d.room_id === room.id && d.type === 'light');
           if (roomDevices.length > 0) {
+            let fired = 0, failed = 0;
             for (const d of roomDevices) {
-              await logCommand(d.ieee_addr, action, '{}', 'voice');
-              await logStateChange(d.ieee_addr, action === 'ON' ? 'OFF' : 'ON', action, 'voice');
+              const result = await sendDeviceCommandAsync(d.ieee_addr, action, 'voice', action === 'ON' ? 'OFF' : 'ON', action);
+              if (result.ok) fired++; else failed++;
             }
-            return res.json({ ok: true, text, action: `${action === 'ON' ? 'Включил' : 'Выключил'} свет в ${room.name} (${roomDevices.length} шт.)` });
+            return res.json({ ok: true, text, action: `${action === 'ON' ? 'Включил' : 'Выключил'} свет в ${room.name} (${fired} шт., ${failed ? failed+' ошибок' : ''})` });
           }
         }
       }
@@ -2062,13 +2095,17 @@ app.post('/api/voice', commandLimiter, async (req, res) => {
         // For gates: open/close instead of on/off
         if (device.type === 'gate' || device.type === 'lock') {
           const gateCmd = action === 'ON' ? 'open' : 'close';
-          await logCommand(device.ieee_addr, gateCmd, '{}', 'voice');
-          await logStateChange(device.ieee_addr, action === 'ON' ? 'closed' : 'open', action === 'ON' ? 'open' : 'closed', 'voice');
+          const result = await sendDeviceCommandAsync(device.ieee_addr, gateCmd, 'voice', action === 'ON' ? 'closed' : 'open', action === 'ON' ? 'open' : 'closed');
+          if (!result.ok) {
+            return res.json({ ok: false, text, action: `Не удалось выполнить: ${result.error}` });
+          }
           return res.json({ ok: true, text, action: `${action === 'ON' ? 'Открыл' : 'Закрыл'} ${device.friendly_name}` });
         }
         // For lights and plugs
-        await logCommand(device.ieee_addr, action, '{}', 'voice');
-        await logStateChange(device.ieee_addr, action === 'ON' ? 'OFF' : 'ON', action, 'voice');
+        const result = await sendDeviceCommandAsync(device.ieee_addr, action, 'voice', action === 'ON' ? 'OFF' : 'ON', action);
+        if (!result.ok) {
+          return res.json({ ok: false, text, action: `Не удалось выполнить: ${result.error}` });
+        }
         return res.json({ ok: true, text, action: `${action === 'ON' ? 'Включил' : 'Выключил'} ${device.friendly_name}` });
       }
 
@@ -2089,8 +2126,10 @@ app.post('/api/voice', commandLimiter, async (req, res) => {
         device = devices.find((d: any) => d.type === 'lock');
       }
       if (device && (device.type === 'gate' || device.type === 'lock')) {
-        await logCommand(device.ieee_addr, action, '{}', 'voice');
-        await logStateChange(device.ieee_addr, action === 'open' ? 'closed' : 'open', action === 'open' ? 'open' : 'closed', 'voice');
+        const result = await sendDeviceCommandAsync(device.ieee_addr, action, 'voice', action === 'open' ? 'closed' : 'open', action === 'open' ? 'open' : 'closed');
+        if (!result.ok) {
+          return res.json({ ok: false, text, action: `Не удалось выполнить: ${result.error}` });
+        }
         return res.json({ ok: true, text, action: `${gateMatch[1] === 'открой' ? 'Открыл' : 'Закрыл'} ${device.friendly_name}` });
       }
       return res.json({ ok: false, text, action: `Не нашёл ворота/замок «${target}»` });
