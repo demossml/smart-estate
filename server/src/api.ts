@@ -73,6 +73,15 @@ const commandLimiter = rateLimit({
   message: { ok: false, error: 'Command rate limit exceeded' },
 });
 
+// Rate limit for discovery endpoints — не чаще 10 раз в минуту
+const discoveryLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: 'Слишком частые запросы на поиск устройств. Подождите минуту.' },
+});
+
 app.use(express.json());
 app.use(cookieParser());
 
@@ -767,7 +776,7 @@ function zigbeeRequest(path: string): Promise<any> {
 
 // ── Phase 1: Discovery эндпоинты ─────────────────────────────
 // POST /api/discovery/start — enable permit_join
-app.post('/api/discovery/start', async (_req, res) => {
+app.post('/api/discovery/start', discoveryLimiter, async (_req, res) => {
   try {
     if (permitJoinActive) {
       return res.json({ ok: true, permit_join: true, time: permitJoinTimeLeft, already_open: true });
@@ -783,7 +792,7 @@ app.post('/api/discovery/start', async (_req, res) => {
 });
 
 // POST /api/discovery/stop — disable permit_join
-app.post('/api/discovery/stop', async (_req, res) => {
+app.post('/api/discovery/stop', discoveryLimiter, async (_req, res) => {
   try {
     publishPermitJoin(false, 0);
     res.json({ ok: true, permit_join: false });

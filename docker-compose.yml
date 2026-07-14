@@ -14,13 +14,19 @@ services:
       - ./data/mosquitto:/mosquitto/data
     networks:
       - zigbee-net
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$SYS/broker/uptime", "-C", "1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
 
   zigbee2mqtt:
     image: koenkk/zigbee2mqtt:latest
     container_name: zigbee2mqtt
     restart: unless-stopped
     depends_on:
-      - mosquitto
+      mosquitto:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -34,6 +40,12 @@ services:
       - Z2M_AUTH_TOKEN=${Z2M_AUTH_TOKEN:-}
     networks:
       - zigbee-net
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 networks:
   zigbee-net:
