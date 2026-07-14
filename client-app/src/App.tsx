@@ -110,10 +110,10 @@ export default function SmartEstateApp() {
   const [detailDevice, setDetailDevice] = useState<any>(null);
   const { mode, toggle: toggleMode, loading: modeLoading } = useMode();
 
-  // discovery state
+  // ── Discovery state — новая логика (14.07.2026) ──
+  const [discoveredDevices, setDiscoveredDevices] = useState<any[]>([]);
   const [discovering, setDiscovering] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(0);
-  const [discoveredDevices, setDiscoveredDevices] = useState<any[]>([]);
   const [assigningDevice, setAssigningDevice] = useState<any>(null);
   const [toast, setToast] = useState<string | null>(null);
   const timersRef = useRef<any[]>([]);
@@ -325,82 +325,89 @@ export default function SmartEstateApp() {
     catch (e: any) { console.error('Delete room error:', e); }
   }, [loadData]);
 
-  /* ── Discovery (real API — Zigbee2MQTT permit_join + SSE events) ── */
+  /* ── Discovery — НОВАЯ ЛОГИКА (14.07.2026) ──
+   *
+   * НОВАЯ ФИЛОСОФИЯ:
+   *   - Пользователь всегда видит ВСЕ Zigbee-устройства из Z2M
+   *   - Нет разделения pending/confirmed
+   *   - Для каждого устройства: is_added (уже в БД), can_edit (всегда true)
+   *   - Если permit_join активен — polling /api/devices/pending каждые 4 сек
+   *   - Если нет — показываем последний полученный список (пользователь может
+   *     обновить вручную)
+   */
   const clearTimers = () => { timersRef.current.forEach(clearTimeout); timersRef.current = []; };
 
-  const startDiscovery = async () => {
-    setDiscovering(true); setDiscoveredDevices([]); setSecondsLeft(60); clearTimers();
+  // Загрузить список всех устройств из /api/devices/pending
+  const loadPending = useCallback(async () => {
     try {
-      // Start permit_join on server
+      const data = await api('/devices/pending');
+      if (data.pending) {
+        setDiscoveredDevices(data.pending.map((p: any) => ({
+          tempId: uid(),
+          ieee: p.ieee_address,
+          type: p.suggested_type || 'sensor',
+          suggestedName: p.friendly_name || p.ieee_address,
+          is_added: p.is_added,
+          can_edit: p.can_edit,
+          friendly_name: p.friendly_name,
+          room_id: p.room_id,
+          model: p.model,
+          vendor: p.vendor,
+        })));
+      }
+    } catch {}
+  }, []);
+
+  const startDiscovery = async () => {
+    setDiscovering(true); setSecondsLeft(120); clearTimers();
+    try {
       await api('/discovery/start', { method: 'POST' });
-      
-      // Open SSE stream to listen for new devices
-      const es = new EventSource('/api/discovery/events');
-      es.onmessage = (ev) => {
-        try {
-          const data = JSON.parse(ev.data);
-          if (data.type === 'new' && data.event) {
-            setDiscoveredDevices((prev) => {
-              if (prev.some((d) => d.ieee === data.event.ieee_address)) return prev;
-              return [...prev, {
-                tempId: data.event.id || uid(),
-                type: data.event.type || 'sensor',
-                ieee: data.event.ieee_address,
-                suggestedName: data.event.friendly_name || DEVICE_TYPES[data.event.type || 'sensor']?.label || 'Устройство',
-              }];
-            });
-          }
-        } catch {}
-      };
-      es.onerror = () => es.close();
-      timersRef.current.push(setTimeout(() => { es.close(); }, 65000));
     } catch (e: any) {
       console.error('Discovery start error:', e);
-      // Fallback to simulation
     }
-    
+    await loadPending();
     const tick = setInterval(async () => {
       setSecondsLeft((s) => {
         if (s <= 1) { clearInterval(tick); setDiscovering(false); return 0; }
         return s - 1;
       });
-      // Poll pending devices from server
-      try {
-        const data = await api('/devices/pending');
-        if (data.pending) {
-          for (const p of data.pending) {
-            setDiscoveredDevices((prev) => {
-              if (prev.some((d) => d.ieee === p.ieee_address)) return prev;
-              return [...prev, {
-                tempId: uid(),
-                type: p.type || 'sensor',
-                ieee: p.ieee_address,
-                suggestedName: p.friendly_name || p.ieee_address,
-              }];
-            });
-          }
-        }
-      } catch {}
-    }, 5000);
+      await loadPending();
+    }, 4000);
     timersRef.current.push(tick);
   };
+
   const stopDiscovery = async () => {
     clearTimers(); setDiscovering(false); setSecondsLeft(0);
     try { await api('/discovery/stop', { method: 'POST' }); } catch {}
+    await loadPending();
   };
-  const dismissDiscovered = (tempId: string) => setDiscoveredDevices((prev) => prev.filter((d) => d.tempId !== tempId));
+
+  const dismissDiscovered = (tempId: string) =>
+    setDiscoveredDevices((prev) => prev.filter((d) => d.tempId !== tempId));
 
   const confirmAssignDiscovered = async ({ name, roomId }: any) => {
     if (!assigningDevice) return;
+    const ieee = assigningDevice.ieee_address || assigningDevice.ieee;
     try {
-      await api(`/discovery/${assigningDevice.ieee}/confirm`, {
+      await api(`/discovery/${ieee}/confirm`, {
         method: 'POST',
-        body: JSON.stringify({ name, roomId }),
+        body: JSON.stringify({
+          name,
+          roomId: roomId || null,
+          type: assigningDevice.suggested_type || assigningDevice.type || null,
+        }),
       });
-      setDevices((prev) => [...prev, { id: uid(), roomId, type: assigningDevice.type, name, ieee: assigningDevice.ieee, ...defaultFieldsFor(assigningDevice.type) }]);
-      setDiscoveredDevices((prev) => prev.filter((d) => d.tempId !== assigningDevice.tempId));
+      await loadData();
+      setDiscoveredDevices((prev) => prev.map((d) =>
+        (d.ieee === ieee || d.ieee_address === ieee)
+          ? { ...d, is_added: true, friendly_name: name, room_id: roomId, suggestedName: name }
+          : d
+      ));
       setAssigningDevice(null);
-      setToast(`✅ «${name}» добавлено`);
+      setToast(assigningDevice.is_added
+        ? `✅ «${name}» обновлено`
+        : `✅ «${name}» добавлено`
+      );
       setTimeout(() => setToast(null), 3000);
     } catch (e: any) {
       console.error('Confirm error:', e);

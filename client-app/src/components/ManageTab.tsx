@@ -161,17 +161,22 @@ export default function ManageTab({
         {discoveredDevices.length > 0 && (
           <div className="se-found-list">
             {discoveredDevices.map((d: any) => {
-              const meta = DEVICE_TYPES[d.type];
+              const meta = DEVICE_TYPES[d.type] || DEVICE_TYPES[d.suggested_type];
               const Icon = meta?.icon || (({ size }: any) => null);
               return (
-                <div className="se-found-item" key={d.tempId || d.ieee}>
+                <div className={"se-found-item" + (d.is_added ? " se-found-item--added" : "")} key={d.tempId || d.ieee}>
                   <div className="se-tile-icon"><Icon size={16} strokeWidth={1.6} /></div>
                   <div className="se-found-item-text">
-                    <div className="se-found-type">{meta?.label || d.type}</div>
-                    <div className="se-found-ieee">{d.ieee}</div>
+                    <div className="se-found-type">{d.suggestedName || meta?.label || d.type || "Устройство"}</div>
+                    <div className="se-found-ieee">{d.ieee}{d.is_added ? " ✅" : ""}</div>
+                    {d.model && <div className="se-found-model">{d.model}</div>}
                   </div>
-                  <button className="se-mini-btn" onClick={() => onAssignDiscovered(d)}>Добавить</button>
-                  <button className="se-icon-btn" onClick={() => onDismissDiscovered(d.tempId)}><X size={13} strokeWidth={1.8} /></button>
+                  <button className="se-mini-btn" onClick={() => onAssignDiscovered(d)}>
+                    {d.is_added ? "Редактировать" : "Добавить"}
+                  </button>
+                  {!d.is_added && (
+                    <button className="se-icon-btn" onClick={() => onDismissDiscovered(d.tempId)}><X size={13} strokeWidth={1.8} /></button>
+                  )}
                 </div>
               );
             })}
