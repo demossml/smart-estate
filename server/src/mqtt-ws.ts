@@ -164,7 +164,7 @@ function handleMessage(topic: string, payload: Buffer) {
 // в БД только после подтверждения пользователем через POST /api/discovery/:ieee/confirm.
 function handleDeviceDiscovery(friendlyName: string, data: any) {
   const ieee = data.ieee_address || data.ieeeAddr || friendlyName;
-  const name = friendlyName.trim();
+  const name = friendlyName?.trim() || `Датчик ${ieee.slice(-8).toUpperCase()}`;
   try {
     const exposes = data.exposes || null;
     const detectedType = mapZ2MTypeToInternal(ieee, exposes);
@@ -197,7 +197,7 @@ function handleBridgeEvent(data: any) {
   const info = data.data;
   if (!info?.ieee_address) return;
   const ieee = info.ieee_address;
-  const name = info.friendly_name?.trim() || ieee;
+  const name = info.friendly_name?.trim() || `Датчик ${ieee.slice(-8).toUpperCase()}`;
   const model = info.definition?.model || info.model_id || null;
   const vendor = info.definition?.vendor || null;
 
@@ -355,6 +355,14 @@ export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): s
 
   if (features.has('temperature') || features.has('humidity') || features.has('pressure')) {
     return 'sensor';
+  }
+
+  // Fallback для неизвестных устройств с батарейками/освещением
+  if (features.has('battery') || features.has('voltage') || features.has('low_battery')) {
+    return 'sensor';
+  }
+  if (features.has('illuminance') || features.has('light_level') || features.has('brightness')) {
+    return 'light_sensor';
   }
 
   return null; // ничего не определили — пользователь выберет вручную
