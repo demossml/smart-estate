@@ -386,7 +386,7 @@ export default function SmartEstateApp() {
   const dismissDiscovered = (tempId: string) =>
     setDiscoveredDevices((prev) => prev.filter((d) => d.tempId !== tempId));
 
-  const confirmAssignDiscovered = async ({ name, roomId }: any) => {
+  const confirmAssignDiscovered = async ({ name, roomId, type }: any) => {
     if (!assigningDevice) return;
     const ieee = assigningDevice.ieee_address || assigningDevice.ieee;
     try {
@@ -395,7 +395,7 @@ export default function SmartEstateApp() {
         body: JSON.stringify({
           name,
           roomId: roomId || null,
-          type: assigningDevice.suggested_type || assigningDevice.type || null,
+          type: type || assigningDevice.suggested_type || assigningDevice.type || null,
         }),
       });
       // Force-refetch всех данных: комнаты, устройства, сценарии
