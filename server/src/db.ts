@@ -221,6 +221,13 @@ if (!hasSuggestedType.cnt) {
   logger.log("[DB] ", '➕ Миграция: discovery_events.suggested_type + exposes_json добавлены');
 }
 
+// ── Migration: devices.battery_level ──
+const hasBatteryLevel = db.prepare(`SELECT COUNT(*) as cnt FROM pragma_table_info('devices') WHERE name = 'battery_level'`).get() as any;
+if (!hasBatteryLevel.cnt) {
+  db.exec(`ALTER TABLE devices ADD COLUMN battery_level INTEGER`);
+  logger.log("[DB] ", '➕ Миграция: devices.battery_level добавлена');
+}
+
 // Default scenarios
 const defaultScenarios = db.prepare(`SELECT COUNT(*) as cnt FROM scenarios`) as any;
 if (defaultScenarios.get().cnt === 0) {
@@ -318,6 +325,8 @@ export const stmt: any = {
   setDeviceStatus: db.prepare(`UPDATE devices SET status = ?, last_seen = datetime('now') WHERE ieee_addr = ?`),
 
   updateLastSeen: db.prepare(`UPDATE devices SET last_seen = datetime('now') WHERE ieee_addr = ?`),
+
+  updateBatteryLevel: db.prepare(`UPDATE devices SET battery_level = ? WHERE ieee_addr = ?`),
 
   deleteDevice: db.prepare(`DELETE FROM devices WHERE ieee_addr = ?`),
 

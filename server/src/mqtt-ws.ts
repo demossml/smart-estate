@@ -414,6 +414,12 @@ function handleTelemetry(friendlyName: string, data: any) {
   try {
     stmt.updateLastSeen.run(ieee);
   } catch {}
+  // Обновление battery_level в devices из телеметрии
+  if (data.battery !== undefined && data.battery !== null) {
+    try {
+      stmt.updateBatteryLevel.run(Math.round(Number(data.battery)), ieee);
+    } catch {}
+  }
 
   // НАХОДКА (Модуль 2, при сверке со schemas.ts): раньше здесь не было co2, voc,
   // occupancy, pm10, tamper, battery_low, formaldehyde — эти поля ВАЛИДИРУЮТСЯ
