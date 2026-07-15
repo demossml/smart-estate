@@ -191,6 +191,7 @@ db.exec(`
     default_room_hint TEXT DEFAULT 'any',
     default_scenario_json TEXT,
     room_hint     TEXT DEFAULT 'any',
+    confidence    REAL DEFAULT 0.0,
     parameters_json TEXT,
     created_at    TEXT DEFAULT (datetime('now')),
     last_seen_at  TEXT,
@@ -260,6 +261,7 @@ if (!hasDeviceProfilesTbl.cnt) {
     default_room_hint TEXT DEFAULT 'any',
     default_scenario_json TEXT,
     room_hint     TEXT DEFAULT 'any',
+    confidence    REAL DEFAULT 0.0,
     parameters_json TEXT,
     created_at    TEXT DEFAULT (datetime('now')),
     last_seen_at  TEXT,
@@ -275,6 +277,9 @@ try {
 } catch {}
 try {
   db.exec(`ALTER TABLE device_profiles ADD COLUMN room_hint TEXT DEFAULT 'any'`);
+} catch {}
+try {
+  db.exec(`ALTER TABLE device_profiles ADD COLUMN confidence REAL DEFAULT 0.0`);
 } catch {}
 
 // Default scenarios
@@ -531,8 +536,8 @@ export const stmt: any = {
 
   // Device profiles (AI knowledge base)
   saveDeviceProfile: db.prepare(`
-    INSERT INTO device_profiles (model, vendor, exposes_hash, detected_type, friendly_name_template, icon, default_room_hint, default_scenario_json, room_hint, parameters_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO device_profiles (model, vendor, exposes_hash, detected_type, friendly_name_template, icon, default_room_hint, default_scenario_json, room_hint, confidence, parameters_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(model, vendor) DO UPDATE SET
       exposes_hash = COALESCE(excluded.exposes_hash, exposes_hash),
       detected_type = COALESCE(excluded.detected_type, detected_type),
@@ -541,6 +546,7 @@ export const stmt: any = {
       default_room_hint = COALESCE(excluded.default_room_hint, default_room_hint),
       default_scenario_json = COALESCE(excluded.default_scenario_json, default_scenario_json),
       room_hint = COALESCE(excluded.room_hint, room_hint),
+      confidence = COALESCE(excluded.confidence, confidence),
       parameters_json = COALESCE(excluded.parameters_json, parameters_json),
       usage_count = usage_count + 1,
       last_seen_at = datetime('now')

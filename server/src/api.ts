@@ -1063,7 +1063,7 @@ app.post('/api/discovery/:ieee/confirm', async (req, res) => {
         const defaultScenarioJson = type ? (defaultScenarios[type] || null) : null;
         const roomHint = type ? (roomHints[type] || 'any') : 'any';
         stmt.saveDeviceProfile.run(
-          event.model, event.vendor, exposesHash, deviceType, null, icon, null, defaultScenarioJson, roomHint, null
+          event.model, event.vendor, exposesHash, deviceType, null, icon, null, defaultScenarioJson, roomHint, null, null
         );
         logger.log("[API] ", `📝 Profile saved: ${event.model} (${event.vendor || '?'}) → ${deviceType || '?'}`);
 
@@ -1213,7 +1213,7 @@ app.post('/api/discovery/:ieee/confirm-ai', async (req, res) => {
         smoke_sensor: 'Wind', light_sensor: 'Sun', lock: 'Lock', switch: 'ToggleLeft',
       };
       stmt.saveDeviceProfile.run(
-        disc.model, disc.vendor, exposesHash, ai_type, null, icons[ai_type] || null, null, null, null, null
+        disc.model, disc.vendor, exposesHash, ai_type, null, icons[ai_type] || null, null, null, null, null, null
       );
       logger.log("[API] ", `📝 AI profile saved: ${disc.model} (${disc.vendor || '?'}) → ${ai_type}`);
     }
@@ -1267,7 +1267,7 @@ app.post('/api/discovery/apply-ai-model', async (req, res) => {
         window_sensor: 'DoorClosed', door_sensor: 'DoorClosed', leak_sensor: 'Droplets',
         smoke_sensor: 'Wind', light_sensor: 'Sun', lock: 'Lock', switch: 'ToggleLeft',
       };
-      stmt.saveDeviceProfile.run(model, vendor, exposesHash, ai_type, null, icons[ai_type] || null, null, null, null, null);
+      stmt.saveDeviceProfile.run(model, vendor, exposesHash, ai_type, null, icons[ai_type] || null, null, null, null, null, null);
       logger.log("[API] ", `📝 AI profile applied to all: ${model} → ${ai_type} (${events.length} devices)`);
     }
 

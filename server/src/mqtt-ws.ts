@@ -436,7 +436,7 @@ export async function detectDeviceTypeFull(
         const exposesHash = exposes
           ? require('crypto').createHmac('sha256', 'device-profile').update(JSON.stringify(exposes)).digest('hex').slice(0, 16)
           : null;
-        stmt.saveDeviceProfile.run(model, vendor || '', exposesHash, aiType, null, null, null, null, null, null);
+        stmt.saveDeviceProfile.run(model, vendor || '', exposesHash, aiType, null, null, null, null, null, null, null);
       } catch {}
       return aiType;
     }
