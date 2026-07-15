@@ -164,7 +164,11 @@ function handleMessage(topic: string, payload: Buffer) {
 // в БД только после подтверждения пользователем через POST /api/discovery/:ieee/confirm.
 function handleDeviceDiscovery(friendlyName: string, data: any) {
   const ieee = data.ieee_address || data.ieeeAddr || friendlyName;
-  const name = friendlyName?.trim() || `Датчик ${ieee.slice(-8).toUpperCase()}`;
+  const shortIeee = ieee.replace('0x', '').slice(-8).toUpperCase();
+  const baseName = friendlyName?.trim() || `Датчик ${shortIeee}`;
+  const name = (baseName.startsWith('0x') || baseName === 'undefined')
+    ? `Датчик ${shortIeee}`
+    : baseName;
   try {
     const exposes = data.exposes || null;
     const detectedType = mapZ2MTypeToInternal(ieee, exposes);
@@ -197,7 +201,11 @@ function handleBridgeEvent(data: any) {
   const info = data.data;
   if (!info?.ieee_address) return;
   const ieee = info.ieee_address;
-  const name = info.friendly_name?.trim() || `Датчик ${ieee.slice(-8).toUpperCase()}`;
+  const shortIeee = ieee.replace('0x', '').slice(-8).toUpperCase();
+  const baseName = info.friendly_name?.trim() || `Датчик ${shortIeee}`;
+  const name = (baseName.startsWith('0x') || baseName === 'undefined')
+    ? `Датчик ${shortIeee}`
+    : baseName;
   const model = info.definition?.model || info.model_id || null;
   const vendor = info.definition?.vendor || null;
 
@@ -363,6 +371,9 @@ export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): s
   }
   if (features.has('illuminance') || features.has('light_level') || features.has('brightness')) {
     return 'light_sensor';
+  }
+  if (features.has('contact') || features.has('door') || features.has('window')) {
+    return 'door_sensor';
   }
 
   return null; // ничего не определили — пользователь выберет вручную
