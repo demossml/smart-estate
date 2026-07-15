@@ -164,6 +164,36 @@ export default function AssignDiscoveredModal({ device, rooms, onClose, onConfir
           {rooms.map((r: any) => <option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
 
+        {/* Рекомендация комнаты из device_profiles */}
+        {device.room_hint && device.room_hint !== 'any' && (
+          <div className="se-room-hint" style={{
+            marginTop: 8, padding: '8px 12px', borderRadius: 6,
+            background: '#05966910', border: '1px solid #05966930',
+            display: 'flex', alignItems: 'center', gap: 8, fontSize: 12,
+          }}>
+            <span style={{ fontSize: 14 }}>🏠</span>
+            <span style={{ color: '#065F46', fontWeight: 500 }}>
+              Рекомендуемая комната: <span style={{ textTransform: 'capitalize' }}>{device.room_hint.replace('_', ' ')}</span>
+            </span>
+            <button
+              onClick={() => {
+                // Найти комнату по подстроке в имени
+                const matched = rooms.find((r: any) =>
+                  r.name.toLowerCase().includes(device.room_hint.replace('_', ' ').toLowerCase())
+                );
+                if (matched) setRoomId(String(matched.id));
+              }}
+              style={{
+                marginLeft: 'auto', padding: '4px 10px', borderRadius: 4,
+                background: '#059669', color: '#fff', border: 'none',
+                fontSize: 11, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap',
+              }}
+            >
+              ✓ Принять рекомендацию
+            </button>
+          </div>
+        )}
+
         {/* AI-предложение */}
         {showAiPrompt && (
           <div className="se-ai-section" style={{

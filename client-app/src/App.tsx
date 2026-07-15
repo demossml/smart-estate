@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import { Home, Workflow, Zap, Settings, Plus, Wind, Loader2, CheckCircle2 } from "lucide-react";
+import { Home, Workflow, Zap, Settings, Plus, Wind, Loader2, CheckCircle2, Sparkles } from "lucide-react";
 import RoomCard from "./components/RoomCard";
 import DeviceTile, { airStatus, DEVICE_TYPES, defaultFieldsFor } from "./components/DeviceTile";
 import AddDeviceModal from "./components/AddDeviceModal";
@@ -10,6 +10,7 @@ import DeviceDetailSheet from "./components/DeviceDetailSheet";
 import AssignDiscoveredModal from "./components/AssignDiscoveredModal";
 import { StatusStrip, FavoritesGrid, RunningNow, ROOM_ICONS } from "./components/HomeWidgets";
 import ManageTab, { classifyVoiceCommand } from "./components/ManageTab";
+import ProfilerTab from "./components/ProfilerTab";
 import ZigbeeStatusIndicator from "./components/ZigbeeStatusIndicator";
 import { useMode } from './hooks/useMode';
 
@@ -106,6 +107,7 @@ export default function SmartEstateApp() {
   const [scenarios, setScenarios] = useState<any[]>([]);
   const [showAddDevice, setShowAddDevice] = useState(false);
   const [showAddRoom, setShowAddRoom] = useState(false);
+  const [editingRoom, setEditingRoom] = useState<any>(null);
   const [presetRoomId, setPresetRoomId] = useState<number | null>(null);
   const [detailDevice, setDetailDevice] = useState<any>(null);
   const { mode, toggle: toggleMode, loading: modeLoading } = useMode();
@@ -268,6 +270,13 @@ export default function SmartEstateApp() {
     setShowAddRoom(false);
   };
 
+  const confirmEditRoom = async ({ name, icon }: any) => {
+    if (!editingRoom) return;
+    try { await api(`/rooms/${editingRoom.id}`, { method: 'PATCH', body: JSON.stringify({ name, icon }) }); await loadData(); }
+    catch (e: any) { console.error('Edit room error:', e); }
+    setEditingRoom(null);
+  };
+
   const addScenario = async (condition: string, action: string) => {
     try {
       await api('/scenarios', { method: 'POST', body: JSON.stringify({ name: condition.slice(0, 60), description: `${condition} → ${action}`, triggers_json: '{}', actions_json: '{}' }) });
@@ -321,9 +330,19 @@ export default function SmartEstateApp() {
     }
   }, [loadData]);
   const deleteRoom = useCallback(async (id: string) => {
-    try { await api(`/rooms/${id}`, { method: 'DELETE' }); await loadData(); }
-    catch (e: any) { console.error('Delete room error:', e); }
-  }, [loadData]);
+    const room = rooms.find((r: any) => String(r.id) === id);
+    const roomName = room?.name || 'комнату';
+    const confirmMsg = `Удалить «${roomName}»?\n\nВсе устройства из этой комнаты будут перемещены в Гостиную.`;
+    if (!window.confirm(confirmMsg)) return;
+    try {
+      const res = await api(`/rooms/${id}`, { method: 'DELETE' });
+      const data = typeof res === 'object' ? res : {};
+      const moved = data.devices_moved_to_living_room || 0;
+      window.alert(`✅ Комната «${roomName}» удалена.\n📦 ${moved} устройств перемещено в Гостиную.`);
+      await loadData();
+    }
+    catch (e: any) { console.error('Delete room error:', e); window.alert('❌ Ошибка при удалении комнаты'); }
+  }, [loadData, rooms]);
 
   /* ── Discovery — НОВАЯ ЛОГИКА (14.07.2026) ──
    *
@@ -594,7 +613,7 @@ export default function SmartEstateApp() {
         {tab === "manage" && (
           <ManageTab
             rooms={rooms} devices={devices}
-            onAddRoom={() => setShowAddRoom(true)} onDeleteRoom={deleteRoom}
+            onAddRoom={() => setShowAddRoom(true)} onEditRoom={(r) => setEditingRoom(r)} onDeleteRoom={deleteRoom}
             onAddDeviceManually={() => openAddDevice(null)}
             onSaveParams={saveDeviceParams}
             onRemoveFromRoom={removeDeviceFromRoom}
@@ -622,6 +641,7 @@ export default function SmartEstateApp() {
             }}
           />
         )}
+        {tab === "profiles" && <ProfilerTab />}
 
         {/* bottom nav */}
         <div className="se-nav">
@@ -629,6 +649,7 @@ export default function SmartEstateApp() {
           <button className={"se-nav-btn" + (tab === "scenarios" ? " se-nav-btn--active" : "")} onClick={() => setTab("scenarios")}><Workflow size={18} strokeWidth={1.6} /><span>Сценарии</span></button>
           <button className={"se-nav-btn" + (tab === "energy" ? " se-nav-btn--active" : "")} onClick={() => setTab("energy")}><Zap size={18} strokeWidth={1.6} /><span>Энергия</span></button>
           <button className={"se-nav-btn" + (tab === "manage" ? " se-nav-btn--active" : "")} onClick={() => setTab("manage")}><Settings size={18} strokeWidth={1.6} /><span>Управление</span></button>
+          <button className={"se-nav-btn" + (tab === "profiles" ? " se-nav-btn--active" : "")} onClick={() => setTab("profiles")}><Sparkles size={18} strokeWidth={1.6} /><span>Профили</span></button>
         </div>
       </div>
 
@@ -638,6 +659,7 @@ export default function SmartEstateApp() {
           onClose={() => setShowAddDevice(false)} onConfirm={confirmAddDevice} />
       )}
       {showAddRoom && <AddRoomModal onClose={() => setShowAddRoom(false)} onConfirm={confirmAddRoom} />}
+      {editingRoom && <AddRoomModal room={editingRoom} onClose={() => setEditingRoom(null)} onConfirm={confirmEditRoom} />}
       {assigningDevice && (
         <AssignDiscoveredModal device={assigningDevice} rooms={rooms}
           apiBase=""
@@ -794,6 +816,12 @@ const css = `
 .se-manage-section--last { border-bottom: none; }
 .se-manage-head { display: flex; align-items: center; gap: 6px; font-family: 'Cormorant SC', serif; font-size: 14.5px; letter-spacing: 0.04em; color: #E9E4D8; margin-bottom: 10px; }
 .se-manage-caption { font-size: 11.5px; color: #5A5F58; line-height: 1.5; margin-bottom: 12px; }
+.se-room-manager-wrapper { margin-bottom: 10px; }
+.se-room-manager-actions { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; padding: 0 2px; }
+.se-room-manager-name { font-size: 13px; font-family: 'Cormorant SC', serif; color: #E9E4D8; letter-spacing: 0.04em; }
+.se-room-manager-btns { display: flex; gap: 6px; }
+.se-room-manager-protected { font-size: 11px; color: #5A5F58; font-style: italic; }
+.se-mini-btn--danger { color: #D9695F; border-color: rgba(217,105,95,0.3); }
 .se-room-manage-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .se-room-manage-row { display: flex; align-items: center; gap: 9px; background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 9px 11px; }
 .se-room-manage-name { flex: 1; font-size: 12.5px; color: #D8D3C6; }
