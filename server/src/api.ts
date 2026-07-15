@@ -1017,48 +1017,40 @@ app.post('/api/discovery/:ieee/confirm', async (req, res) => {
         // Default scenarios and room hints per device type
         const defaultScenarios: Record<string, string> = {
           air_monitor: JSON.stringify({
-            name: 'Проветривание при CO₂ > 1000',
-            description: 'Автоматическое проветривание при превышении CO₂',
-            triggers_json: JSON.stringify({
+            triggers: {
               logic: 'ANY',
               conditions: [{ device: 'air_monitor', property: 'co2', operator: '>', value: 1000 }]
-            }),
-            actions_json: JSON.stringify([
+            },
+            actions: [
               { type: 'notify', message: '🌬️ CO₂ > 1000 ppm — требуется проветривание' }
-            ])
+            ]
           }),
           door_sensor: JSON.stringify({
-            name: 'Уведомление при открытии',
-            description: 'Уведомление при открытии двери/окна',
-            triggers_json: JSON.stringify({
+            triggers: {
               logic: 'ANY',
               conditions: [{ device: 'door_sensor', property: 'contact', operator: '=', value: 0 }]
-            }),
-            actions_json: JSON.stringify([
+            },
+            actions: [
               { type: 'notify', message: '🚪 Дверь открыта' }
-            ])
+            ]
           }),
           window_sensor: JSON.stringify({
-            name: 'Уведомление при открытии окна',
-            description: 'Уведомление при открытии окна',
-            triggers_json: JSON.stringify({
+            triggers: {
               logic: 'ANY',
               conditions: [{ device: 'window_sensor', property: 'contact', operator: '=', value: 0 }]
-            }),
-            actions_json: JSON.stringify([
+            },
+            actions: [
               { type: 'notify', message: '🪟 Окно открыто' }
-            ])
+            ]
           }),
           leak_sensor: JSON.stringify({
-            name: 'Защита от протечки',
-            description: 'Уведомление при обнаружении протечки',
-            triggers_json: JSON.stringify({
+            triggers: {
               logic: 'ANY',
               conditions: [{ device: 'leak_sensor', property: 'water_leak', operator: '=', value: 1 }]
-            }),
-            actions_json: JSON.stringify([
+            },
+            actions: [
               { type: 'notify', message: '🚨 ОБНАРУЖЕНА ПРОТЕЧКА' }
-            ])
+            ]
           }),
         };
         const roomHints: Record<string, string> = {
@@ -1074,6 +1066,43 @@ app.post('/api/discovery/:ieee/confirm', async (req, res) => {
           event.model, event.vendor, exposesHash, deviceType, null, icon, null, defaultScenarioJson, roomHint, null
         );
         logger.log("[API] ", `📝 Profile saved: ${event.model} (${event.vendor || '?'}) → ${deviceType || '?'}`);
+
+        // Авто-создание сценария из default_scenario_json
+        try {
+          const profile = db.prepare('SELECT default_scenario_json FROM device_profiles WHERE model = ? LIMIT 1').get(event.model) as { default_scenario_json: string | null } | undefined;
+          if (profile?.default_scenario_json) {
+            const scenarioData = JSON.parse(profile.default_scenario_json);
+            const scenarioName = `${deviceType || '?'} — авто-сценарий`;
+            const scenarioDesc = `Создано автоматически для ${name}`;
+            const triggersJson = JSON.stringify(scenarioData.triggers || {});
+            const actionsJson = JSON.stringify(scenarioData.actions || []);
+
+            // Проверяем, нет ли уже такого (по имени)
+            const existing = db.prepare('SELECT id FROM scenarios WHERE name = ? LIMIT 1').get(scenarioName) as any;
+            if (!existing) {
+              db.prepare(`
+                INSERT INTO scenarios (name, description, triggers_json, actions_json, active)
+                VALUES (?, ?, ?, ?, 1)
+              `).run(scenarioName, scenarioDesc, triggersJson, actionsJson);
+              logger.log("[API] ", `🎯 Auto-scenario created: "${scenarioName}"`);
+
+              // Broadcast: UI покажет тост "Создано 1 авто-сценарий"
+              try {
+                broadcastDiscovery({
+                  type: 'auto_scenario_created',
+                  device_ieee: ieee,
+                  device_name: name,
+                  scenario_name: scenarioName,
+                  count: 1,
+                });
+              } catch {}
+            } else {
+              logger.log("[API] ", `⏭️ Scenario already exists: "${scenarioName}"`);
+            }
+          }
+        } catch (e: any) {
+          logger.log("[API] ", `⚠️ Failed to auto-create scenario: ${e.message}`);
+        }
       }
     } catch (e: any) {
       logErrorWithLog(null, 'save_profile_error', e.message, `ieee=${ieee}`);
