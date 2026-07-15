@@ -8,7 +8,7 @@ import { encryptToken, decryptToken } from './crypto';
 import { stmt, db, query, exec, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
 import { toggleDemoDevice, isDemoMode } from './demo';
-import { attachWebSocket, sendDeviceCommand as publishCommand, publishPermitJoin, lastPresenceAt, mqttConnected, permitJoinActive, permitJoinTimeLeft, mapZ2MTypeToInternal, broadcastDiscovery } from './mqtt-ws';
+import { attachWebSocket, sendDeviceCommand as publishCommand, publishPermitJoin, lastPresenceAt, mqttConnected, permitJoinActive, permitJoinTimeLeft, mapZ2MTypeToInternal, broadcastDiscovery, client } from './mqtt-ws';
 import { sendDeviceCommand as sendDeviceCommandAsync, parseActions } from './actions';
 import { parseTriggers } from './triggers';
 import { get as httpGet } from 'http';
@@ -396,83 +396,65 @@ app.get('/api/devices', async (req, res) => {
   }
 });
 
-/* ── GET /api/devices/pending — ВСЕ обнаруженные Zigbee-устройства ──
- *
- * НОВАЯ ЛОГИКА (14.07.2026):
- * Раньше эндпоинт возвращал ТОЛЬКО устройства из discovery_events,
- * которых ещё нет в devices. Теперь:
- *   1. Все устройства из devices (уже добавленные) — всегда в списке
- *   2. Устройства из discovery_events, которых нет в devices — pending
- *   3. Если Z2M HTTP API доступен — дополнительно enrich'им из него
- *
- * Пользователь ВСЕГДА видит все устройства, независимо от того,
- * добавлены они или нет, и может управлять любым.
- */
+// === Unified Discovery List (Z2M + discovery_events + devices, без дублей) ===
 app.get('/api/devices/pending', async (_req, res) => {
   try {
-    // 1. Получаем все устройства из БД (исключая Router/Coordinator — не добавляются в UI)
+    logger.log("[DISCOVERY] ", 'Unified pending called');
+
+    // 1. Все устройства из Z2M (самый актуальный источник)
+    const z2mDevices = await zigbeeRequest('/devices').catch(() => []);
+
+    // 2. Discovery events
+    const discoveryRows = stmt.getDiscoveryEvents.all(200) as any[];
+
+    // 3. Уже добавленные устройства
     const existingDevices = await query(
-      `SELECT ieee_addr, friendly_name, type, room_id, model, vendor, room_manually_set, type_manually_set FROM devices
-       WHERE (type IS NULL OR type NOT IN ('Router', 'Coordinator')) AND ${demoFilter('devices')}`
+      `SELECT ieee_addr, friendly_name, type, room_id, model, vendor FROM devices WHERE ${demoFilter('devices')}`
     ) as any[];
     const existingMap = new Map(existingDevices.map((d: any) => [d.ieee_addr, d]));
-
-    // 2. Все discovery_events
-    const devents = stmt.getDiscoveryEvents.all(200) as any[];
-
-    // 3. Все устройства из Z2M (если доступен)
-    let z2mByIeee = new Map<string, any>();
-    try {
-      const z2mDevices = await zigbeeRequest('/devices');
-      for (const zd of z2mDevices) {
-        if (zd.type === 'Coordinator') continue;
-        const ieee = zd.ieee_address || zd.friendly_name || '';
-        z2mByIeee.set(ieee, zd);
-      }
-    } catch { /* Z2M недоступен — не фатально */ }
-
-    // 4. Унифицируем: один проход — без дублей
     const seen = new Set<string>();
-    const unified: any[] = [];
 
-    for (const zd of z2mByIeee.values()) {
-      const ieee = zd.ieee_address || zd.friendly_name || '';
-      if (seen.has(ieee)) continue;
-      seen.add(ieee);
+    const unified = z2mDevices
+      .filter((d: any) => !['Coordinator', 'Router'].includes(d.type || ''))
+      .map((z2m: any) => {
+        const ieee = z2m.ieee_address || z2m.ieeeAddr;
+        if (seen.has(ieee)) return null;
+        seen.add(ieee);
 
-      const existing = existingMap.get(ieee);
-      const de = devents.find((r: any) => r.ieee_address === ieee);
+        const existing = existingMap.get(ieee);
+        const disc = discoveryRows.find((r: any) => r.ieee_address === ieee);
 
-      unified.push({
-        ieee_address: ieee,
-        friendly_name: existing?.friendly_name || zd.friendly_name || de?.friendly_name || ieee,
-        model: existing?.model || zd.definition?.model || de?.model || null,
-        vendor: existing?.vendor || zd.definition?.vendor || de?.vendor || null,
-        suggested_type: existing?.type || de?.suggested_type ||
-          (zd.definition?.exposes ? mapZ2MTypeToInternal?.(ieee, zd.definition.exposes) : null) || null,
-        exposes: zd.definition?.exposes || (de?.exposes_json ? JSON.parse(de.exposes_json) : null),
-        discovered_at: de?.created_at || null,
-        is_added: !!existing,
-        can_edit: true,
-        room_id: existing?.room_id || null,
-        status: existing ? 'online' : 'discovered',
-        last_updated: new Date().toISOString(),
-      });
-    }
+        return {
+          ieee_address: ieee,
+          friendly_name: existing?.friendly_name || z2m.friendly_name || disc?.friendly_name || ieee,
+          model: existing?.model || z2m.definition?.model || disc?.model,
+          vendor: existing?.vendor || z2m.definition?.vendor || disc?.vendor,
+          suggested_type: existing?.type || disc?.suggested_type || mapZ2MTypeToInternal?.(ieee, z2m.definition?.exposes) || null,
+          exposes: z2m.definition?.exposes || (disc?.exposes_json ? JSON.parse(disc.exposes_json) : null),
+          discovered_at: disc?.created_at || null,
+          is_added: !!existing,
+          can_edit: true,
+          room_id: existing?.room_id || null,
+          status: existing ? 'online' : 'discovered',
+          last_updated: new Date().toISOString(),
+        };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => Number(a.is_added) - Number(b.is_added));
 
-    // Устройства из existing, которых нет в Z2M (например, demo)
+    // Устройства из existing, которых нет в Z2M
     for (const ex of existingDevices) {
       if (seen.has(ex.ieee_addr)) continue;
       seen.add(ex.ieee_addr);
-      const de = devents.find((r: any) => r.ieee_address === ex.ieee_addr);
+      const disc = discoveryRows.find((r: any) => r.ieee_address === ex.ieee_addr);
       unified.push({
         ieee_address: ex.ieee_addr,
         friendly_name: ex.friendly_name || ex.ieee_addr,
-        model: ex.model || de?.model || null,
-        vendor: ex.vendor || de?.vendor || null,
-        suggested_type: ex.type || de?.suggested_type || null,
-        exposes: de?.exposes_json ? JSON.parse(de.exposes_json) : null,
-        discovered_at: de?.created_at || null,
+        model: ex.model || disc?.model || null,
+        vendor: ex.vendor || disc?.vendor || null,
+        suggested_type: ex.type || disc?.suggested_type || null,
+        exposes: disc?.exposes_json ? JSON.parse(disc.exposes_json) : null,
+        discovered_at: disc?.created_at || null,
         is_added: true,
         can_edit: true,
         room_id: ex.room_id || null,
@@ -482,17 +464,17 @@ app.get('/api/devices/pending', async (_req, res) => {
     }
 
     // Устройства из discovery_events, которых нет нигде
-    for (const de of devents) {
-      if (seen.has(de.ieee_address)) continue;
-      seen.add(de.ieee_address);
+    for (const disc of discoveryRows) {
+      if (seen.has(disc.ieee_address)) continue;
+      seen.add(disc.ieee_address);
       unified.push({
-        ieee_address: de.ieee_address,
-        friendly_name: de.friendly_name || de.ieee_address,
-        model: de.model || null,
-        vendor: de.vendor || null,
-        suggested_type: de.suggested_type || null,
-        exposes: de.exposes_json ? JSON.parse(de.exposes_json) : null,
-        discovered_at: de.created_at,
+        ieee_address: disc.ieee_address,
+        friendly_name: disc.friendly_name || disc.ieee_address,
+        model: disc.model || null,
+        vendor: disc.vendor || null,
+        suggested_type: disc.suggested_type || null,
+        exposes: disc.exposes_json ? JSON.parse(disc.exposes_json) : null,
+        discovered_at: disc.created_at,
         is_added: false,
         can_edit: true,
         room_id: null,
@@ -500,9 +482,6 @@ app.get('/api/devices/pending', async (_req, res) => {
         last_updated: new Date().toISOString(),
       });
     }
-
-    // Сортируем: сначала недобавленные, потом добавленные
-    unified.sort((a: any, b: any) => Number(a.is_added) - Number(b.is_added));
 
     res.json({ ok: true, devices: unified, total: unified.length, last_updated: new Date().toISOString() });
   } catch (e: any) {
@@ -950,58 +929,49 @@ app.get('/api/discovery/events', async (req, res) => {
   });
 });
 
-// POST /api/discovery/:ieee/confirm — сохранить/обновить устройство
-//
-// НОВАЯ ЛОГИКА (14.07.2026):
-// Раньше эндпоинт только подтверждал pending-устройство (insert + confirm).
-// ТЕПЕРЬ: универсальный upsert — создаёт новое или обновляет существующее.
-// Позволяет менять имя, тип, комнату для ЛЮБОГО устройства (в том числе
-// уже добавленного), а также переименовывать в Z2M через MQTT.
+// POST /api/discovery/:ieee/confirm — универсальный upsert + broadcast
 app.post('/api/discovery/:ieee/confirm', async (req, res) => {
   try {
     const { ieee } = req.params;
     const { name, roomId, type } = req.body;
     if (!name) return res.status(400).json({ ok: false, error: 'name is required' });
 
-    // Normalize roomId to number or null
     const roomIdNum = roomId ? Number(roomId) : null;
-
-    // Upsert device into our DB — создаёт или обновляет
     const deviceType = type || null;
+
+    // Upsert device
     stmt.upsertDevice.run(ieee, name, null, null, deviceType, roomIdNum);
 
-    // Если пользователь явно указал type или roomId — ставим manual-флаг
     if (type) {
       db.prepare(`UPDATE devices SET type_manually_set = 1 WHERE ieee_addr = ?`).run(ieee);
     }
     if (roomIdNum) {
       db.prepare(`UPDATE devices SET room_manually_set = 1 WHERE ieee_addr = ?`).run(ieee);
     }
+
     // Mark discovery event as confirmed
     try { stmt.confirmDiscovery.run(ieee); } catch {}
 
-    // Also rename friendly_name in Z2M via MQTT
+    // Rename in Z2M via MQTT (используем существующий client)
     try {
-      const mc = mqtt.connect('mqtt://localhost:1883', {
-        clientId: 'smart-estate-confirm-' + Date.now(),
-        clean: true,
-        connectTimeout: 3000,
-      });
-      await new Promise<void>((resolve, reject) => {
-        mc.on('connect', () => {
-          mc.publish(`zigbee2mqtt/bridge/request/device/rename`, JSON.stringify({
-            from: ieee,
-            to: name,
-          }), { qos: 1 });
-          setTimeout(() => { mc.end(true); resolve(); }, 300);
-        });
-        mc.on('error', () => { mc.end(true); resolve(); }); // Don't fail if MQTT unavailable
-      });
+      if (client?.connected) {
+        client.publish(
+          `zigbee2mqtt/bridge/request/device/rename`,
+          JSON.stringify({ from: ieee, to: name }),
+          { qos: 1 }
+        );
+      }
     } catch {}
 
-    // Broadcast обновление через WebSocket — UI немедленно обновляется
+    // Broadcast — UI немедленно обновится
     try {
-      broadcastDiscovery({ type: 'device_updated', ieee_address: ieee, friendly_name: name, room_id: roomIdNum, is_added: true });
+      broadcastDiscovery({
+        type: 'device_updated',
+        ieee_address: ieee,
+        friendly_name: name,
+        room_id: roomIdNum,
+        is_added: true,
+      });
     } catch {}
 
     res.json({ ok: true, device: { ieee_addr: ieee, friendly_name: name, room_id: roomIdNum } });
