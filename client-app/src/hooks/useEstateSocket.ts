@@ -3,14 +3,17 @@ import { logClient } from '../lib/logger';
 import { getApiKey } from '../api/client';
 
 type SocketCallback = (topic: string, payload: Record<string, any>) => void;
+type DiscoveryCallback = (event: any) => void;
 
-export function useEstateSocket(onTelemetry?: SocketCallback) {
+export function useEstateSocket(onTelemetry?: SocketCallback, onDiscovery?: DiscoveryCallback) {
   const [connected, setConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState('—');
   const retriesRef = useRef(0);
   const timerRef = useRef(0);
   const cbRef = useRef(onTelemetry);
   cbRef.current = onTelemetry;
+  const discCbRef = useRef(onDiscovery);
+  discCbRef.current = onDiscovery;
 
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -43,6 +46,9 @@ export function useEstateSocket(onTelemetry?: SocketCallback) {
           if (msg.type === 'mqtt' && msg.payload && cbRef.current) {
             // Форвард телеметрии в колбэк
             cbRef.current(msg.topic, msg.payload);
+          }
+          if (msg.type === 'discovery' && discCbRef.current) {
+            discCbRef.current(msg.data);
           }
         } catch {}
       });

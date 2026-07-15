@@ -341,8 +341,9 @@ export default function SmartEstateApp() {
   const loadPending = useCallback(async () => {
     try {
       const data = await api('/devices/pending');
-      if (data.pending) {
-        setDiscoveredDevices(data.pending.map((p: any) => ({
+      const devices = data.devices || data.pending || [];
+      if (devices.length > 0 || !data.pending) {
+        setDiscoveredDevices(devices.map((p: any) => ({
           tempId: uid(),
           ieee: p.ieee_address,
           type: p.suggested_type || 'sensor',

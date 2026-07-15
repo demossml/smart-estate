@@ -264,7 +264,7 @@ function handleBridgeEvent(data: any) {
 }
 
 // WebSocket broadcast helper
-function broadcastDiscovery(event: any) {
+export function broadcastDiscovery(event: any) {
   if (!wss) return;
   const msg = JSON.stringify({ type: 'discovery', data: event });
   wss.clients.forEach((c: any) => {

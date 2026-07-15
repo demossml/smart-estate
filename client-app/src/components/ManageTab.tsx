@@ -1,5 +1,5 @@
 import React from "react";
-import { Plus, Trash2, RadioTower, Bot, Check, X, Loader2, CircleCheck, CircleX, KeyRound, ShieldCheck, Mic, Sparkles, Inbox, Home, DoorOpen, Sofa, Bed, UtensilsCrossed, TreePine } from "lucide-react";
+import { Plus, Trash2, RadioTower, Bot, Check, X, Loader2, CircleCheck, CircleX, KeyRound, ShieldCheck, Mic, Sparkles, Inbox, Home, DoorOpen, Sofa, Bed, UtensilsCrossed, TreePine, Edit3 } from "lucide-react";
 import { DEVICE_TYPES } from "./DeviceTile";
 import { ROOM_ICONS, ROOM_ICON_LIST } from "./HomeWidgets";
 import RoomDevicesManager from "./RoomDevicesManager";
@@ -172,7 +172,7 @@ export default function ManageTab({
                     {d.model && <div className="se-found-model">{d.model}</div>}
                   </div>
                   <button className="se-mini-btn" onClick={() => onAssignDiscovered(d)}>
-                    {d.is_added ? "Редактировать" : "Добавить"}
+                    {d.is_added ? <><Edit3 size={12} strokeWidth={2} /> Редактировать</> : "Добавить"}
                   </button>
                   {!d.is_added && (
                     <button className="se-icon-btn" onClick={() => onDismissDiscovered(d.tempId)}><X size={13} strokeWidth={1.8} /></button>
