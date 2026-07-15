@@ -43,4 +43,4 @@ devices:
   '0xa4c1388e501b0447':
     friendly_name: Датчик качества воздуха
   '0xa4c1382e284d2eeb':
-    friendly_name: Тест-тип-датчик
+    friendly_name: CO2 Датчик Гостиная

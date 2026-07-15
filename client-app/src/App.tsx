@@ -390,7 +390,7 @@ export default function SmartEstateApp() {
     if (!assigningDevice) return;
     const ieee = assigningDevice.ieee_address || assigningDevice.ieee;
     try {
-      await api(`/discovery/${ieee}/confirm`, {
+      const res = await api(`/discovery/${ieee}/confirm`, {
         method: 'POST',
         body: JSON.stringify({
           name,
@@ -398,12 +398,17 @@ export default function SmartEstateApp() {
           type: assigningDevice.suggested_type || assigningDevice.type || null,
         }),
       });
+      // Force-refetch всех данных: комнаты, устройства, сценарии
       await loadData();
-      setDiscoveredDevices((prev) => prev.map((d) =>
-        (d.ieee === ieee || d.ieee_address === ieee)
-          ? { ...d, is_added: true, friendly_name: name, room_id: roomId, suggestedName: name }
-          : d
-      ));
+      // Дополнительно — перезагружаем список обнаруженных устройств
+      try {
+        const pendingRes = await api('/devices/pending');
+        setDiscoveredDevices((pendingRes.devices || pendingRes.items || []).map((d: any) => ({
+          ...d,
+          ieee: d.ieee_address || d.ieee,
+          tempId: d.ieee_address || d.ieee,
+        })));
+      } catch {}
       setAssigningDevice(null);
       setToast(assigningDevice.is_added
         ? `✅ «${name}» обновлено`

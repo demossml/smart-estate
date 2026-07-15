@@ -963,18 +963,22 @@ app.post('/api/discovery/:ieee/confirm', async (req, res) => {
       }
     } catch {}
 
+    // Читаем из БД — свежие данные после всех UPDATE
+    const updated = db.prepare('SELECT * FROM devices WHERE ieee_addr = ?').get(ieee);
+
     // Broadcast — UI немедленно обновится
     try {
       broadcastDiscovery({
         type: 'device_updated',
         ieee_address: ieee,
         friendly_name: name,
-        room_id: roomIdNum,
+        room_id: roomId,
+        device_type: deviceType,
         is_added: true,
       });
     } catch {}
 
-    res.json({ ok: true, device: { ieee_addr: ieee, friendly_name: name, room_id: roomIdNum } });
+    res.json({ ok: true, device: updated, broadcast_sent: true });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'discovery_confirm');
     res.status(500).json({ ok: false, error: e.message });
@@ -1020,7 +1024,7 @@ app.get('/api/rooms', async (_req, res) => {
   try {
     const rooms = await query(`
       SELECT r.*, COUNT(d.ieee_addr) as device_count
-      FROM rooms r LEFT JOIN devices d ON r.id = d.room_id AND ${demoFilter('d')}
+      FROM rooms r LEFT JOIN devices d ON r.id = d.room_id
       GROUP BY r.id, r.name, r.icon ORDER BY r.id
     `);
 
@@ -1142,7 +1146,7 @@ app.get('/api/rooms/:id/devices', async (req, res) => {
              ) sub WHERE rn = 1 LIMIT 6) t
         ) as latest_telemetry
       FROM devices d LEFT JOIN rooms r ON d.room_id = r.id
-      WHERE d.room_id = ? AND ${demoFilter('d')}
+      WHERE d.room_id = ?
       ORDER BY d.type, d.ieee_addr
     `, id);
 

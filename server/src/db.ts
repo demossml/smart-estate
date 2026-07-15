@@ -287,9 +287,10 @@ export const stmt: any = {
     VALUES (?, ?, ?, ?, ?, ?, '{}', 'online', datetime('now'))
     ON CONFLICT(ieee_addr) DO UPDATE SET
       friendly_name = COALESCE(excluded.friendly_name, friendly_name),
-      type = CASE WHEN excluded.type IS NOT NULL AND devices.type_manually_set = 0 THEN excluded.type ELSE devices.type END,
-      room_id = CASE WHEN excluded.room_id IS NOT NULL AND devices.room_manually_set = 0 THEN excluded.room_id ELSE devices.room_id END,
       model = COALESCE(excluded.model, model),
+      vendor = COALESCE(excluded.vendor, vendor),
+      type = COALESCE(excluded.type, type),
+      room_id = COALESCE(excluded.room_id, room_id),
       last_seen = datetime('now')
   `),
 
