@@ -656,6 +656,20 @@ export let permitJoinActive = false;
 export let permitJoinTimeLeft = 0;
 
 /**
+ * Синхронизировать состояние permit_join из ответа Z2M bridge/config
+ */
+export function syncPermitFromZ2M(state: { permit_join?: boolean; permit_join_end?: string | number }): void {
+  const isOpen = state?.permit_join || false;
+  if (isOpen !== permitJoinActive) {
+    logger.info(`[MQTT-WS] permit_join sync: SmartE=${permitJoinActive} → Z2M=${isOpen}`);
+    permitJoinActive = isOpen;
+  }
+  permitJoinTimeLeft = state?.permit_join_end
+    ? Math.max(0, Math.round(Number(state.permit_join_end) - Date.now() / 1000))
+    : 0;
+}
+
+/**
  * Опубликовать команду permit_join через основное MQTT-подключение.
  */
 export function publishPermitJoin(value: boolean, time: number = 120): boolean {

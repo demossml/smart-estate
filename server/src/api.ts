@@ -8,7 +8,7 @@ import { encryptToken, decryptToken } from './crypto';
 import { stmt, db, query, exec, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
 import { toggleDemoDevice, isDemoMode } from './demo';
-import { attachWebSocket, sendDeviceCommand as publishCommand, publishPermitJoin, lastPresenceAt, mqttConnected, permitJoinActive, permitJoinTimeLeft, mapZ2MTypeToInternal, broadcastDiscovery, client } from './mqtt-ws';
+import { attachWebSocket, sendDeviceCommand as publishCommand, publishPermitJoin, lastPresenceAt, mqttConnected, permitJoinActive, permitJoinTimeLeft, mapZ2MTypeToInternal, broadcastDiscovery, syncPermitFromZ2M, client } from './mqtt-ws';
 import { sendDeviceCommand as sendDeviceCommandAsync, parseActions } from './actions';
 import { parseTriggers } from './triggers';
 import { get as httpGet } from 'http';
@@ -853,11 +853,27 @@ function zigbeeRequest(path: string): Promise<any> {
 app.post('/api/discovery/start', discoveryLimiter, async (_req, res) => {
   try {
     if (permitJoinActive) {
-      return res.json({ ok: true, permit_join: true, time: permitJoinTimeLeft, already_open: true });
+      // Даже если локально считаем что поиск открыт — отправляем команду заново
+      // и запрашиваем реальное состояние у Z2M
+      publishPermitJoin(true, 120);
+      setTimeout(async () => {
+        try {
+          const state = await zigbeeRequest('/bridge/config');
+          syncPermitFromZ2M(state);
+        } catch {}
+      }, 1000);
+      return res.json({ ok: true, permit_join: true, time: 120, already_open: true });
     }
     if (!publishPermitJoin(true, 120)) {
       return res.status(503).json({ ok: false, error: 'MQTT not connected' });
     }
+    // Запросить актуальное состояние permit_join от Z2M через 1 секунду
+    setTimeout(async () => {
+      try {
+        const state = await zigbeeRequest('/bridge/config');
+        syncPermitFromZ2M(state);
+      } catch {}
+    }, 1000);
     res.json({ ok: true, permit_join: true, time: 120 });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'discovery_start');
@@ -865,10 +881,26 @@ app.post('/api/discovery/start', discoveryLimiter, async (_req, res) => {
   }
 });
 
+// GET /api/discovery/status — актуальное состояние permit_join от Z2M
+app.get('/api/discovery/status', async (_req, res) => {
+  try {
+    const config = await zigbeeRequest('/bridge/config').catch(() => ({}));
+    res.json({
+      ok: true,
+      permit_join: config.permit_join || false,
+      remaining: config.permit_join ? (Number(config.permit_join_end) - Date.now() / 1000) : 0,
+    });
+  } catch (e) {
+    res.json({ ok: true, permit_join: false, remaining: 0 });
+  }
+});
+
 // POST /api/discovery/stop — disable permit_join
 app.post('/api/discovery/stop', discoveryLimiter, async (_req, res) => {
   try {
     publishPermitJoin(false, 0);
+    // Принудительно синхронизируем локальное состояние
+    syncPermitFromZ2M({ permit_join: false });
     res.json({ ok: true, permit_join: false });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'discovery_stop');
