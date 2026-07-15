@@ -138,7 +138,7 @@ graph TD
     B --> C[Подключить real API + lastPresenceAt]
     C --> D[Добавить в RoomTileV2.tsx]
     D --> E[Интегрировать настройки датчика → MQTT publish]
-    E --> F[Добавить статистику из DuckDB]
+    E --> F[Добавить статистику из SQLite]
 ```
 
 1. Скопировать `PresenceCard_complete.tsx` в `client-app/src/components/ui/`

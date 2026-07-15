@@ -288,14 +288,14 @@ describe('Device Discovery Parsing', () => {
   });
 });
 
-describe('MQTT to DuckDB Integration', () => {
+describe('MQTT to DB Integration', () => {
   let mod: any;
 
   beforeAll(async () => {
     mod = await import('../src/db');
   });
 
-  it('stores parsed telemetry in DuckDB', async () => {
+  it('stores parsed telemetry in database', async () => {
     const ieee = '0xMQTT_INTEGRATION_TEST';
 
     // Simulate what handleTelemetry does

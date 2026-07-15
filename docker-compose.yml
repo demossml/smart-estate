@@ -15,7 +15,7 @@ services:
     networks:
       - zigbee-net
     healthcheck:
-      test: ["CMD", "mosquitto_sub", "-t", "$SYS/broker/uptime", "-C", "1"]
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/broker/uptime", "-C", "1"]
       interval: 20s
       timeout: 5s
       retries: 3

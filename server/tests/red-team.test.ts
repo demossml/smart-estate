@@ -321,7 +321,7 @@ describe('🔴 Input Injection Attacks', () => {
   it('BLOCKED: SQL injection in params → safe handling', async () => {
     const res = await request.get("/api/devices/0x001'; DROP TABLE devices;--")
       .set('X-API-Key', 'sk-very-secret-key-2026');
-    // DuckDB uses parameterized queries — injection not possible
+    // SQLite uses parameterized queries — injection not possible
     // Should return 404 (device not found) not 500
     expect(res.status).toBe(404);
   });

@@ -57,12 +57,12 @@ let allOk = true;
 for (const t of tests) {
   const out = sqliteCompat(t);
   const hasInterval = out.includes('INTERVAL');
-  const hasDuckDB = out.includes('::DECIMAL') || out.includes('::VARCHAR');
+  const hasCast = out.includes('::DECIMAL') || out.includes('::VARCHAR');
   const hasNowFn = out.includes('NOW()');
   const hasCurrentDate = out.includes('CURRENT_DATE');
   const hasCurrentTs = out.includes('CURRENT_TIMESTAMP') && !out.includes("datetime('now')");
-  
-  const fail = hasInterval || hasDuckDB || hasNowFn || hasCurrentDate || hasCurrentTs;
+
+  const fail = hasInterval || hasCast || hasNowFn || hasCurrentDate || hasCurrentTs;
   if (fail) {
     console.log(`❌ FAIL: ${t}`);
     console.log(`   OUT: ${out}`);

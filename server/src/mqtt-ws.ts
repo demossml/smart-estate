@@ -301,7 +301,7 @@ export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): s
   // 1. Сначала проверяем suggested_type из discovery_events (пользователь уже выбрал тип)
   try {
     const event = db.prepare(
-      `SELECT suggested_type FROM discovery_events WHERE ieee_addr = ? ORDER BY id DESC LIMIT 1`
+      `SELECT suggested_type FROM discovery_events WHERE ieee_address = ? ORDER BY id DESC LIMIT 1`
     ).get(ieeeAddr) as { suggested_type: string } | undefined;
     if (event?.suggested_type && event.suggested_type !== 'unknown') return event.suggested_type;
   } catch {
@@ -596,11 +596,11 @@ export function sendDeviceCommand(deviceIeee: string, command: string, payload?:
  * Resolve device target: first by exact ieee/name match, then by type (sorted by lqi DESC).
  * Returns { target: string | null } — the friendly_name to use in MQTT topic.
  */
-function resolveDeviceTarget(query: string): { target: string | null } {
+function resolveDeviceTarget(query_str: string): { target: string | null } {
   // 1. Буквальный поиск по ieee_addr или friendly_name
   const exact = db.prepare(
     `SELECT friendly_name FROM devices WHERE ieee_addr = ? OR friendly_name = ? LIMIT 1`
-  ).get(query, query) as { friendly_name: string } | undefined;
+  ).get(query_str, query_str) as { friendly_name: string } | undefined;
   if (exact?.friendly_name) return { target: exact.friendly_name };
 
   // 2. Поиск по типу (модели) — берём устройство с лучшим LQI
@@ -608,13 +608,13 @@ function resolveDeviceTarget(query: string): { target: string | null } {
     `SELECT d.friendly_name FROM devices d
      LEFT JOIN telemetry t ON t.device_ieee = d.ieee_addr AND t.property = 'lqi'
      WHERE d.type = ? OR d.model = ?
-     ORDER BY t.value DESC NULLS LAST
+     ORDER BY t.value DESC
      LIMIT 1`
-  ).get(query, query) as { friendly_name: string } | undefined;
+  ).get(query_str, query_str) as { friendly_name: string } | undefined;
   if (byType?.friendly_name) return { target: byType.friendly_name };
 
   // 3. Fallback — используем query как есть (для обратной совместимости)
-  return { target: query };
+  return { target: query_str };
 }
 
 export { client, lastPresenceAt, sendDeviceCommand as publishCommand };

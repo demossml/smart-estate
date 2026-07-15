@@ -306,4 +306,4 @@ IF-THEN правила движка автоматизации
 | **computed_status не работает** | Зависит от `latest_telemetry` в памяти | Нужно пересчитывать на основе последней записи из БД, а не только in-memory |
 | **lastPresenceAt** | Сбрасывается при рестарте | Сохранять в БД или инициализировать при старте запросом `SELECT MAX(ts) FROM telemetry WHERE property='presence' AND value=1 GROUP BY device_ieee` |
 | **WebSocket live** | Буфер в `Dashboard.tsx` использует `friendly_name` для поиска устройства | Проверить что friendly_name совпадает с тем, что приходит от Zigbee2MQTT |
-| **DuckDB lock** | Невозможно читать БД, если сервер запущен | Использовать `read_only=True` или DuckDB connection pooling |
+| **SQLite lock** | Невозможно читать БД, если сервер запущен | Использовать `read_only=True` или подключение с флагом IMMEDIATE |

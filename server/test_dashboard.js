@@ -12,8 +12,8 @@ const queries = [
 for (const q of queries) {
   const out = sqliteCompat(q);
   const hasInterval = out.includes('INTERVAL');
-  const hasDuckDB = out.includes('::DECIMAL');
-  console.log(`${hasInterval ? '❌' : hasDuckDB ? '❌' : '✅'} ${out.substring(0, 120)}`);
+  const hasCast = out.includes('::DECIMAL');
+  console.log(`${hasInterval ? '❌' : hasCast ? '❌' : '✅'} ${out.substring(0, 120)}`);
   if (hasInterval) console.log(`   PROBLEM: INTERVAL found at pos ${out.indexOf('INTERVAL')}`);
-  if (hasDuckDB) console.log(`   PROBLEM: ::DECIMAL found at pos ${out.indexOf('::DECIMAL')}`);
+  if (hasCast) console.log(`   PROBLEM: ::DECIMAL found at pos ${out.indexOf('::DECIMAL')}`);
 }

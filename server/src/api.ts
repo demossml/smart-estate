@@ -16,7 +16,7 @@ import mqtt from 'mqtt';
 import cookieParser from 'cookie-parser';
 import logger from './logger';
 
-// Fix BigInt serialization for DuckDB
+// Fix BigInt serialization for SQLite
 (BigInt.prototype as any).toJSON = function () { return Number(this); };
 
 const app = express();

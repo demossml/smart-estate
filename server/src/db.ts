@@ -471,7 +471,7 @@ export const stmt: any = {
 };
 
 // ── SQL Compatibility Layer ──
-// Translates DuckDB-specific SQL constructs to SQLite syntax (legacy)
+// SQL normalization (legacy compatibility layer, now a no-op)
 function sqliteCompat(sql: string): string {
   if (!sql || typeof sql !== 'string') return sql;
 
@@ -516,7 +516,7 @@ function sqliteCompat(sql: string): string {
   queryStr = queryStr.replace(/\bCURRENT_TIMESTAMP\b/gi, "datetime('now')");
 
   if (/INTERVAL/i.test(queryStr)) {
-    throw new Error(`sqliteCompat: необработанный DuckDB INTERVAL-синтаксис в запросе: ${queryStr}`);
+    throw new Error(`sqliteCompat: необработанный INTERVAL-синтаксис в запросе: ${queryStr}`);
   }
 
   queryStr = queryStr.replace(
