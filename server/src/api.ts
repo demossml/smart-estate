@@ -416,7 +416,11 @@ app.get('/api/devices/pending', async (_req, res) => {
     const seen = new Set<string>();
 
     const unified = z2mDevices
-      .filter((d: any) => !['Coordinator', 'Router'].includes(d.type || ''))
+      .filter((d: any) => {
+        const ieee = d.ieee_address || d.ieeeAddr;
+        const existing = existingMap.get(ieee);
+        return !existing && !['Coordinator', 'Router'].includes(d.type || '');
+      })
       .map((z2m: any) => {
         const ieee = z2m.ieee_address || z2m.ieeeAddr;
         if (seen.has(ieee)) return null;
@@ -426,6 +430,14 @@ app.get('/api/devices/pending', async (_req, res) => {
         const disc = discoveryRows.find((r: any) => r.ieee_address === ieee);
 
         const suggestedType = existing?.type || disc?.suggested_type || mapZ2MTypeToInternal?.(ieee, z2m.definition?.exposes, z2m.definition?.model, z2m.definition?.vendor) || null;
+
+        // Room hint из device_profiles
+        const profile = z2m.definition?.model || disc?.model
+          ? db.prepare(`SELECT room_hint FROM device_profiles WHERE model = ? AND vendor = ? LIMIT 1`).get(
+              existing?.model || z2m.definition?.model || disc?.model,
+              existing?.vendor || z2m.definition?.vendor || disc?.vendor || ''
+            ) as { room_hint: string } | undefined
+          : null;
 
         // AI fallback для устройств без типа
         let aiSuggestedType: string | null = null;
@@ -444,6 +456,7 @@ app.get('/api/devices/pending', async (_req, res) => {
           is_added: !!existing,
           can_edit: true,
           room_id: existing?.room_id || null,
+          room_hint: profile?.room_hint || null,
           status: existing ? 'online' : 'discovered',
           last_updated: new Date().toISOString(),
         };
@@ -456,17 +469,26 @@ app.get('/api/devices/pending', async (_req, res) => {
       if (seen.has(ex.ieee_addr)) continue;
       seen.add(ex.ieee_addr);
       const disc = discoveryRows.find((r: any) => r.ieee_address === ex.ieee_addr);
+      // Room hint из device_profiles
+      const model = ex.model || disc?.model || null;
+      const vendor = ex.vendor || disc?.vendor || null;
+      const profile = model
+        ? db.prepare(`SELECT room_hint FROM device_profiles WHERE model = ? AND vendor = ? LIMIT 1`).get(
+            model, vendor || ''
+          ) as { room_hint: string } | undefined
+        : null;
       unified.push({
         ieee_address: ex.ieee_addr,
         friendly_name: ex.friendly_name || ex.ieee_addr,
-        model: ex.model || disc?.model || null,
-        vendor: ex.vendor || disc?.vendor || null,
+        model: model,
+        vendor: vendor,
         suggested_type: ex.type || disc?.suggested_type || null,
         exposes: disc?.exposes_json ? JSON.parse(disc.exposes_json) : null,
         discovered_at: disc?.created_at || null,
         is_added: true,
         can_edit: true,
         room_id: ex.room_id || null,
+        room_hint: profile?.room_hint || null,
         status: 'online',
         last_updated: new Date().toISOString(),
       });
@@ -1382,18 +1404,10 @@ app.delete('/api/rooms/:id', async (req, res) => {
   try {
     const existing = await query('SELECT * FROM rooms WHERE id = ?', id);
     if (!existing.length) return res.status(404).json({ ok: false, error: 'Room not found' });
-    // Удаляем все устройства в этой комнате вместе с их данными
-    const devices = await query('SELECT ieee_addr FROM devices WHERE room_id = ?', id);
-    for (const d of devices) {
-      await query('DELETE FROM telemetry WHERE device_ieee = ?', d.ieee_addr);
-      await query('DELETE FROM commands WHERE device_ieee = ?', d.ieee_addr);
-      await query('DELETE FROM state_changes WHERE device_ieee = ?', d.ieee_addr);
-      await query('DELETE FROM climate_setpoints WHERE device_ieee = ?', d.ieee_addr);
-      await query('DELETE FROM device_group_members WHERE device_ieee = ?', d.ieee_addr);
-    }
-    await query('DELETE FROM devices WHERE room_id = ?', id);
+    // Переводим все устройства из удаляемой комнаты в Гостиную (id=1)
+    const moved = (db as any).prepare('UPDATE devices SET room_id = 1 WHERE room_id = ?').run(id);
     await query('DELETE FROM rooms WHERE id = ?', id);
-    res.json({ ok: true, deleted: id, devices_removed: devices.length });
+    res.json({ ok: true, deleted: id, devices_moved_to_living_room: (moved as any).changes || 0 });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'rooms_delete');
     res.status(500).json({ ok: false, error: e.message });
@@ -1403,6 +1417,9 @@ app.delete('/api/rooms/:id', async (req, res) => {
 // ── PATCH /api/rooms/:id (Phase 4) ────────────────────────
 app.patch('/api/rooms/:id', async (req, res) => {
   const { id } = req.params;
+  if (id === '1') {
+    return res.status(400).json({ ok: false, error: 'Нельзя редактировать Гостиную' });
+  }
   const { name, icon } = req.body;
   try {
     const existing = await query('SELECT * FROM rooms WHERE id = ?', id);
@@ -3174,6 +3191,47 @@ function calcGlobalStatus(metrics: Record<string, any>): 'good' | 'warn' | 'dang
   }
   return worst;
 }
+
+// ── Device Profiles API ──────────────────────────────────
+app.get('/api/device-profiles', async (_req, res) => {
+  try {
+    const profiles = db.prepare(`
+      SELECT * FROM device_profiles ORDER BY usage_count DESC, last_seen_at DESC
+    `).all();
+    res.json({ ok: true, profiles });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'device_profiles_list');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.patch('/api/device-profiles/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const allowed = ['default_scenario_json', 'room_hint', 'friendly_name_template', 'icon', 'default_room_hint'];
+    const updates: string[] = [];
+    const params: any[] = [];
+
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) {
+        updates.push(`${key} = ?`);
+        params.push(req.body[key]);
+      }
+    }
+
+    if (updates.length === 0) {
+      return res.json({ ok: true, updated: false });
+    }
+
+    params.push(id);
+    db.prepare(`UPDATE device_profiles SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    const updated = db.prepare(`SELECT * FROM device_profiles WHERE id = ?`).get(id);
+    res.json({ ok: true, updated: true, profile: updated });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'device_profiles_update');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 // ── Export (server started by index.ts) ──────────────────
 
