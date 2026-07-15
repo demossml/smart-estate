@@ -327,6 +327,13 @@ export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): s
     if (expose.property) features.add(expose.property);
   }
 
+  // ── ПРИОРИТЕТЫ (air quality ДО presence) ──
+  // Air quality — сначала, чтобы Tuya CO2/VOC/PM не определялись как presence
+  if (features.has('co2') || features.has('voc') || features.has('pm25') ||
+      features.has('pm10') || features.has('formaldehyde') || features.has('air_quality')) {
+    return 'air_monitor';
+  }
+
   if (types.has('light')) return 'light';
   if (types.has('cover')) return 'gate';  // В этом доме cover-устройства — ворота/гараж, не шторы (Модуль 8, Находка 14)
   if (types.has('lock')) return 'lock';
@@ -339,15 +346,18 @@ export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): s
 
   if (features.has('lock_state')) return 'lock';
   if (features.has('contact')) return features.has('tamper') ? 'window_sensor' : 'door_sensor';
+
+  // Presence — только после air quality
   if (features.has('presence')) return 'presence_sensor';
   if (features.has('occupancy')) return 'motion_sensor';
   if (features.has('water_leak')) return 'leak_sensor';
-  if (features.has('co2') || features.has('voc') || features.has('pm25')) return 'air_monitor';
+  if (features.has('smoke')) return 'smoke_sensor';
+
   if (features.has('temperature') || features.has('humidity') || features.has('pressure')) {
     return 'sensor';
   }
 
-  return null; // ничего не определили — требуем явного выбора от пользователя
+  return null; // ничего не определили — пользователь выберет вручную
 }
 
 // ── Telemetry Handler ────────────────────────────────────
