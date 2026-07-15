@@ -80,6 +80,7 @@ interface ManageTabProps {
   rooms: any[];
   devices: any[];
   onAddRoom: () => void;
+  onEditRoom?: (room: any) => void;
   onDeleteRoom: (id: string) => void;
   onAddDeviceManually: () => void;
   onSaveParams: (id: string, params: Record<string, any>) => void;
@@ -122,15 +123,31 @@ export default function ManageTab({
       <div className="se-manage-section">
         <div className="se-manage-head">Комнаты и устройства</div>
         {rooms.map((room: any) => (
-          <RoomDevicesManager
-            key={room.id}
-            room={room}
-            devices={devices.filter((d: any) => String(d.room_id) === room.id)}
-            onAddDevice={onAddDevice}
-            onSaveParams={onSaveParams}
-            onRemoveFromRoom={onRemoveFromRoom}
-            onDeleteDevice={onDeleteDevice}
-          />
+          <div key={room.id} className="se-room-manager-wrapper">
+            <div className="se-room-manager-actions">
+              <span className="se-room-manager-name">{room.name}</span>
+              {String(room.id) !== '1' && (
+                <div className="se-room-manager-btns">
+                  <button className="se-mini-btn" onClick={() => onEditRoom?.(room)} title="Редактировать">
+                    ✏️ Редактировать
+                  </button>
+                  <button className="se-mini-btn se-mini-btn--danger" onClick={() => onDeleteRoom(String(room.id))} title="Удалить комнату">
+                    🗑️ Удалить
+                  </button>
+                </div>
+              )}
+              {String(room.id) === '1' && <span className="se-room-manager-protected">🔒 Нельзя изменить</span>}
+            </div>
+            <RoomDevicesManager
+              key={room.id}
+              room={room}
+              devices={devices.filter((d: any) => String(d.room_id) === room.id)}
+              onAddDevice={onAddDevice}
+              onSaveParams={onSaveParams}
+              onRemoveFromRoom={onRemoveFromRoom}
+              onDeleteDevice={onDeleteDevice}
+            />
+          </div>
         ))}
         <button className="se-outline-btn" onClick={onAddRoom} style={{ marginTop: 12 }}><Plus size={14} strokeWidth={2} /> Добавить комнату</button>
       </div>
