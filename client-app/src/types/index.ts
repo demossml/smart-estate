@@ -21,6 +21,8 @@ export interface Device {
   online: boolean;
   rssi?: number;
   power?: number;
+  battery_level?: number | null;
+  last_seen?: string | null;
 }
 
 /** Security status */

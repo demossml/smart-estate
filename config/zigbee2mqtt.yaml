@@ -44,3 +44,5 @@ devices:
     friendly_name: Датчик качества воздуха
   '0xa4c1382e284d2eeb':
     friendly_name: Датчик C1382EEB
+  '0xa4c138bc5a4a2cf2':
+    friendly_name: Датчик 5A4A2CF2

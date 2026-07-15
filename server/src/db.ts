@@ -180,6 +180,23 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_gate_log_device ON gate_access_log(device_ieee, ts);
   CREATE INDEX IF NOT EXISTS idx_nonces_expires ON used_nonces(expires_at);
   CREATE INDEX IF NOT EXISTS idx_discovery_ieee_status ON discovery_events(ieee_address, status, created_at);
+  CREATE TABLE IF NOT EXISTS device_profiles (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    model         TEXT NOT NULL,
+    vendor        TEXT,
+    exposes_hash  TEXT,
+    detected_type TEXT,
+    friendly_name_template TEXT,
+    icon          TEXT,
+    default_room_hint TEXT DEFAULT 'any',
+    default_scenario_json TEXT,
+    room_hint     TEXT DEFAULT 'any',
+    parameters_json TEXT,
+    created_at    TEXT DEFAULT (datetime('now')),
+    last_seen_at  TEXT,
+    usage_count   INTEGER DEFAULT 1,
+    UNIQUE(model, vendor)
+  );
 `);
 
 // ── Idempotent migration: is_demo ──────────────────────────
@@ -227,6 +244,38 @@ if (!hasBatteryLevel.cnt) {
   db.exec(`ALTER TABLE devices ADD COLUMN battery_level INTEGER`);
   logger.log("[DB] ", '➕ Миграция: devices.battery_level добавлена');
 }
+
+// ── Migration: device_profiles (только сама таблица, CREATE TABLE выше уже отработал) ──
+// Убеждаемся, что таблица существует (на случай, если CREATE TABLE не выполнился)
+const hasDeviceProfilesTbl = db.prepare(`SELECT COUNT(*) as cnt FROM pragma_table_info('device_profiles')`).get() as any;
+if (!hasDeviceProfilesTbl.cnt) {
+  db.exec(`CREATE TABLE IF NOT EXISTS device_profiles (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    model         TEXT NOT NULL,
+    vendor        TEXT,
+    exposes_hash  TEXT,
+    detected_type TEXT,
+    friendly_name_template TEXT,
+    icon          TEXT,
+    default_room_hint TEXT DEFAULT 'any',
+    default_scenario_json TEXT,
+    room_hint     TEXT DEFAULT 'any',
+    parameters_json TEXT,
+    created_at    TEXT DEFAULT (datetime('now')),
+    last_seen_at  TEXT,
+    usage_count   INTEGER DEFAULT 1,
+    UNIQUE(model, vendor)
+  )`);
+  logger.log("[DB] ", '➕ Таблица device_profiles создана');
+}
+
+// Migration: add new columns (if device_profiles already existed without them)
+try {
+  db.exec(`ALTER TABLE device_profiles ADD COLUMN default_scenario_json TEXT`);
+} catch {}
+try {
+  db.exec(`ALTER TABLE device_profiles ADD COLUMN room_hint TEXT DEFAULT 'any'`);
+} catch {}
 
 // Default scenarios
 const defaultScenarios = db.prepare(`SELECT COUNT(*) as cnt FROM scenarios`) as any;
@@ -479,6 +528,25 @@ export const stmt: any = {
   confirmDiscovery: db.prepare(`
     UPDATE discovery_events SET status = 'confirmed' WHERE ieee_address = ?
   `),
+
+  // Device profiles (AI knowledge base)
+  saveDeviceProfile: db.prepare(`
+    INSERT INTO device_profiles (model, vendor, exposes_hash, detected_type, friendly_name_template, icon, default_room_hint, default_scenario_json, room_hint, parameters_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(model, vendor) DO UPDATE SET
+      exposes_hash = COALESCE(excluded.exposes_hash, exposes_hash),
+      detected_type = COALESCE(excluded.detected_type, detected_type),
+      friendly_name_template = COALESCE(excluded.friendly_name_template, friendly_name_template),
+      icon = COALESCE(excluded.icon, icon),
+      default_room_hint = COALESCE(excluded.default_room_hint, default_room_hint),
+      default_scenario_json = COALESCE(excluded.default_scenario_json, default_scenario_json),
+      room_hint = COALESCE(excluded.room_hint, room_hint),
+      parameters_json = COALESCE(excluded.parameters_json, parameters_json),
+      usage_count = usage_count + 1,
+      last_seen_at = datetime('now')
+  `),
+
+  getDeviceProfile: db.prepare(`SELECT * FROM device_profiles WHERE model = ? AND vendor = ? LIMIT 1`),
 };
 
 // ── SQL Compatibility Layer ──

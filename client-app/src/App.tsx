@@ -640,6 +640,8 @@ export default function SmartEstateApp() {
       {showAddRoom && <AddRoomModal onClose={() => setShowAddRoom(false)} onConfirm={confirmAddRoom} />}
       {assigningDevice && (
         <AssignDiscoveredModal device={assigningDevice} rooms={rooms}
+          apiBase=""
+          onDevicesRefresh={loadDevices}
           onClose={() => setAssigningDevice(null)} onConfirm={confirmAssignDiscovered} />
       )}
       {detailDevice && (

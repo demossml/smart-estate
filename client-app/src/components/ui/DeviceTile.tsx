@@ -152,6 +152,14 @@ export function DeviceTile({
           </span>
         )}
 
+        {/* Temp / Humidity sensor */}
+        {device.type === 'temp_sensor' && (
+          <div className="se-air-grid se-air-grid--3">
+            <div><span className="se-mono">{temperatureTel.value !== null ? `${temperatureTel.value}°` : '—'}</span><label>темп.</label></div>
+            <div><span className="se-mono">{humidityTel.value !== null ? `${humidityTel.value}%` : '—'}</span><label>влажн.</label></div>
+          </div>
+        )}
+
         {/* Air monitor */}
         {device.type === 'air_monitor' && (
           <div className="se-air-grid">

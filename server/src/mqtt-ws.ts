@@ -171,9 +171,26 @@ function handleDeviceDiscovery(friendlyName: string, data: any) {
     : baseName;
   try {
     const exposes = data.exposes || null;
-    const detectedType = mapZ2MTypeToInternal(ieee, exposes);
     const model = data.definition?.model || data.model_id || null;
     const vendor = data.definition?.vendor || null;
+    const detectedType = mapZ2MTypeToInternal(ieee, exposes, model, vendor);
+
+    // Если классификатор не смог определить тип, но есть модель — пробуем AI
+    if (!detectedType && model) {
+      (async () => {
+        try {
+          const { detectDeviceTypeWithAI } = await import('./ai');
+          const aiType = await detectDeviceTypeWithAI(exposes || [], model, vendor || '', null);
+          if (aiType && aiType !== detectedType) {
+            logger.log("[MQTT-WS] ", `🧠 AI предложил тип: ${aiType} для ${name} (${model})`);
+            // Сохраняем AI-предложение как suggested_type в discovery_events
+            try {
+              db.prepare(`UPDATE discovery_events SET suggested_type = ? WHERE ieee_address = ? AND status = 'pending'`).run(aiType, ieee);
+            } catch {}
+          }
+        } catch {}
+      })();
+    }
 
     try {
       stmt.insertDiscoveryEvent.run(ieee, name, model, vendor, detectedType, exposes ? JSON.stringify(exposes) : null);
@@ -225,7 +242,7 @@ function handleBridgeEvent(data: any) {
             break;
           case 'successful': {
             const exposes = info.definition?.exposes || null;
-            const detectedType = mapZ2MTypeToInternal(ieee, exposes);
+            const detectedType = mapZ2MTypeToInternal(ieee, exposes, model, vendor);
             stmt.insertDiscoveryEvent.run(ieee, name, model, vendor, detectedType, exposes ? JSON.stringify(exposes) : null);
             logger.log("[MQTT-WS] ", `✅ Interview successful: ${name} (${model}) — готов к подтверждению`);
             broadcastDiscovery({
@@ -295,7 +312,7 @@ function handleBridgeDevices(devices: any) {
     const model = dev.definition?.model || dev.model_id || null;
     const vendor = dev.definition?.vendor || null;
     try {
-      const detectedType = mapZ2MTypeToInternal(ieee, dev.definition?.exposes || null);
+      const detectedType = mapZ2MTypeToInternal(ieee, dev.definition?.exposes || null, model, vendor);
       stmt.upsertDeviceFromDiscovery.run(ieee, name, model, vendor, detectedType, null);
       logger.log("[MQTT-WS] ", `📦 Bridge device: ${name} (${model})`);
     } catch (e: any) {
@@ -305,7 +322,22 @@ function handleBridgeDevices(devices: any) {
 }
 
 // ── Real type mapping from Zigbee2MQTT exposes ──────────────────────────────
-export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): string | null {
+export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null, model?: string | null, vendor?: string | null): string | null {
+  // 0. Сначала проверяем device_profiles (AI knowledge base) — самый надёжный источник
+  if (model || vendor) {
+    try {
+      const profile = db.prepare(
+        `SELECT detected_type FROM device_profiles WHERE model = ? AND (vendor = ? OR ? IS NULL) LIMIT 1`
+      ).get(model || '', vendor || '', vendor) as { detected_type: string } | undefined;
+      if (profile?.detected_type) {
+        logger.log("[MQTT-WS] ", `📋 Profile match: ${model} → ${profile.detected_type}`);
+        return profile.detected_type;
+      }
+    } catch {
+      // device_profiles может не существовать — игнорируем
+    }
+  }
+
   // 1. Сначала проверяем suggested_type из discovery_events (пользователь уже выбрал тип)
   try {
     const event = db.prepare(
@@ -377,6 +409,58 @@ export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null): s
   }
 
   return null; // ничего не определили — пользователь выберет вручную
+}
+
+// ── AI-enhanced detection with fallback chain ───────────────
+// Асинхронная обёртка: синхронный profile + exposes, затем AI, сохраняет в profile
+export async function detectDeviceTypeFull(
+  ieeeAddr: string,
+  exposes: any[] | null,
+  model?: string | null,
+  vendor?: string | null
+): Promise<string | null> {
+  // 1. Сначала синхронный классификатор (profile + exposes)
+  const syncType = mapZ2MTypeToInternal(ieeeAddr, exposes, model, vendor);
+  if (syncType) return syncType;
+
+  // 2. Если ничего не дало — пробуем AI
+  if (!model) return null;
+  try {
+    const { detectDeviceTypeWithAI } = await import('./ai');
+    const stats = await getTelemetryStatsForDevice(ieeeAddr);
+    const aiType = await detectDeviceTypeWithAI(exposes || [], model, vendor || '', stats);
+    if (aiType) {
+      logger.log("[MQTT-WS] ", `🧠 AI detection: ${model} → ${aiType}`);
+      // Сохраняем в профиль, чтобы в следующий раз не звать AI
+      try {
+        const exposesHash = exposes
+          ? require('crypto').createHmac('sha256', 'device-profile').update(JSON.stringify(exposes)).digest('hex').slice(0, 16)
+          : null;
+        stmt.saveDeviceProfile.run(model, vendor || '', exposesHash, aiType, null, null, null, null, null, null);
+      } catch {}
+      return aiType;
+    }
+  } catch (e: any) {
+    logger.error("[MQTT-WS] ", `❌ AI detection error for ${model}: ${e.message}`);
+  }
+  return null;
+}
+
+// Получить статистику телеметрии для AI
+async function getTelemetryStatsForDevice(ieeeAddr: string): Promise<any> {
+  try {
+    const rows = db.prepare(`
+      SELECT property, MIN(value) as min_val, MAX(value) as max_val, ROUND(AVG(value), 1) as avg_val, COUNT(*) as cnt
+      FROM telemetry WHERE device_ieee = ? GROUP BY property
+    `).all(ieeeAddr) as any[];
+    const stats: Record<string, any> = {};
+    for (const r of rows) {
+      stats[r.property] = { min: r.min_val, max: r.max_val, avg: r.avg_val, count: r.cnt };
+    }
+    return stats;
+  } catch {
+    return null;
+  }
 }
 
 // ── Telemetry Handler ────────────────────────────────────
@@ -472,6 +556,52 @@ function handleTelemetry(friendlyName: string, data: any) {
         logErrorWithLog(ieee, 'telemetry_insert_error', e.message, `${prop}=${value}`);
       }
     }
+  }
+
+  // ── Пополнение device_profiles (min/max/avg) — первые 50 записей ──
+  try {
+    const countRow = db.prepare(
+      `SELECT COUNT(*) as cnt FROM telemetry WHERE device_ieee = ?`
+    ).get(ieee) as { cnt: number } | undefined;
+    const telemetryCount = countRow?.cnt || 0;
+
+    if (telemetryCount <= 50) {
+      for (const [prop, { value }] of Object.entries(propertyMap)) {
+        if (value === undefined || value === null) continue;
+        const numericValue = typeof value === 'boolean'
+          ? (value ? 1 : 0)
+          : typeof value === 'string'
+            ? (['ON', 'open', 'present', 'leak'].includes(value) ? 1 : 0)
+            : value;
+
+        // Берём min/max/avg из уже сохранённых значений
+        const stats = db.prepare(`
+          SELECT MIN(value) as min, MAX(value) as max, ROUND(AVG(value), 1) as avg
+          FROM telemetry WHERE device_ieee = ? AND property = ?
+        `).get(ieee, prop) as { min: number | null; max: number | null; avg: number | null };
+
+        if (stats?.min !== null && stats?.max !== null && stats?.avg !== null) {
+          db.prepare(`
+            INSERT INTO device_profiles (model, vendor, parameters_json, last_seen_at)
+            VALUES (
+              (SELECT model FROM devices WHERE ieee_addr = ?),
+              (SELECT vendor FROM devices WHERE ieee_addr = ?),
+              json_set(COALESCE(parameters_json, '{}'), '$.' || ?,
+                json_object('min', ?, 'max', ?, 'avg', ?)),
+              datetime('now')
+            )
+            ON CONFLICT(model, vendor) DO UPDATE SET
+              parameters_json = json_set(COALESCE(parameters_json, '{}'), '$.' || ?,
+                json_object('min', ?, 'max', ?, 'avg', ?)),
+              last_seen_at = datetime('now')
+          `).run(ieee, ieee, prop, stats.min, stats.max, stats.avg,
+                   prop, stats.min, stats.max, stats.avg);
+        }
+      }
+    }
+  } catch (e: any) {
+    // device_profiles или json_set может не поддерживаться — игнорируем
+    logErrorWithLog(ieee, 'profile_stats_error', e.message, 'min/max/avg update');
   }
 
   // Track state changes

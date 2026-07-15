@@ -8,6 +8,7 @@ import { encryptToken, decryptToken } from './crypto';
 import { stmt, db, query, exec, logErrorWithLog, logCommand, logStateChange, DB_PATH } from './db';
 import { authMiddleware, optionalAuth } from './middleware/auth';
 import { toggleDemoDevice, isDemoMode } from './demo';
+import { detectDeviceTypeWithAI } from './ai';
 import { attachWebSocket, sendDeviceCommand as publishCommand, publishPermitJoin, lastPresenceAt, mqttConnected, permitJoinActive, permitJoinTimeLeft, mapZ2MTypeToInternal, broadcastDiscovery, syncPermitFromZ2M, client } from './mqtt-ws';
 import { sendDeviceCommand as sendDeviceCommandAsync, parseActions } from './actions';
 import { parseTriggers } from './triggers';
@@ -424,12 +425,20 @@ app.get('/api/devices/pending', async (_req, res) => {
         const existing = existingMap.get(ieee);
         const disc = discoveryRows.find((r: any) => r.ieee_address === ieee);
 
+        const suggestedType = existing?.type || disc?.suggested_type || mapZ2MTypeToInternal?.(ieee, z2m.definition?.exposes, z2m.definition?.model, z2m.definition?.vendor) || null;
+
+        // AI fallback для устройств без типа
+        let aiSuggestedType: string | null = null;
+        if (!suggestedType && (z2m.definition?.model || disc?.model)) {
+          // Не блокируем ответ — AI вызывается при необходимости
+        }
+
         return {
           ieee_address: ieee,
           friendly_name: existing?.friendly_name || z2m.friendly_name || disc?.friendly_name || ieee,
           model: existing?.model || z2m.definition?.model || disc?.model,
           vendor: existing?.vendor || z2m.definition?.vendor || disc?.vendor,
-          suggested_type: existing?.type || disc?.suggested_type || mapZ2MTypeToInternal?.(ieee, z2m.definition?.exposes) || null,
+          suggested_type: existing?.type || disc?.suggested_type || mapZ2MTypeToInternal?.(ieee, z2m.definition?.exposes, z2m.definition?.model, z2m.definition?.vendor) || null,
           exposes: z2m.definition?.exposes || (disc?.exposes_json ? JSON.parse(disc.exposes_json) : null),
           discovered_at: disc?.created_at || null,
           is_added: !!existing,
@@ -984,6 +993,92 @@ app.post('/api/discovery/:ieee/confirm', async (req, res) => {
     // Mark discovery event as confirmed
     try { stmt.confirmDiscovery.run(ieee); } catch {}
 
+    // Save device profile (knowledge base for future auto-detection)
+    try {
+      const event = db.prepare(`
+        SELECT model, vendor, exposes_json FROM discovery_events
+        WHERE ieee_address = ? AND exposes_json IS NOT NULL
+        ORDER BY id DESC LIMIT 1
+      `).get(ieee) as { model: string | null; vendor: string | null; exposes_json: string | null } | undefined;
+      if (event?.model) {
+        const exposesHash = event.exposes_json
+          ? createHmac('sha256', 'device-profile').update(event.exposes_json).digest('hex').slice(0, 16)
+          : null;
+        const icon = type ? (() => {
+          const icons: Record<string, string> = {
+            temp_sensor: 'Thermometer', air_monitor: 'Wind', light: 'Lightbulb',
+            plug: 'Plug', gate: 'DoorClosed', gate_controller: 'DoorClosed',
+            climate: 'Thermometer', motion_sensor: 'Activity', presence_sensor: 'User',
+            window_sensor: 'DoorClosed', door_sensor: 'DoorClosed', leak_sensor: 'Droplets',
+            smoke_sensor: 'Wind', light_sensor: 'Sun', lock: 'Lock', switch: 'ToggleLeft',
+          };
+          return icons[type] || null;
+        })() : null;
+        // Default scenarios and room hints per device type
+        const defaultScenarios: Record<string, string> = {
+          air_monitor: JSON.stringify({
+            name: 'Проветривание при CO₂ > 1000',
+            description: 'Автоматическое проветривание при превышении CO₂',
+            triggers_json: JSON.stringify({
+              logic: 'ANY',
+              conditions: [{ device: 'air_monitor', property: 'co2', operator: '>', value: 1000 }]
+            }),
+            actions_json: JSON.stringify([
+              { type: 'notify', message: '🌬️ CO₂ > 1000 ppm — требуется проветривание' }
+            ])
+          }),
+          door_sensor: JSON.stringify({
+            name: 'Уведомление при открытии',
+            description: 'Уведомление при открытии двери/окна',
+            triggers_json: JSON.stringify({
+              logic: 'ANY',
+              conditions: [{ device: 'door_sensor', property: 'contact', operator: '=', value: 0 }]
+            }),
+            actions_json: JSON.stringify([
+              { type: 'notify', message: '🚪 Дверь открыта' }
+            ])
+          }),
+          window_sensor: JSON.stringify({
+            name: 'Уведомление при открытии окна',
+            description: 'Уведомление при открытии окна',
+            triggers_json: JSON.stringify({
+              logic: 'ANY',
+              conditions: [{ device: 'window_sensor', property: 'contact', operator: '=', value: 0 }]
+            }),
+            actions_json: JSON.stringify([
+              { type: 'notify', message: '🪟 Окно открыто' }
+            ])
+          }),
+          leak_sensor: JSON.stringify({
+            name: 'Защита от протечки',
+            description: 'Уведомление при обнаружении протечки',
+            triggers_json: JSON.stringify({
+              logic: 'ANY',
+              conditions: [{ device: 'leak_sensor', property: 'water_leak', operator: '=', value: 1 }]
+            }),
+            actions_json: JSON.stringify([
+              { type: 'notify', message: '🚨 ОБНАРУЖЕНА ПРОТЕЧКА' }
+            ])
+          }),
+        };
+        const roomHints: Record<string, string> = {
+          temp_sensor: 'any', air_monitor: 'any', light: 'living_room',
+          plug: 'any', motion_sensor: 'hallway', presence_sensor: 'living_room',
+          window_sensor: 'any', door_sensor: 'entrance', leak_sensor: 'bathroom',
+          smoke_sensor: 'kitchen', light_sensor: 'any', lock: 'entrance',
+          switch: 'any', climate: 'living_room',
+        };
+        const defaultScenarioJson = type ? (defaultScenarios[type] || null) : null;
+        const roomHint = type ? (roomHints[type] || 'any') : 'any';
+        stmt.saveDeviceProfile.run(
+          event.model, event.vendor, exposesHash, deviceType, null, icon, null, defaultScenarioJson, roomHint, null
+        );
+        logger.log("[API] ", `📝 Profile saved: ${event.model} (${event.vendor || '?'}) → ${deviceType || '?'}`);
+      }
+    } catch (e: any) {
+      logErrorWithLog(null, 'save_profile_error', e.message, `ieee=${ieee}`);
+    }
+
     // Rename in Z2M via MQTT (используем существующий client)
     try {
       if (client?.connected) {
@@ -1017,7 +1112,150 @@ app.post('/api/discovery/:ieee/confirm', async (req, res) => {
   }
 });
 
-// ── GET /api/rooms (for device creation) ─────────────────
+// POST /api/discovery/:ieee/ai-suggest — AI предлагает тип для устройства
+app.post('/api/discovery/:ieee/ai-suggest', async (req, res) => {
+  try {
+    const { ieee } = req.params;
+
+    // Ищем устройство — в discovery_events или в Z2M
+    const disc = db.prepare(`
+      SELECT * FROM discovery_events WHERE ieee_address = ? ORDER BY id DESC LIMIT 1
+    `).get(ieee) as any;
+
+    // Если нет в discovery — пробуем из devices
+    const device = !disc
+      ? db.prepare(`SELECT * FROM devices WHERE ieee_addr = ? LIMIT 1`).get(ieee) as any
+      : null;
+
+    const model = disc?.model || device?.model || (await zigbeeRequest(`/devices/${ieee}`).catch(() => null))?.definition?.model;
+    const vendor = disc?.vendor || device?.vendor;
+    const exposes = disc?.exposes_json ? JSON.parse(disc.exposes_json) : null;
+
+    if (!model) {
+      return res.json({ ok: false, error: 'Модель устройства не найдена' });
+    }
+
+    // Статистика телеметрии для AI
+    const statsRows = db.prepare(`
+      SELECT property, MIN(value) as min_val, MAX(value) as max_val, ROUND(AVG(value), 1) as avg_val, COUNT(*) as cnt
+      FROM telemetry WHERE device_ieee = ? GROUP BY property
+    `).all(ieee) as any[];
+
+    const stats: Record<string, any> = {};
+    for (const r of statsRows) {
+      stats[r.property] = { min: r.min_val, max: r.max_val, avg: r.avg_val, count: r.cnt };
+    }
+
+    const aiType = await detectDeviceTypeWithAI(exposes || [], model, vendor || '', stats);
+
+    res.json({ ok: true, ai_suggested_type: aiType, model, vendor });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'ai_suggest');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/discovery/:ieee/confirm-ai — принять AI-предложение
+app.post('/api/discovery/:ieee/confirm-ai', async (req, res) => {
+  try {
+    const { ieee } = req.params;
+    const { ai_type } = req.body;
+    if (!ai_type) return res.status(400).json({ ok: false, error: 'ai_type is required' });
+
+    const disc = db.prepare(`
+      SELECT * FROM discovery_events WHERE ieee_address = ? ORDER BY id DESC LIMIT 1
+    `).get(ieee) as any;
+
+    // Обновляем suggested_type в discovery_events
+    if (disc) {
+      db.prepare(`UPDATE discovery_events SET suggested_type = ? WHERE ieee_address = ?`).run(ai_type, ieee);
+    }
+
+    // Сохраняем в device_profiles
+    if (disc?.model) {
+      const exposesHash = disc.exposes_json
+        ? createHmac('sha256', 'device-profile').update(disc.exposes_json).digest('hex').slice(0, 16)
+        : null;
+      const icons: Record<string, string> = {
+        temp_sensor: 'Thermometer', air_monitor: 'Wind', light: 'Lightbulb',
+        plug: 'Plug', gate: 'DoorClosed', gate_controller: 'DoorClosed',
+        climate: 'Thermometer', motion_sensor: 'Activity', presence_sensor: 'User',
+        window_sensor: 'DoorClosed', door_sensor: 'DoorClosed', leak_sensor: 'Droplets',
+        smoke_sensor: 'Wind', light_sensor: 'Sun', lock: 'Lock', switch: 'ToggleLeft',
+      };
+      stmt.saveDeviceProfile.run(
+        disc.model, disc.vendor, exposesHash, ai_type, null, icons[ai_type] || null, null, null, null, null
+      );
+      logger.log("[API] ", `📝 AI profile saved: ${disc.model} (${disc.vendor || '?'}) → ${ai_type}`);
+    }
+
+    // Если устройство уже добавлено — обновляем тип
+    db.prepare(`UPDATE devices SET type = ? WHERE ieee_addr = ?`).run(ai_type, ieee);
+
+    // Broadcast
+    broadcastDiscovery({
+      type: 'device_updated',
+      ieee_address: ieee,
+      device_type: ai_type,
+    });
+
+    res.json({ ok: true, ai_suggested_type: ai_type });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'confirm_ai');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/discovery/apply-ai-model — применить AI-тип для всех устройств одной модели
+app.post('/api/discovery/apply-ai-model', async (req, res) => {
+  try {
+    const { model, vendor, ai_type } = req.body;
+    if (!model || !ai_type) return res.status(400).json({ ok: false, error: 'model and ai_type are required' });
+
+    // Все discovery_events этой модели
+    const events = db.prepare(`
+      SELECT * FROM discovery_events WHERE model = ? AND (vendor = ? OR ? IS NULL)
+    `).all(model, vendor, vendor) as any[];
+
+    for (const ev of events) {
+      // Обновляем suggested_type
+      db.prepare(`UPDATE discovery_events SET suggested_type = ? WHERE ieee_address = ?`).run(ai_type, ev.ieee_address);
+
+      // Если устройство уже добавлено
+      db.prepare(`UPDATE devices SET type = ? WHERE ieee_addr = ?`).run(ai_type, ev.ieee_address);
+    }
+
+    // Сохраняем профиль модели
+    if (events.length > 0) {
+      const first = events[0];
+      const exposesHash = first.exposes_json
+        ? createHmac('sha256', 'device-profile').update(first.exposes_json).digest('hex').slice(0, 16)
+        : null;
+      const icons: Record<string, string> = {
+        temp_sensor: 'Thermometer', air_monitor: 'Wind', light: 'Lightbulb',
+        plug: 'Plug', gate: 'DoorClosed', gate_controller: 'DoorClosed',
+        climate: 'Thermometer', motion_sensor: 'Activity', presence_sensor: 'User',
+        window_sensor: 'DoorClosed', door_sensor: 'DoorClosed', leak_sensor: 'Droplets',
+        smoke_sensor: 'Wind', light_sensor: 'Sun', lock: 'Lock', switch: 'ToggleLeft',
+      };
+      stmt.saveDeviceProfile.run(model, vendor, exposesHash, ai_type, null, icons[ai_type] || null, null, null, null, null);
+      logger.log("[API] ", `📝 AI profile applied to all: ${model} → ${ai_type} (${events.length} devices)`);
+    }
+
+    // Broadcast однократно
+    broadcastDiscovery({
+      type: 'device_updated',
+      model,
+      device_type: ai_type,
+    });
+
+    res.json({ ok: true, updated_count: events.length, model, ai_suggested_type: ai_type });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'apply_ai_model');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── GET /api/telemetry ──────────────────────────────────
 app.get('/api/telemetry', async (req, res) => {
   try {
@@ -1952,6 +2190,8 @@ function serveIndex(_req: express.Request, res: express.Response) {
 }
 app.get('/', serveIndex);
 app.get('/start', serveIndex);
+app.get('/devices', serveIndex);
+app.get('/devices/*', serveIndex);
 
 // ── Design prototype ────────────────────────────────────
 app.get('/design', (_req, res) => {

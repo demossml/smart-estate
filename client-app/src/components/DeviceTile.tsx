@@ -9,6 +9,7 @@ export const DEVICE_TYPES: Record<string, { label: string; category: string; ico
   motion_sensor: { label: "Датчик движения", category: "presence", icon: Activity },
   leak_sensor: { label: "Датчик протечки", category: "leak", icon: Droplets },
   air_monitor: { label: "Климат-монитор", category: "air", icon: Wind },
+  temp_sensor: { label: "Термометр", category: "air", icon: Thermometer },
   light: { label: "Освещение", category: "light", icon: Lightbulb },
   plug: { label: "Розетка", category: "plug", icon: PlugIcon },
   gate_controller: { label: "Ворота", category: "gate", icon: DoorClosed },
@@ -54,6 +55,13 @@ export function defaultFieldsFor(type: string): Record<string, any> {
         co2: 620,
         formaldehyde: 0.02,
         voc: 110,
+        battery: 100,
+        linkquality: 95,
+      };
+    case "temp_sensor":
+      return {
+        temperature: 21.5,
+        humidity: 44,
         battery: 100,
         linkquality: 95,
       };
@@ -127,6 +135,13 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
             <div><span className="se-mono">{device.humidity}%</span><label>влажн.</label></div>
             <div><span className="se-mono" style={{ color: airStatus(device.co2).color }}>{device.co2}</span><label>CO₂</label></div>
             <div><span className="se-mono">{device.voc}</span><label>VOC</label></div>
+          </div>
+        ) : null}
+
+        {device.type === "temp_sensor" ? (
+          <div className="se-air-grid se-air-grid--3">
+            <div><span className="se-mono">{device.temperature ?? "—"}°</span><label>темп.</label></div>
+            <div><span className="se-mono">{device.humidity ?? "—"}%</span><label>влажн.</label></div>
           </div>
         ) : null}
 

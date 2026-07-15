@@ -143,6 +143,8 @@ interface RawDevice {
   room_name?: string;
   room_icon?: string;
   status: string;
+  last_seen?: string | null;
+  battery_level?: number | null;
   latest_telemetry?: { power?: number; linkquality?: number }[];
 }
 
@@ -208,6 +210,8 @@ function mapDevice(d: RawDevice): import('../types').Device {
     type: d.type,
     room: d.room_name || '—',
     online: d.status === 'online',
+    battery_level: d.battery_level ?? null,
+    last_seen: d.last_seen ?? null,
     ...(telemetry && {
       power: telemetry.power,
       rssi: telemetry.linkquality,
@@ -492,6 +496,10 @@ export const api = {
   // ── Zigbee статус (донгл, MQTT, permit_join) ──
   getZigbeeStatus: () =>
     request<ZigbeeStatus>('/zigbee/status'),
+
+  // ── Discovery status (permit_join + remaining) ──
+  getDiscoveryStatus: () =>
+    request<{ ok: boolean; permit_join: boolean; remaining: number }>('/discovery/status'),
 };
 
 export interface ZigbeeStatus {

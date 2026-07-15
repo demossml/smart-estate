@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Plus, X, Trash2, Radar, Pencil, Loader2, MapPin, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Search, Plus, X, Trash2, Radar, Pencil, Loader2, MapPin, RefreshCw, AlertTriangle, Battery, Clock } from 'lucide-react';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { Skeleton } from '../components/ui/Skeleton';
 import { RoomPicker } from '../components/ui/RoomPicker';
@@ -25,6 +25,18 @@ interface PendingDevice {
   // устройство молча получало 'sensor' независимо от реального типа.
   suggested_type: string | null;
   exposes?: any[] | null;
+}
+
+/* ── Helpers для last_seen ── */
+function isLastSeenOld(ts: string): boolean {
+  const diff = Date.now() - new Date(ts.replace(' ', 'T')).getTime();
+  return diff > 300_000; // 5 минут
+}
+function formatLastSeen(ts: string): string {
+  const diff = Math.floor((Date.now() - new Date(ts.replace(' ', 'T')).getTime()) / 60000);
+  if (diff < 1) return 'только что';
+  if (diff < 60) return `${diff} мин`;
+  return `${Math.floor(diff / 60)} ч`;
 }
 
 export default function Devices() {
@@ -53,6 +65,37 @@ export default function Devices() {
   const [discoverMsg, setDiscoverMsg] = useState('');
   const [selectedPending, setSelectedPending] = useState<Set<string>>(new Set());
   const pollRef = useRef<number | null>(null);
+
+  // ── Discovery status polling (каждые 5 сек) ──
+  const [discoverySecondsLeft, setDiscoverySecondsLeft] = useState<number | null>(null);
+  const [discoveryPermitJoin, setDiscoveryPermitJoin] = useState(false);
+  const statusPollRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await api.getDiscoveryStatus();
+        setDiscoveryPermitJoin(res.permit_join);
+        setDiscoverySecondsLeft(res.remaining <= 0 ? 0 : res.remaining);
+      } catch {
+        // ignore
+      }
+    };
+    poll();
+    statusPollRef.current = window.setInterval(poll, 5000);
+    return () => {
+      if (statusPollRef.current) window.clearInterval(statusPollRef.current);
+    };
+  }, []);
+
+  // Tick секунд для таймера
+  useEffect(() => {
+    if (discoverySecondsLeft === null || discoverySecondsLeft <= 0) return;
+    const tick = setInterval(() => {
+      setDiscoverySecondsLeft(prev => (prev !== null && prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(tick);
+  }, [discoverySecondsLeft]);
 
   useEffect(() => {
     loadDevices();
@@ -232,6 +275,17 @@ export default function Devices() {
       <header className="mb-4" style={{ minHeight: 64 }}>
         <h1 className="text-xl font-bold text-text">Устройства</h1>
         {offline && <p className="text-xs text-yellow mt-1">офлайн</p>}
+        {/* Discovery status bar */}
+        {discoverySecondsLeft !== null && discoverySecondsLeft > 0 ? (
+          <div className="mt-2 flex items-center gap-2 bg-green/5 border border-green/20 rounded-card px-3 py-2">
+            <span className="w-2 h-2 rounded-full bg-green animate-pulse" />
+            <span className="text-xs text-green">Поиск: {discoverySecondsLeft} сек</span>
+          </div>
+        ) : discoveryPermitJoin === false && discoverySecondsLeft === 0 ? (
+          <div className="mt-2 flex items-center gap-2 text-text-dim text-[11px]">
+            <Radar size={13} className="text-text-dim" /> Поиск выключен
+          </div>
+        ) : null}
         <div className="relative mt-3">
           <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim" />
           <input type="search" placeholder="Поиск устройств…" value={search}
@@ -261,7 +315,25 @@ export default function Devices() {
                     <Icon size={20} className="text-text-dim" />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium text-text truncate">{d.name}</div>
-                      <StatusBadge status={d.online ? 'online' : 'offline'} />
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <StatusBadge status={d.online ? 'online' : 'offline'} />
+                        {/* last_seen: красный если > 5 минут */}
+                        {d.last_seen && (
+                          <span className={`inline-flex items-center gap-1 text-[11px] ${
+                            isLastSeenOld(d.last_seen) ? 'text-red-400' : 'text-text-dim'
+                          }`}>
+                            <Clock size={11} strokeWidth={1.6} />
+                            {formatLastSeen(d.last_seen)}
+                          </span>
+                        )}
+                        {/* battery_level < 20%: предупреждение */}
+                        {d.battery_level !== null && d.battery_level !== undefined && d.battery_level <= 20 && (
+                          <span className="inline-flex items-center gap-1 text-[11px] text-yellow-400">
+                            <Battery size={11} strokeWidth={1.6} />
+                            {d.battery_level}%
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <Pencil size={14} className="opacity-0 group-hover:opacity-40 transition-opacity text-text-dim" />
                     <button
