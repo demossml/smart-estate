@@ -2,6 +2,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 import BetterSqlite3Default from 'better-sqlite3';
 import * as path from 'path';
 import logger from './logger';
+import { normalizeSql } from './sql-normalize';
 
 const DB_PATH = process.env.SMART_ESTATE_DB_PATH || path.resolve(__dirname, '../../data/smart-estate.db');
 const db: BetterSqlite3.Database = new (BetterSqlite3Default as any)(DB_PATH);
@@ -471,81 +472,13 @@ export const stmt: any = {
 };
 
 // ── SQL Compatibility Layer ──
-// SQL normalization (legacy compatibility layer, now a no-op)
-function sqliteCompat(sql: string): string {
-  if (!sql || typeof sql !== 'string') return sql;
-
-  let queryStr = sql.trim();
-
-  queryStr = queryStr.replace(
-    /CURRENT_TIMESTAMP\s*-\s*INTERVAL\s*['"](\d+)\s+(hours?|minutes?|seconds?|days?|weeks?)['"]/gi,
-    (_match, num, unit) => {
-      const u = unit.toLowerCase().replace(/s$/, '');
-      return `datetime('now', '-${num} ${u}s')`;
-    }
-  );
-  queryStr = queryStr.replace(
-    /NOW\(\)\s*-\s*INTERVAL\s*['"](\d+)\s+(hours?|minutes?|seconds?|days?|weeks?)['"]/gi,
-    (_match, num, unit) => {
-      const u = unit.toLowerCase().replace(/s$/, '');
-      return `datetime('now', '-${num} ${u}s')`;
-    }
-  );
-  queryStr = queryStr.replace(/\bNOW\(\)/gi, "datetime('now')");
-  queryStr = queryStr.replace(
-    /INTERVAL\s+(\d+)\s+(HOURS?|MINUTES?|DAYS?|SECONDS?|WEEKS?)/gi,
-    (_match, num, unit) => {
-      const u = unit.toLowerCase().replace(/s$/, '');
-      return `'-${num} ${u}s'`;
-    }
-  );
-  queryStr = queryStr.replace(
-    /CURRENT_TIMESTAMP\s*-\s*INTERVAL\s*['"]?(\d+)['"]?\s*(HOURS|HOUR|MINUTES|MINUTE|DAYS|DAY|SECONDS|SECOND)/gi,
-    (_match, num, unit) => {
-      const u = unit.toLowerCase().replace(/s$/, '');
-      return `datetime('now', '-${num} ${u}s')`;
-    }
-  );
-  queryStr = queryStr.replace(
-    /datetime\(['"]now['"]\)\s*-\s*INTERVAL\s*['"]?(\d+)['"]?\s*(HOURS|HOUR|MINUTES|MINUTE|DAYS|DAY|SECONDS|SECOND)/gi,
-    (_match, num, unit) => {
-      const u = unit.toLowerCase().replace(/s$/, '');
-      return `datetime('now', '-${num} ${u}s')`;
-    }
-  );
-  queryStr = queryStr.replace(/\bCURRENT_TIMESTAMP\b/gi, "datetime('now')");
-
-  if (/INTERVAL/i.test(queryStr)) {
-    throw new Error(`sqliteCompat: необработанный INTERVAL-синтаксис в запросе: ${queryStr}`);
-  }
-
-  queryStr = queryStr.replace(
-    /EXTRACT\s*\(\s*(\w+)\s+FROM\s+(\w+(?:\.\w+)?)\s*\)/gi,
-    (_match, field, col) => {
-      const f = field.toUpperCase();
-      const fmt = f === 'HOUR' ? '%H'
-                  : f === 'MINUTE' ? '%M'
-                  : f === 'DAY' ? '%d'
-                  : f === 'MONTH' ? '%m'
-                  : f === 'YEAR' ? '%Y'
-                  : f === 'DOW' ? '%w'
-                  : f === 'DOY' ? '%j'
-                  : '%Y-%m-%d';
-      return `CAST(strftime('${fmt}', ${col}) AS INTEGER)`;
-    }
-  );
-
-  queryStr = queryStr.replace(/\bCURRENT_DATE\b/gi, "date('now')");
-  queryStr = queryStr.replace(/::DECIMAL\([^)]+\)/gi, '');
-  queryStr = queryStr.replace(/::VARCHAR/gi, '');
-
-  return queryStr;
-}
+// Normalize non-SQLite syntax (INTERVAL, ::DECIMAL, EXTRACT, NOW)
+// via sql-normalize module
 
 // ── Helper Functions ────────────────────────────────────
 
 export function query(sql: string, ...params: any[]): Promise<any[]> {
-  const translated = sqliteCompat(sql);
+  const translated = normalizeSql(sql);
   return new Promise((resolve, reject) => {
     try {
       const prepared = db.prepare(translated);
@@ -564,7 +497,7 @@ export function query(sql: string, ...params: any[]): Promise<any[]> {
 }
 
 export function exec(sql: string, ...params: any[]): Promise<any> {
-  const translated = sqliteCompat(sql);
+  const translated = normalizeSql(sql);
   return new Promise((resolve, reject) => {
     try {
       const prepared = db.prepare(translated);
