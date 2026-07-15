@@ -8,6 +8,11 @@ const ALL_TYPES = Object.keys(DEVICE_TYPES);
 /* ———— Форматирование имени ———— */
 function suggestName(device: any): string {
   const raw = device.suggestedName || device.name || device.friendly_name || "";
+  // Если тип не определён — всегда "Датчик + short ieee"
+  if (!device.suggested_type && !device.type) {
+    const ieee = device.ieee_address || device.ieee || "";
+    return ieee ? `Датчик ${ieee.replace('0x', '').slice(-8).toUpperCase()}` : "Новое устройство";
+  }
   // Если имя уже человеческое — оставляем
   if (raw && !raw.startsWith("0x") && !raw.startsWith("Новый Датчик")) return raw;
   // Пробуем сгенерировать красивое имя по модели
@@ -101,7 +106,7 @@ export default function AssignDiscoveredModal({ device, rooms, onClose, onConfir
               display: "inline-block", marginLeft: 8, padding: "1px 8px",
               borderRadius: 4, fontSize: 11, background: "#F59E0B22", color: "#F59E0B",
             }}>
-              требуется
+              Требуется настройка
             </span>
           )}
         </div>
@@ -135,7 +140,7 @@ export default function AssignDiscoveredModal({ device, rooms, onClose, onConfir
           {isEditing ? (
             <><Edit3 size={14} strokeWidth={2} /> Сохранить изменения</>
           ) : (
-            <><Check size={14} strokeWidth={2} /> Добавить в дом</>
+            <><Check size={14} strokeWidth={2} /> Сохранить и добавить в комнату</>
           )}
         </button>
       </div>
