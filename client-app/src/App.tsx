@@ -270,12 +270,12 @@ export default function SmartEstateApp() {
     setShowAddRoom(false);
   };
 
-  const confirmEditRoom = async ({ name, icon }: any) => {
+  async function confirmEditRoom({ name, icon }: any) {
     if (!editingRoom) return;
     try { await api(`/rooms/${editingRoom.id}`, { method: 'PATCH', body: JSON.stringify({ name, icon }) }); await loadData(); await loadPending(); }
     catch (e: any) { console.error('Edit room error:', e); }
     setEditingRoom(null);
-  };
+  }
 
   const addScenario = async (condition: string, action: string) => {
     try {
@@ -329,21 +329,6 @@ export default function SmartEstateApp() {
       console.error('Add device to room error:', e);
     }
   }, [loadData]);
-  const deleteRoom = useCallback(async (id: string) => {
-    const room = rooms.find((r: any) => String(r.id) === id);
-    const roomName = room?.name || 'комнату';
-    const confirmMsg = `Удалить «${roomName}»?\n\nВсе устройства из этой комнаты будут перемещены в Гостиную.`;
-    if (!window.confirm(confirmMsg)) return;
-    try {
-      const res = await api(`/rooms/${id}`, { method: 'DELETE' });
-      const data = typeof res === 'object' ? res : {};
-      const moved = data.devices_moved_to_living_room || 0;
-      window.alert(`✅ Комната «${roomName}» удалена.\n📦 ${moved} устройств перемещено в Гостиную.`);
-      await loadData();
-      await loadPending();
-    }
-    catch (e: any) { console.error('Delete room error:', e); window.alert('❌ Ошибка при удалении комнаты'); }
-  }, [loadData, loadPending, rooms]);
 
   /* ── Discovery — НОВАЯ ЛОГИКА (14.07.2026) ──
    *
@@ -378,6 +363,22 @@ export default function SmartEstateApp() {
       }
     } catch {}
   }, []);
+
+  async function deleteRoom(id: string) {
+    const room = rooms.find((r: any) => String(r.id) === id);
+    const roomName = room?.name || 'комнату';
+    const confirmMsg = `Удалить «${roomName}»?\n\nВсе устройства из этой комнаты будут перемещены в Гостиную.`;
+    if (!window.confirm(confirmMsg)) return;
+    try {
+      const res = await api(`/rooms/${id}`, { method: 'DELETE' });
+      const data = typeof res === 'object' ? res : {};
+      const moved = data.devices_moved_to_living_room || 0;
+      window.alert(`✅ Комната «${roomName}» удалена.\n📦 ${moved} устройств перемещено в Гостиную.`);
+      await loadData();
+      await loadPending();
+    }
+    catch (e: any) { console.error('Delete room error:', e); window.alert('❌ Ошибка при удалении комнаты'); }
+  }
 
   const startDiscovery = async () => {
     setDiscovering(true); setSecondsLeft(120); clearTimers();
