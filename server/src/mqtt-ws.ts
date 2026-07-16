@@ -395,25 +395,21 @@ export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null, mo
     return 'sensor';
   }
 
-  // Прежде чем отдавать null — проверяем универсальные сигнатуры
-  if (features.has('co2') || features.has('voc') || features.has('pm25') || features.has('air_quality')) {
+  // Air quality — высокий приоритет
+  if (features.has('co2') || features.has('voc') || features.has('pm25') || 
+      features.has('pm10') || features.has('formaldehyde') || features.has('air_quality')) {
     return 'air_monitor';
   }
+
   if (features.has('contact') || features.has('door') || features.has('window')) {
     return 'door_sensor';
   }
-  if (features.has('presence') || features.has('occupancy')) {
-    return 'presence_sensor';
-  }
-  if (features.has('battery') || features.has('voltage')) {
+
+  if (features.has('battery') || features.has('voltage') || features.has('low_battery')) {
     return 'sensor';
   }
 
-  // Fallback для неизвестных устройств с батарейками/освещением
-  if (features.has('low_battery')) {
-    return 'sensor';
-  }
-  if (features.has('illuminance') || features.has('light_level') || features.has('brightness')) {
+  if (features.has('illuminance') || features.has('light_level')) {
     return 'light_sensor';
   }
 
