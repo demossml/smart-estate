@@ -415,88 +415,51 @@ app.get('/api/devices/pending', async (_req, res) => {
     const existingMap = new Map(existingDevices.map((d: any) => [d.ieee_addr, d]));
     const seen = new Set<string>();
 
+    // ТОЛЬКО новые устройства — уже добавленные в devices НЕ показываем
     const unified = z2mDevices
       .filter((d: any) => {
         const ieee = d.ieee_address || d.ieeeAddr;
-        const existing = existingMap.get(ieee);
-        return !existing && !['Coordinator', 'Router'].includes(d.type || '');
+        return !existingMap.has(ieee) && !['Coordinator', 'Router'].includes(d.type || '');
       })
       .map((z2m: any) => {
         const ieee = z2m.ieee_address || z2m.ieeeAddr;
         if (seen.has(ieee)) return null;
         seen.add(ieee);
 
-        const existing = existingMap.get(ieee);
         const disc = discoveryRows.find((r: any) => r.ieee_address === ieee);
 
-        const suggestedType = existing?.type || disc?.suggested_type || mapZ2MTypeToInternal?.(ieee, z2m.definition?.exposes, z2m.definition?.model, z2m.definition?.vendor) || null;
+        const suggestedType = disc?.suggested_type || mapZ2MTypeToInternal?.(ieee, z2m.definition?.exposes, z2m.definition?.model, z2m.definition?.vendor) || null;
 
         // Room hint из device_profiles
         const profile = z2m.definition?.model || disc?.model
           ? db.prepare(`SELECT room_hint FROM device_profiles WHERE model = ? AND vendor = ? LIMIT 1`).get(
-              existing?.model || z2m.definition?.model || disc?.model,
-              existing?.vendor || z2m.definition?.vendor || disc?.vendor || ''
+              z2m.definition?.model || disc?.model,
+              z2m.definition?.vendor || disc?.vendor || ''
             ) as { room_hint: string } | undefined
           : null;
 
-        // AI fallback для устройств без типа
-        let aiSuggestedType: string | null = null;
-        if (!suggestedType && (z2m.definition?.model || disc?.model)) {
-          // Не блокируем ответ — AI вызывается при необходимости
-        }
-
         return {
           ieee_address: ieee,
-          friendly_name: existing?.friendly_name || z2m.friendly_name || disc?.friendly_name || ieee,
-          model: existing?.model || z2m.definition?.model || disc?.model,
-          vendor: existing?.vendor || z2m.definition?.vendor || disc?.vendor,
-          suggested_type: existing?.type || disc?.suggested_type || mapZ2MTypeToInternal?.(ieee, z2m.definition?.exposes, z2m.definition?.model, z2m.definition?.vendor) || null,
+          friendly_name: z2m.friendly_name || disc?.friendly_name || ieee,
+          model: z2m.definition?.model || disc?.model,
+          vendor: z2m.definition?.vendor || disc?.vendor,
+          suggested_type: suggestedType,
           exposes: z2m.definition?.exposes || (disc?.exposes_json ? JSON.parse(disc.exposes_json) : null),
           discovered_at: disc?.created_at || null,
-          is_added: !!existing,
+          is_added: false,
           can_edit: true,
-          room_id: existing?.room_id || null,
+          room_id: null,
           room_hint: profile?.room_hint || null,
-          status: existing ? 'online' : 'discovered',
+          status: 'discovered',
           last_updated: new Date().toISOString(),
         };
       })
       .filter(Boolean)
-      .sort((a: any, b: any) => Number(a.is_added) - Number(b.is_added));
-
-    // Устройства из existing, которых нет в Z2M
-    for (const ex of existingDevices) {
-      if (seen.has(ex.ieee_addr)) continue;
-      seen.add(ex.ieee_addr);
-      const disc = discoveryRows.find((r: any) => r.ieee_address === ex.ieee_addr);
-      // Room hint из device_profiles
-      const model = ex.model || disc?.model || null;
-      const vendor = ex.vendor || disc?.vendor || null;
-      const profile = model
-        ? db.prepare(`SELECT room_hint FROM device_profiles WHERE model = ? AND vendor = ? LIMIT 1`).get(
-            model, vendor || ''
-          ) as { room_hint: string } | undefined
-        : null;
-      unified.push({
-        ieee_address: ex.ieee_addr,
-        friendly_name: ex.friendly_name || ex.ieee_addr,
-        model: model,
-        vendor: vendor,
-        suggested_type: ex.type || disc?.suggested_type || null,
-        exposes: disc?.exposes_json ? JSON.parse(disc.exposes_json) : null,
-        discovered_at: disc?.created_at || null,
-        is_added: true,
-        can_edit: true,
-        room_id: ex.room_id || null,
-        room_hint: profile?.room_hint || null,
-        status: 'online',
-        last_updated: new Date().toISOString(),
-      });
-    }
 
     // Устройства из discovery_events, которых нет нигде
     for (const disc of discoveryRows) {
       if (seen.has(disc.ieee_address)) continue;
+      if (existingMap.has(disc.ieee_address)) continue; // ← скрываем уже добавленные
       seen.add(disc.ieee_address);
       unified.push({
         ieee_address: disc.ieee_address,
