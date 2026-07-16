@@ -966,14 +966,31 @@ app.post('/api/discovery/:ieee/confirm', async (req, res) => {
     const deviceType = type || null;
 
     // Upsert device
-    stmt.upsertDevice.run(ieee, name, null, null, deviceType, roomIdNum);
-
+    // НАХОДКА: используем прямой UPDATE с room_manually_set вместо двух запросов
+    // (upsertDevice + отдельный UPDATE). Так room_id и room_manually_set атомарны.
+    await query(`
+      UPDATE devices
+      SET friendly_name = ?, type = COALESCE(?, type),
+          room_id = ?, room_manually_set = 1,
+          last_seen = datetime('now')
+      WHERE ieee_addr = ?
+    `, name, deviceType, roomIdNum, ieee);
+    // Если строка не обновлена (устройство не существует) — вставляем
+    // SQLite3 db.changes не экспортируется через типы better-sqlite3,
+    // поэтому используем SELECT перед UPDATE
+    const existing = await query(`SELECT COUNT(*) as cnt FROM devices WHERE ieee_addr = ?`, ieee);
+    if (!existing[0]?.cnt) {
+      // При INSERT room_manually_set = 1, чтобы атомарно зафиксировать назначение
+      await query(`
+        INSERT INTO devices (ieee_addr, friendly_name, type, room_id, room_manually_set, status, last_seen)
+        VALUES (?, ?, ?, ?, 1, 'online', datetime('now'))
+      `, ieee, name, deviceType, roomIdNum);
+    }
+    // type_manually_set — только если тип указан явно
     if (type) {
       db.prepare(`UPDATE devices SET type_manually_set = 1 WHERE ieee_addr = ?`).run(ieee);
     }
-    if (roomIdNum) {
-      db.prepare(`UPDATE devices SET room_manually_set = 1 WHERE ieee_addr = ?`).run(ieee);
-    }
+    // room_manually_set уже стоит в UPDATE выше
 
     // Mark discovery event as confirmed
     try { stmt.confirmDiscovery.run(ieee); } catch {}
