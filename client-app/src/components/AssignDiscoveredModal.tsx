@@ -308,11 +308,14 @@ export default function AssignDiscoveredModal({ device, rooms, onClose, onConfir
         <button
           className="se-primary-btn"
           disabled={!name.trim()}
-          onClick={() => onConfirm({
-            name: name.trim(),
-            roomId,
-            type: selectedType,
-          })}
+          onClick={async () => {
+            await onConfirm({
+              name: name.trim(),
+              roomId,
+              type: selectedType,
+            });
+            onDevicesRefresh?.();
+          }}
         >
           {isEditing ? (
             <><Edit3 size={14} strokeWidth={2} /> Сохранить изменения</>
