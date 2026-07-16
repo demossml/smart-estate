@@ -165,10 +165,9 @@ function handleMessage(topic: string, payload: Buffer) {
 function handleDeviceDiscovery(friendlyName: string, data: any) {
   const ieee = data.ieee_address || data.ieeeAddr || friendlyName;
   const shortIeee = ieee.replace('0x', '').slice(-8).toUpperCase();
-  const baseName = friendlyName?.trim() || `Датчик ${shortIeee}`;
-  const name = (baseName.startsWith('0x') || baseName === 'undefined')
-    ? `Датчик ${shortIeee}`
-    : baseName;
+  const name = friendlyName?.trim() && !friendlyName.startsWith('0x')
+    ? friendlyName.trim()
+    : `Датчик ${shortIeee}`;
   try {
     const exposes = data.exposes || null;
     const model = data.definition?.model || data.model_id || null;
@@ -219,10 +218,9 @@ function handleBridgeEvent(data: any) {
   if (!info?.ieee_address) return;
   const ieee = info.ieee_address;
   const shortIeee = ieee.replace('0x', '').slice(-8).toUpperCase();
-  const baseName = info.friendly_name?.trim() || `Датчик ${shortIeee}`;
-  const name = (baseName.startsWith('0x') || baseName === 'undefined')
-    ? `Датчик ${shortIeee}`
-    : baseName;
+  const name = info.friendly_name?.trim() && !info.friendly_name.startsWith('0x')
+    ? info.friendly_name.trim()
+    : `Датчик ${shortIeee}`;
   const model = info.definition?.model || info.model_id || null;
   const vendor = info.definition?.vendor || null;
 
@@ -397,15 +395,26 @@ export function mapZ2MTypeToInternal(ieeeAddr: string, exposes: any[] | null, mo
     return 'sensor';
   }
 
+  // Прежде чем отдавать null — проверяем универсальные сигнатуры
+  if (features.has('co2') || features.has('voc') || features.has('pm25') || features.has('air_quality')) {
+    return 'air_monitor';
+  }
+  if (features.has('contact') || features.has('door') || features.has('window')) {
+    return 'door_sensor';
+  }
+  if (features.has('presence') || features.has('occupancy')) {
+    return 'presence_sensor';
+  }
+  if (features.has('battery') || features.has('voltage')) {
+    return 'sensor';
+  }
+
   // Fallback для неизвестных устройств с батарейками/освещением
-  if (features.has('battery') || features.has('voltage') || features.has('low_battery')) {
+  if (features.has('low_battery')) {
     return 'sensor';
   }
   if (features.has('illuminance') || features.has('light_level') || features.has('brightness')) {
     return 'light_sensor';
-  }
-  if (features.has('contact') || features.has('door') || features.has('window')) {
-    return 'door_sensor';
   }
 
   return null; // ничего не определили — пользователь выберет вручную
