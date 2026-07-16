@@ -343,7 +343,8 @@ export default function SmartEstateApp() {
   const clearTimers = () => { timersRef.current.forEach(clearTimeout); timersRef.current = []; };
 
   // Загрузить список всех устройств из /api/devices/pending
-  const loadPending = useCallback(async () => {
+  // Используем function declaration для hoisting — нет TDZ при минификации
+  async function loadPending() {
     try {
       const data = await api('/devices/pending');
       const devices = data.devices || data.pending || [];
@@ -362,7 +363,7 @@ export default function SmartEstateApp() {
         })));
       }
     } catch {}
-  }, []);
+  }
 
   async function deleteRoom(id: string) {
     const room = rooms.find((r: any) => String(r.id) === id);
@@ -665,7 +666,10 @@ export default function SmartEstateApp() {
       {assigningDevice && (
         <AssignDiscoveredModal device={assigningDevice} rooms={rooms}
           apiBase=""
-          onDevicesRefresh={loadDevices}
+          onDevicesRefresh={async () => {
+            await loadData();
+            await loadPending();
+          }}
           onClose={() => setAssigningDevice(null)} onConfirm={confirmAssignDiscovered} />
       )}
       {detailDevice && (
