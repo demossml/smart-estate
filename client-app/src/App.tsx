@@ -272,7 +272,7 @@ export default function SmartEstateApp() {
 
   const confirmEditRoom = async ({ name, icon }: any) => {
     if (!editingRoom) return;
-    try { await api(`/rooms/${editingRoom.id}`, { method: 'PATCH', body: JSON.stringify({ name, icon }) }); await loadData(); }
+    try { await api(`/rooms/${editingRoom.id}`, { method: 'PATCH', body: JSON.stringify({ name, icon }) }); await loadData(); await loadPending(); }
     catch (e: any) { console.error('Edit room error:', e); }
     setEditingRoom(null);
   };
@@ -340,9 +340,10 @@ export default function SmartEstateApp() {
       const moved = data.devices_moved_to_living_room || 0;
       window.alert(`✅ Комната «${roomName}» удалена.\n📦 ${moved} устройств перемещено в Гостиную.`);
       await loadData();
+      await loadPending();
     }
     catch (e: any) { console.error('Delete room error:', e); window.alert('❌ Ошибка при удалении комнаты'); }
-  }, [loadData, rooms]);
+  }, [loadData, loadPending, rooms]);
 
   /* ── Discovery — НОВАЯ ЛОГИКА (14.07.2026) ──
    *
