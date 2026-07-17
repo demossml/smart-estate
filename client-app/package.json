@@ -13,7 +13,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.0.0",
-    "react-swipeable": "^7.0.1",
+    "react-swipeable": "^7.0.2",
     "recharts": "^2.13.0"
   },
   "devDependencies": {
