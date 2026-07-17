@@ -23,12 +23,13 @@ export default function RoomCard({ room, devices, expanded, onExpand, onToggleDe
   const anyPresence = devices.some((d) => (d.type === "presence_sensor" || d.type === "motion_sensor") && d.presence);
   const lightsOn = devices.filter((d) => d.type === "light" && d.state).length;
   const airDev = devices.find((d) => d.type === "air_monitor");
+  const tempDev = devices.find((d) => d.type === "sensor" || d.type === "temp_sensor") || airDev;
   const lowBattery = devices.some((d) => "battery" in d && d.battery <= 20);
   const alert = anyOpen || anyLeak;
 
   // glance chips (status visible without expanding)
   const glances: { icon: any; text: string; tone: string }[] = [];
-  if (airDev) glances.push({ icon: Wind, text: `${airDev.temperature}° · ${airDev.humidity}%`, tone: "normal" });
+  if (tempDev) glances.push({ icon: Wind, text: `${tempDev.temperature}° · ${tempDev.humidity}%`, tone: "normal" });
   if (windows.length) glances.push({ icon: DoorClosed, text: anyOpen ? "окно открыто" : "закрыто", tone: anyOpen ? "alert" : "ok" });
   if (lightsOn > 0) glances.push({ icon: Lightbulb, text: `свет: ${lightsOn}`, tone: "on" });
   if (anyLeak) glances.push({ icon: Droplets, text: "протечка!", tone: "alert" });
@@ -41,7 +42,7 @@ export default function RoomCard({ room, devices, expanded, onExpand, onToggleDe
           <div className={"se-room-icon" + (anyPresence ? " se-room-icon--live" : "")}><RoomIcon size={17} strokeWidth={1.5} /></div>
           <div>
             <div className="se-room-name">{room.name}</div>
-            <div className="se-room-sub">{devices.length} устройств{airDev ? ` · ${airDev.temperature}°` : ""}</div>
+            <div className="se-room-sub">{devices.length} устройств{tempDev ? ` · ${tempDev.temperature}°` : ""}</div>
           </div>
         </div>
         <div className="se-room-head-right">

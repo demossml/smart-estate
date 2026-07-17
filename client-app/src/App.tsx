@@ -76,6 +76,7 @@ function apiToDevice(d: any): any {
       break;
     case 'leak_sensor': base.leak = tel.water_leak === 1 || tel.water_leak === true; break;
     case 'air_monitor': base.temperature = tel.temperature ?? 0; base.humidity = tel.humidity ?? 0; base.co2 = tel.co2 ?? 0; base.voc = tel.voc ?? 0; break;
+    case 'sensor': case 'temp_sensor': base.temperature = tel.temperature ?? null; base.humidity = tel.humidity ?? null; break;
     case 'light': base.state = tel.state === 1 || tel.state === true; base.brightness = tel.brightness ?? 0; break;
     case 'plug': base.state = tel.state === 1 || tel.state === true; base.ratedPower = tel.power ?? tel.ratedPower ?? 0; base.energy = tel.energy ?? 0; base.current = tel.current ?? 0; break;
     case 'gate_controller': base.state = tel.contact === 1 ? 'open' : 'closed'; break;
@@ -134,10 +135,15 @@ export default function SmartEstateApp() {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
+      console.log('🔑 apiKey:', localStorage.getItem('apiKey'));
       const [roomsData, devicesData, scenariosData] = await Promise.all([
         api('/rooms'), api('/devices'), api('/scenarios'),
       ]);
+      console.log('🏠 roomsData:', roomsData);
+      console.log('📱 devicesData:', devicesData);
       const loadedRooms = (roomsData.rooms || []).map((r: any) => ({ ...r, icon: mapIcon(r.icon), id: String(r.id) }));
+      console.log('🏠 loadedRooms:', loadedRooms);
+      console.log('📱 devices set:', (devicesData.devices || []).map((d:any) => ({name: d.friendly_name, room_id: d.room_id, type: d.type})));
       setRooms(loadedRooms);
       setDevices((devicesData.devices || []).map((d: any) => {
         // Normalize server fields for frontend
@@ -169,6 +175,7 @@ export default function SmartEstateApp() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { loadPending(); }, []);
 
   /* ─── Air ─── */
   const overallAir = useMemo(() => {
@@ -549,12 +556,116 @@ export default function SmartEstateApp() {
     return `Сейчас дом потребляет ${kw} кВт, ${openIssues ? `открыто окон/дверей: ${openIssues}` : "все окна и двери закрыты"}, света горит: ${lightsOn}. За сегодня сработало автоматизаций: ${scenarios.filter((s) => s.active).length}, активных подсказок: ${suggestions.length + pendingActions.length}.`;
   }, [devices, scenarios, suggestions, pendingActions]);
 
-  /* ── Render ── */
-  if (loading) {
+  /* ── Auth state ── */
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [authKey, setAuthKey] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authChecking, setAuthChecking] = useState(false);
+
+  useEffect(() => {
+    const storedKey = localStorage.getItem('apiKey');
+    if (storedKey) {
+      // Проверяем ключ
+      fetch('/api/mode', { headers: { 'X-API-Key': storedKey } })
+        .then(r => r.json())
+        .then(d => {
+          if (d?.ok === true || d?.mode) {
+            setAuthenticated(true);
+          } else {
+            setAuthenticated(false);
+            localStorage.removeItem('apiKey');
+          }
+        })
+        .catch(() => {
+          // Сервер может быть без авторизации — тоже пропускаем
+          setAuthenticated(true);
+        });
+    } else {
+      setAuthenticated(false);
+    }
+  }, []);
+
+  if (authenticated === null) {
     return (
       <div className="se-stage">
         <div className="se-app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
           <Loader2 size={32} strokeWidth={1.5} className="se-spin" color="#C9A24B" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!authenticated) {
+    return (
+      <div className="se-stage">
+        <div className="se-app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '24px' }}>
+          <div style={{ width: '100%', maxWidth: '340px' }}>
+            <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+              <div style={{ fontFamily: "'Cormorant SC', serif", fontSize: '24px', color: '#E9E4D8', letterSpacing: '0.08em', fontWeight: 600 }}>
+                УМНАЯ УСАДЬБА
+              </div>
+              <div style={{ fontSize: '11px', color: '#5A5F58', marginTop: '6px' }}>
+                Введите ключ доступа
+              </div>
+            </div>
+            <input
+              className="se-input"
+              type="password"
+              placeholder="API-ключ"
+              value={authKey}
+              onChange={e => { setAuthKey(e.target.value); setAuthError(''); }}
+              onKeyDown={e => { if (e.key === 'Enter' && authKey.trim()) {
+                setAuthChecking(true);
+                setAuthError('');
+                fetch('/api/mode', { headers: { 'X-API-Key': authKey.trim() } })
+                  .then(r => r.json())
+                  .then(d => {
+                    if (d?.ok === true || d?.mode) {
+                      localStorage.setItem('apiKey', authKey.trim());
+                      window.location.reload(); // перезагрузить — loadData сработает с верным ключом
+                    } else {
+                      setAuthError('Неверный ключ');
+                      setAuthChecking(false);
+                    }
+                  })
+                  .catch(() => {
+                    setAuthError('Ошибка подключения к серверу');
+                    setAuthChecking(false);
+                  });
+              }}}
+              style={{ marginBottom: '10px' }}
+            />
+            {authError && (
+              <div style={{ fontSize: '11px', color: '#D9695F', marginBottom: '8px' }}>
+                {authError}
+              </div>
+            )}
+            <button
+              className="se-primary-btn"
+              disabled={!authKey.trim() || authChecking}
+              onClick={async () => {
+                setAuthChecking(true);
+                setAuthError('');
+                try {
+                  const r = await fetch('/api/mode', { headers: { 'X-API-Key': authKey.trim() } });
+                  const d = await r.json();
+                  if (d?.ok === true || d?.mode) {
+                    localStorage.setItem('apiKey', authKey.trim());
+                    window.location.reload();
+                  } else {
+                    setAuthError('Неверный ключ');
+                    setAuthChecking(false);
+                  }
+                } catch {
+                  setAuthError('Ошибка подключения к серверу');
+                  setAuthChecking(false);
+                }
+              }}
+            >
+              {authChecking ? <Loader2 size={16} strokeWidth={1.5} className="se-spin" /> : null}
+              Войти
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -572,17 +683,37 @@ export default function SmartEstateApp() {
             <div className="se-logo">УМНАЯ УСАДЬБА</div>
             <div className="se-logo-sub">SmartEstate · {roomsWithDevices.length} комнат · {devices.length} устройств</div>
           </div>
-          <button className="se-mode-pill" onClick={async () => { await toggleMode(); await loadData(); }} disabled={modeLoading}>
-            <span className={"se-mode-dot" + (mode === "live" ? " se-mode-dot--live" : "")} />
-            {mode === "live" ? "Live" : "Demo"}
-          </button>
-          <ZigbeeStatusIndicator />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <button className="se-mode-pill" onClick={async () => { await toggleMode(); await loadData(); }} disabled={modeLoading}>
+              <span className={"se-mode-dot" + (mode === "live" ? " se-mode-dot--live" : "")} />
+              {mode === "live" ? "Live" : "Demo"}
+            </button>
+            <button className="se-mode-pill" onClick={() => { localStorage.removeItem('apiKey'); window.location.reload(); }} title="Выйти и ввести новый ключ">
+              Выйти
+            </button>
+            <ZigbeeStatusIndicator />
+          </div>
         </div>
 
         {tab === "home" && (
           <>
             <StatusStrip devices={devices.map(apiToDevice)} />
             <div className="se-tab-pad se-tab-pad--rooms">
+              {/* Баннер: устройства без комнаты */}
+              {discoveredDevices.filter((d: any) => !d.room_id && d.is_added).length > 0 && (
+                <div className="se-banner-warning" style={{ marginBottom: 12 }}>
+                  <div className="se-banner-warning-content">
+                    <span>📡 Устройства без комнаты</span>
+                    <span className="se-banner-count">{discoveredDevices.filter((d: any) => !d.room_id && d.is_added).length}</span>
+                  </div>
+                  <button className="se-mini-btn" onClick={() => {
+                    const firstNoRoom = discoveredDevices.find((d: any) => !d.room_id && d.is_added);
+                    if (firstNoRoom) setAssigningDevice(firstNoRoom);
+                  }}>
+                    Назначить
+                  </button>
+                </div>
+              )}
               <FavoritesGrid devices={devices.map(apiToDevice)} onToggle={toggleDevice} onAdjustTemp={adjustTemp} onSlider={setSlider} onOpenDetail={setDetailDevice} />
               <RunningNow scenarios={scenarios} devices={devices.map(apiToDevice)} />
               <div className="se-section-label">Комнаты</div>
@@ -912,6 +1043,11 @@ const css = `
 .se-empty-state { display: flex; flex-direction: column; align-items: center; padding: 32px 0 16px; gap: 8px; }
 .se-empty-text { font-size: 13px; color: #8B9088; }
 .se-empty-sub { font-size: 11px; color: #5A5F58; text-align: center; padding: 0 20px; line-height: 1.4; }
+
+/* Banner warning */
+.se-banner-warning { display: flex; align-items: center; justify-content: space-between; background: rgba(201,162,75,0.08); border: 1px solid rgba(201,162,75,0.25); border-radius: 12px; padding: 10px 14px; }
+.se-banner-warning-content { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #E9C989; }
+.se-banner-count { background: rgba(201,162,75,0.15); color: #C9A24B; border-radius: 10px; padding: 1px 8px; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
 
 /* Toast banner */
 .se-toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%); z-index: 9999; display: flex; align-items: center; gap: 8px; background: rgba(16,20,18,0.95); border: 1px solid rgba(92,201,138,0.35); border-radius: 12px; padding: 12px 20px; font-size: 13px; color: #E9E4D8; backdrop-filter: blur(12px); box-shadow: 0 8px 32px rgba(0,0,0,0.6); animation: se-toast-in 0.3s ease-out; }

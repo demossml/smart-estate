@@ -3,6 +3,7 @@ import { Battery, Signal, DoorClosed, User, Activity, Droplets, Wind, Lightbulb,
 
 /* ———————————————————————— Constants ———————————————————————— */
 export const DEVICE_TYPES: Record<string, { label: string; category: string; icon: React.FC<{ size?: number; strokeWidth?: number }> }> = {
+  sensor: { label: "Датчик", category: "sensor", icon: Activity },
   window_sensor: { label: "Датчик окна", category: "contact", icon: DoorClosed },
   door_sensor: { label: "Датчик двери", category: "contact", icon: DoorClosed },
   presence_sensor: { label: "Датчик присутствия", category: "presence", icon: User },
@@ -139,6 +140,13 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
         ) : null}
 
         {device.type === "temp_sensor" ? (
+          <div className="se-air-grid se-air-grid--3">
+            <div><span className="se-mono">{device.temperature ?? "—"}°</span><label>темп.</label></div>
+            <div><span className="se-mono">{device.humidity ?? "—"}%</span><label>влажн.</label></div>
+          </div>
+        ) : null}
+
+        {device.type === "sensor" ? (
           <div className="se-air-grid se-air-grid--3">
             <div><span className="se-mono">{device.temperature ?? "—"}°</span><label>темп.</label></div>
             <div><span className="se-mono">{device.humidity ?? "—"}%</span><label>влажн.</label></div>

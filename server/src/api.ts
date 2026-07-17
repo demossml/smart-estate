@@ -415,8 +415,30 @@ app.get('/api/devices/pending', async (_req, res) => {
     const existingMap = new Map(existingDevices.map((d: any) => [d.ieee_addr, d]));
     const seen = new Set<string>();
 
-    // ТОЛЬКО новые устройства — уже добавленные в devices НЕ показываем
-    const unified = z2mDevices
+    // Устройства из БД без комнаты — показываем как is_added=true
+    const noRoomDevices = existingDevices
+      .filter((d: any) => !d.room_id && d.ieee_addr !== 'demo:*' && !d.ieee_addr.startsWith('demo:'))
+      .map((d: any) => {
+        seen.add(d.ieee_addr);
+        return {
+          ieee_address: d.ieee_addr,
+          friendly_name: d.friendly_name || d.ieee_addr,
+          model: d.model || null,
+          vendor: d.vendor || null,
+          suggested_type: d.type || null,
+          exposes: null,
+          discovered_at: null,
+          is_added: true,
+          can_edit: true,
+          room_id: null,
+          room_hint: null,
+          status: 'needs_room',
+          last_updated: new Date().toISOString(),
+        };
+      });
+
+    // Новые устройства из Z2M (не добавленные в БД)
+    const unified = [...noRoomDevices, ...z2mDevices
       .filter((d: any) => {
         const ieee = d.ieee_address || d.ieeeAddr;
         return !existingMap.has(ieee) && !['Coordinator', 'Router'].includes(d.type || '');
@@ -453,8 +475,7 @@ app.get('/api/devices/pending', async (_req, res) => {
           status: 'discovered',
           last_updated: new Date().toISOString(),
         };
-      })
-      .filter(Boolean)
+      }).filter(Boolean)];
 
     // Устройства из discovery_events, которых нет нигде
     for (const disc of discoveryRows) {
