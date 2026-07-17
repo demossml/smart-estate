@@ -1,7 +1,7 @@
-import React, { useState, useCallback, useRef, useEffect } from "react";
-import { useDrag } from 'react-dnd';
+import React, { useState } from "react";
+import { useDrag } from "react-dnd";
 import { useSwipeable } from "react-swipeable";
-import { Battery, Signal, DoorClosed, User, Activity, Droplets, Wind, Lightbulb, Plug as PlugIcon, Thermometer, Trash2, ArrowRight, Edit3, Move, X, Clock, Smartphone } from "lucide-react";
+import { Battery, Signal, DoorClosed, User, Activity, Droplets, Wind, Lightbulb, Plug as PlugIcon, Thermometer, Trash2, ArrowRight, Move, Clock } from "lucide-react";
 
 /* ———————————————————————— Constants ———————————————————————— */
 export const DEVICE_TYPES: Record<string, { label: string; category: string; icon: React.FC<{ size?: number; strokeWidth?: number }> }> = {
@@ -36,25 +36,25 @@ export function defaultFieldsFor(type: string): Record<string, any> {
   switch (type) {
     case "window_sensor":
     case "door_sensor":
-      return { contact: "closed", battery: 92, linkquality: 88, last_seen: Date.now() - 60000 };
+      return { contact: "closed", battery: 92, linkquality: 88 };
     case "presence_sensor":
     case "motion_sensor":
-      return { presence: false, lastSeenMin: 12, battery: 78, linkquality: 90, last_seen: Date.now() - 720000 };
+      return { presence: false, lastSeenMin: 12, battery: 78, linkquality: 90 };
     case "leak_sensor":
-      return { leak: false, battery: 95, linkquality: 82, last_seen: Date.now() - 300000 };
+      return { leak: false, battery: 95, linkquality: 82 };
     case "air_monitor":
-      return { temperature: 21.5, humidity: 44, co2: 620, formaldehyde: 0.02, voc: 110, battery: 100, linkquality: 95, last_seen: Date.now() - 120000 };
+      return { temperature: 21.5, humidity: 44, co2: 620, formaldehyde: 0.02, voc: 110, battery: 100, linkquality: 95 };
     case "temp_sensor":
-      return { temperature: 21.5, humidity: 44, battery: 100, linkquality: 95, last_seen: Date.now() - 180000 };
+      return { temperature: 21.5, humidity: 44, battery: 100, linkquality: 95 };
     case "light":
-      return { state: false, brightness: 70, linkquality: 97, last_seen: Date.now() - 5000 };
+      return { state: false, brightness: 70, linkquality: 97 };
     case "plug":
-      return { state: false, ratedPower: 340, energy: 2.1, current: 1.4, linkquality: 91, last_seen: Date.now() - 8000 };
+      return { state: false, ratedPower: 340, energy: 2.1, current: 1.4, linkquality: 91 };
     case "gate_controller":
     case "gate":
-      return { state: "closed", linkquality: 74, last_seen: Date.now() - 30000 };
+      return { state: "closed", linkquality: 74 };
     case "climate":
-      return { state: false, targetTemp: 22, currentTemp: 23.4, mode: "cool", linkquality: 89, last_seen: Date.now() - 15000 };
+      return { state: false, targetTemp: 22, currentTemp: 23.4, mode: "cool", linkquality: 89 };
     default:
       return {};
   }
@@ -65,10 +65,9 @@ function timeAgo(ts: number | string | undefined): string {
   const now = Date.now();
   const t = typeof ts === "string" ? new Date(ts).getTime() : ts;
   const diff = now - t;
-  if (diff < 60000) return `${Math.round(diff / 1000)} с назад`;
-  if (diff < 3600000) return `${Math.round(diff / 60000)} мин назад`;
-  if (diff < 86400000) return `${Math.round(diff / 3600000)} ч назад`;
-  return `${Math.round(diff / 86400000)} д назад`;
+  if (diff < 60000) return `${Math.round(diff / 1000)}с`;
+  if (diff < 3600000) return `${Math.round(diff / 60000)}м`;
+  return `${Math.round(diff / 3600000)}ч`;
 }
 
 /* ———————————————————————— DeviceTile ———————————————————————— */
@@ -80,10 +79,9 @@ interface DeviceTileProps {
   onOpenDetail?: (device: any) => void;
   onDelete?: (id: string) => void;
   onMoveToRoom?: (id: string) => void;
-  onEditName?: (id: string, name: string) => void;
 }
 
-export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, onOpenDetail, onDelete, onMoveToRoom, onEditName }: DeviceTileProps) {
+export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, onOpenDetail, onDelete, onMoveToRoom }: DeviceTileProps) {
   const meta = DEVICE_TYPES[device.type];
   if (!meta) return null;
   const Icon = meta.icon;
@@ -94,155 +92,53 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
   const [swipedPct, setSwipedPct] = useState(0);
 
   const handlers = useSwipeable({
-    onSwipedLeft: () => { onDelete?.(device.ieee_address || device.id); setSwipedDir(null); setSwipedPct(0); },
-    onSwipedRight: () => { onMoveToRoom?.(device.ieee_address || device.id); setSwipedDir(null); setSwipedPct(0); },
-    onSwiping: (e) => { setSwipedPct(Math.min(100, Math.abs(e.deltaX) / 2)); setSwipedDir(e.deltaX < 0 ? "left" : "right"); },
-    onSwiped: () => { setSwipedDir(null); setSwipedPct(0); },
-    preventScrollOnSwipe: true, trackMouse: true, delta: 50,
+    onSwipedLeft: () => {
+      if (window.confirm("Удалить устройство?")) {
+        onDelete?.(device.ieee_address || device.id);
+      }
+      setSwipedDir(null);
+      setSwipedPct(0);
+    },
+    onSwipedRight: () => {
+      onMoveToRoom?.(device.ieee_address || device.id);
+      setSwipedDir(null);
+      setSwipedPct(0);
+    },
+    onSwiping: (e) => {
+      const pct = Math.min(100, Math.abs(e.deltaX) / 2);
+      setSwipedPct(pct);
+      setSwipedDir(e.deltaX < 0 ? "left" : "right");
+    },
+    onSwiped: () => {
+      setSwipedDir(null);
+      setSwipedPct(0);
+    },
+    preventScrollOnSwipe: true,
+    trackMouse: true,
+    delta: 80,
   });
 
   const translateX = swipedDir === "left" ? -swipedPct : swipedDir === "right" ? swipedPct : 0;
 
   /* — drag & drop — */
-  const [{ isDragging }, dragRef] = useDrag({
+  const [{ isDragging }, drag] = useDrag(() => ({
     type: 'DEVICE',
     item: { ieee: device.ieee_address || device.id },
     collect: (monitor) => ({ isDragging: monitor.isDragging() }),
-  });
+  }), [device.ieee_address, device.id]);
 
-  /* — long press → context menu — */
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [contextOpen, setContextOpen] = useState(false);
-  const [editingName, setEditingName] = useState(false);
-  const [editNameVal, setEditNameVal] = useState(device.name || "");
-
-  const handlePointerDown = useCallback(() => {
-    if (contextOpen) return;
-    longPressTimer.current = setTimeout(() => {
-      setContextOpen(true);
-    }, 500);
-  }, [contextOpen]);
-
-  const handlePointerUp = useCallback(() => {
-    if (longPressTimer.current) clearTimeout(longPressTimer.current);
-  }, []);
-
-  const handlePointerMove = useCallback(() => {
-    if (longPressTimer.current) clearTimeout(longPressTimer.current);
-  }, []);
-
-  /* — edit name submit — */
-  const handleEditNameSubmit = useCallback(() => {
-    const trimmed = editNameVal.trim();
-    if (trimmed && trimmed !== device.name) {
-      onEditName?.(device.ieee_address || device.id, trimmed);
-    }
-    setEditingName(false);
-    setContextOpen(false);
-  }, [editNameVal, device, onEditName]);
-
-  useEffect(() => {
-    if (editingName) {
-      setEditNameVal(device.name || "");
-    }
-  }, [editingName, device.name]);
-
-  /* — toggle helper for big touch target — */
-  const handleToggle = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    e.stopPropagation();
-    onToggle?.(device.id, (device.type === "gate_controller" || device.type === "gate")
-      ? (device.state === "open" ? "closed" : "open")
-      : undefined);
-  }, [device, onToggle]);
-
-  /* — battery & last_seen — */
   const hasBattery = "battery" in device;
   const hasLastSeen = "last_seen" in device || "lastSeen" in device;
   const lastSeenRaw = device.last_seen || device.lastSeen;
 
   return (
     <div
-      ref={dragRef}
-      className="relative overflow-hidden rounded-xl"
-      style={{ touchAction: "pan-y", opacity: isDragging ? 0.4 : 1 }}
+      ref={drag}
+      className={`relative overflow-hidden rounded-xl ${isDragging ? 'opacity-50' : ''}`}
+      style={{ touchAction: "pan-y" }}
     >
-      {/* ── Context Menu (long-press) ── */}
-      {contextOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-end justify-center pb-8"
-          style={{ background: "rgba(0,0,0,0.55)" }}
-          onClick={() => setContextOpen(false)}
-        >
-          <div
-            className="rounded-2xl w-[90%] max-w-sm overflow-hidden"
-            style={{ background: "#1A1D1B", border: "1px solid #2A2D2B" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="text-center py-4 border-b border-[#2A2D2B]">
-              <div className="text-sm font-semibold text-[#E5E7EB]">{device.name}</div>
-              <div className="text-xs text-[#7F8A83] mt-0.5">{meta.label}</div>
-            </div>
-
-            {/* Edit name */}
-            {editingName ? (
-              <div className="px-4 py-3">
-                <input
-                  autoFocus
-                  className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                  style={{ background: "#0F1210", color: "#E5E7EB", border: "1px solid #3B82F6" }}
-                  value={editNameVal}
-                  onChange={(e) => setEditNameVal(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") handleEditNameSubmit(); if (e.key === "Escape") setEditingName(false); }}
-                />
-                <div className="flex gap-2 mt-2">
-                  <button
-                    className="flex-1 py-2 rounded-lg text-xs font-medium"
-                    style={{ background: "#2563EB", color: "#fff" }}
-                    onClick={handleEditNameSubmit}
-                  >Сохранить</button>
-                  <button
-                    className="py-2 px-4 rounded-lg text-xs"
-                    style={{ background: "#2A2D2B", color: "#9CA3AF" }}
-                    onClick={() => { setEditingName(false); setContextOpen(false); }}
-                  >Отмена</button>
-                </div>
-              </div>
-            ) : (
-              <div className="py-2">
-                <button
-                  className="w-full flex items-center gap-3 px-4 py-3 text-sm text-[#E5E7EB] hover:bg-[#2A2D2B] transition-colors"
-                  onClick={() => setEditingName(true)}
-                >
-                  <Edit3 size={16} strokeWidth={1.6} /> Редактировать
-                </button>
-                <button
-                  className="w-full flex items-center gap-3 px-4 py-3 text-sm text-[#D9695F] hover:bg-[#2A2D2B] transition-colors"
-                  onClick={() => { onDelete?.(device.ieee_address || device.id); setContextOpen(false); }}
-                >
-                  <Trash2 size={16} strokeWidth={1.6} /> Удалить
-                </button>
-                <button
-                  className="w-full flex items-center gap-3 px-4 py-3 text-sm text-[#E5E7EB] hover:bg-[#2A2D2B] transition-colors"
-                  onClick={() => { onMoveToRoom?.(device.ieee_address || device.id); setContextOpen(false); }}
-                >
-                  <Move size={16} strokeWidth={1.6} /> Переместить в другую комнату
-                </button>
-              </div>
-            )}
-
-            <div className="border-t border-[#2A2D2B] py-2">
-              <button
-                className="w-full flex items-center justify-center gap-2 py-2 text-xs text-[#7F8A83]"
-                onClick={() => setContextOpen(false)}
-              >
-                <X size={14} /> Закрыть
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Swipe overlays (unchanged) ── */}
+      {/* ── Swipe overlays ── */}
+      {/* Red — delete layer (visible when swiping left) */}
       <div
         className="absolute inset-y-0 right-0 flex items-center justify-start pl-3"
         style={{
@@ -250,12 +146,15 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
           background: "linear-gradient(90deg, transparent 0%, #7F1D1D 50%, #991B1B 100%)",
           opacity: swipedDir === "left" ? Math.min(1, swipedPct / 60) : 0,
           transition: swipedPct > 0 ? "none" : "opacity 0.3s",
-          pointerEvents: "none", zIndex: 1,
+          pointerEvents: "none",
+          zIndex: 1,
         }}
       >
         <Trash2 size={22} color="#FCA5A5" strokeWidth={1.8} />
         <span style={{ color: "#FCA5A5", fontSize: 12, fontWeight: 600, marginLeft: 6 }}>Удалить</span>
       </div>
+
+      {/* Green — move layer (visible when swiping right) */}
       <div
         className="absolute inset-y-0 left-0 flex items-center justify-end pr-3"
         style={{
@@ -263,7 +162,8 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
           background: "linear-gradient(270deg, transparent 0%, #065F46 50%, #047857 100%)",
           opacity: swipedDir === "right" ? Math.min(1, swipedPct / 60) : 0,
           transition: swipedPct > 0 ? "none" : "opacity 0.3s",
-          pointerEvents: "none", zIndex: 1,
+          pointerEvents: "none",
+          zIndex: 1,
         }}
       >
         <span style={{ color: "#A7F3D0", fontSize: 12, fontWeight: 600, marginRight: 6 }}>Переместить</span>
@@ -273,22 +173,14 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
       {/* ── Main tile ── */}
       <div
         {...handlers}
-        onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerUp}
-        onPointerMove={handlePointerMove}
-        onPointerLeave={handlePointerUp}
-        className={"se-tile relative" + (interactive ? " se-tile--interactive" : "")}
-        onClick={() => { if (!contextOpen) onOpenDetail?.(device); }}
+        className="relative bg-card border rounded-3xl p-5 active:scale-95 transition-all overflow-hidden touch-manipulation"
+        onClick={() => onOpenDetail?.(device)}
         role="button"
         style={{
           transform: `translateX(${translateX}px)`,
           transition: swipedPct > 0 ? "none" : "transform 0.3s ease-out",
-          position: "relative", zIndex: 2,
-          padding: "8px 10px 6px",
-          cursor: "pointer",
-          userSelect: "none",
-          WebkitUserSelect: "none",
-          touchAction: "pan-y",
+          position: "relative",
+          zIndex: 2,
           background: swipedPct > 20
             ? swipedDir === "left"
               ? "linear-gradient(165deg, rgba(127,29,29,0.2), rgba(14,18,15,0.65))"
@@ -296,45 +188,41 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
             : undefined,
         }}
       >
-        {/* ── Row 1: icon + name + large toggle ── */}
-        <div className="flex items-center gap-2.5 mb-1.5">
-          <div className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "rgba(59,130,246,0.12)" }}>
-            <Icon size={18} strokeWidth={1.6} color="#60A5FA" />
+        {/* ── Row 1: icon + name + toggle ── */}
+        <div className="flex items-center gap-3 mb-3">
+          <div className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "rgba(59,130,246,0.12)" }}>
+            <Icon size={20} strokeWidth={1.6} color="#60A5FA" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-[#E5E7EB] truncate">{device.name}</div>
-            <div className="text-[10px] text-[#7F8A83] leading-tight">{meta.label}</div>
+            <div className="text-base font-semibold text-[#E5E7EB] truncate">{device.name}</div>
+            <div className="text-xs text-[#7F8A83]">{meta.label}</div>
           </div>
           {interactive && device.type !== "climate" && (
             <button
-              className={"se-switch" + (((device.type === "gate_controller" || device.type === "gate") ? device.state === "open" : device.state) ? " se-switch--on" : "")}
-              onClick={handleToggle}
-              onTouchEnd={(e) => { e.stopPropagation(); handleToggle(e); }}
-              aria-label="переключить"
+              className="se-switch"
               style={{
-                minWidth: 52, height: 30, borderRadius: 15, position: "relative", flexShrink: 0,
+                minWidth: 56, height: 32, borderRadius: 16, position: "relative", flexShrink: 0,
                 background: ((device.type === "gate_controller" || device.type === "gate") ? device.state === "open" : device.state) ? "#2563EB" : "#2A2D2B",
                 transition: "background 0.2s",
-                cursor: "pointer", border: "none", outline: "none",
-                padding: 0,
+                cursor: "pointer", border: "none", outline: "none", padding: 0,
               }}
+              onClick={(e) => { e.stopPropagation(); onToggle?.(device.id, (device.type === "gate_controller" || device.type === "gate") ? (device.state === "open" ? "closed" : "open") : undefined); }}
+              aria-label="переключить"
             >
-              <span
-                style={{
-                  position: "absolute", top: 3,
-                  left: ((device.type === "gate_controller" || device.type === "gate") ? device.state === "open" : device.state) ? 26 : 3,
-                  width: 24, height: 24, borderRadius: 12,
-                  background: "#F3F4F6",
-                  transition: "left 0.2s",
-                  boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
-                }}
-              />
+              <span style={{
+                position: "absolute", top: 3,
+                left: ((device.type === "gate_controller" || device.type === "gate") ? device.state === "open" : device.state) ? 29 : 3,
+                width: 26, height: 26, borderRadius: 13,
+                background: "#F3F4F6",
+                transition: "left 0.2s",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+              }} />
             </button>
           )}
         </div>
 
         {/* ── Row 2: device-specific body ── */}
-        <div className="se-tile-body pl-0.5" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-2" onClick={(e) => e.stopPropagation()}>
           {device.type === "window_sensor" || device.type === "door_sensor" ? (
             <span className={"se-badge" + (device.contact === "open" ? " se-badge--alert" : "")}>
               {device.contact === "open" ? "Открыто" : "Закрыто"}
@@ -371,13 +259,9 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
 
           {device.type === "light" ? (
             <div className="se-light-row">
-              <input
-                type="range" min={0} max={100}
-                value={device.brightness}
-                disabled={!device.state}
+              <input type="range" min={0} max={100} value={device.brightness} disabled={!device.state}
                 onChange={(e) => onSlider?.(device.id, "brightness", Number(e.target.value))}
-                className="se-slider se-slider--sm"
-              />
+                className="se-slider se-slider--sm" />
               <span className="se-mono">{device.state ? `${device.brightness}%` : "выкл"}</span>
             </div>
           ) : null}
@@ -408,17 +292,17 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
           ) : null}
         </div>
 
-        {/* ── Row 3: battery + linkquality + last_seen ── */}
-        <div className="flex items-center gap-3 mt-1.5">
+        {/* ── Footer: battery + linkquality + last_seen ── */}
+        <div className="flex items-center gap-3 pt-2 border-t border-[#2A2D2B]/50">
           {hasBattery && (
             <span className="flex items-center gap-1">
-              <Battery size={11} strokeWidth={1.6} color={batteryColor(device.battery)} />
-              <span style={{ color: batteryColor(device.battery), fontSize: 10 }}>{device.battery}%</span>
+              <Battery size={12} strokeWidth={1.6} color={batteryColor(device.battery)} />
+              <span style={{ color: batteryColor(device.battery), fontSize: 11, fontWeight: 500 }}>{device.battery}%</span>
             </span>
           )}
           <span className="flex items-center gap-1">
-            <Signal size={11} strokeWidth={1.6} color="#5A5F58" />
-            <span style={{ fontSize: 10, color: "#7F8A83" }}>{device.linkquality}</span>
+            <Signal size={12} strokeWidth={1.6} color="#5A5F58" />
+            <span style={{ fontSize: 11, color: "#7F8A83" }}>{device.linkquality}</span>
           </span>
           {hasLastSeen && (
             <span className="flex items-center gap-1 ml-auto">

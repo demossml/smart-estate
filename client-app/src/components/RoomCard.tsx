@@ -33,16 +33,13 @@ export default function RoomCard({ room, devices, expanded, onExpand, onToggleDe
   const alert = anyOpen || anyLeak;
 
   // Drag & drop target
-  const [{ isOver, canDrop }, dropRef] = useDrop({
+  const [{ isOver }, drop] = useDrop(() => ({
     accept: 'DEVICE',
     drop: (item: { ieee: string }) => {
       onMoveDeviceToRoom?.(item.ieee, String(room.id));
     },
-    collect: (monitor) => ({
-      isOver: monitor.isOver(),
-      canDrop: monitor.canDrop(),
-    }),
-  });
+    collect: (monitor) => ({ isOver: monitor.isOver() }),
+  }), [room.id, onMoveDeviceToRoom]);
 
   // glance chips (status visible without expanding)
   const glances: { icon: any; text: string; tone: string }[] = [];
@@ -54,22 +51,14 @@ export default function RoomCard({ room, devices, expanded, onExpand, onToggleDe
 
   return (
     <div
-      ref={dropRef}
-      className="se-room"
+      ref={drop}
+      className={`se-room ${isOver ? 'ring-2 ring-primary' : ''}`}
       style={{
-        borderColor: isOver
-          ? canDrop
-            ? '#3B82F6'
-            : undefined
-          : undefined,
-        boxShadow: isOver && canDrop
-          ? '0 0 0 2px #3B82F6, 0 0 16px rgba(59,130,246,0.3)'
-          : undefined,
-        transition: 'border-color 0.15s, box-shadow 0.15s',
+        transition: 'box-shadow 0.15s',
       }}
     >
       {/* Drop indicator overlay */}
-      {isOver && canDrop && (
+      {isOver && (
         <div
           className="absolute inset-0 flex items-center justify-center"
           style={{
@@ -118,7 +107,7 @@ export default function RoomCard({ room, devices, expanded, onExpand, onToggleDe
           ) : (
             <div className="se-tile-grid">
               {devices.map((d) => (
-                <DeviceTile key={d.id} device={d} onToggle={onToggleDevice} onAdjustTemp={onAdjustTemp} onSlider={onSlider} onOpenDetail={onOpenDetail} onDelete={onDeleteDevice} onMoveToRoom={onMoveToRoom} onEditName={onEditDeviceName} />
+                <DeviceTile key={d.id} device={d} onToggle={onToggleDevice} onAdjustTemp={onAdjustTemp} onSlider={onSlider} onOpenDetail={onOpenDetail} onDelete={onDeleteDevice} onMoveToRoom={onMoveToRoom} />
               ))}
             </div>
           )}
