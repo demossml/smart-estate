@@ -3,6 +3,7 @@ import {
   Lightbulb, Plug as PlugIcon, Thermometer, Battery, Signal,
   Home, Sofa, Bed, UtensilsCrossed, TreePine,
 } from 'lucide-react';
+import { useSwipeable } from 'react-swipeable';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -97,12 +98,16 @@ export function DeviceTile({
   onAdjustTemp,
   onSlider,
   onDetails,
+  onDelete,
+  onMoveToRoom,
 }: {
   device: DeviceData;
   onToggle?: (id: string) => void;
   onAdjustTemp?: (id: string, delta: number) => void;
   onSlider?: (id: string, field: string, value: number) => void;
   onDetails?: (device: DeviceData) => void;
+  onDelete?: (id: string) => void;
+  onMoveToRoom?: (id: string) => void;
 }) {
   const meta = DEVICE_TYPE_META[device.type];
   if (!meta) return null;
@@ -131,9 +136,18 @@ export function DeviceTile({
   // Для air_monitor / temp_sensor / sensor — показываем метрики вместо статуса
   const showMetrics = ['air_monitor', 'temp_sensor', 'sensor'].includes(device.type);
 
+  const swipeHandlers = useSwipeable({
+    onSwipedLeft: () => onDelete?.(ieee),
+    onSwipedRight: () => onMoveToRoom?.(ieee),
+    preventScrollOnSwipe: true,
+    trackMouse: true,
+    delta: 50,
+  });
+
   return (
     <div
-      className="group relative min-h-[128px] bg-card border border-border rounded-2xl p-5 active:scale-[0.97] transition-all duration-200 touch-manipulation shadow-sm hover:shadow-md cursor-pointer select-none"
+      {...swipeHandlers}
+      className="group relative min-h-[128px] bg-card border border-border rounded-2xl p-5 active:scale-[0.97] transition-all duration-200 touch-manipulation shadow-sm hover:shadow-md cursor-pointer select-none overflow-hidden"
       onClick={() => onDetails?.(device)}
       role="button"
       tabIndex={0}
