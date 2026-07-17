@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import { Home, Workflow, Zap, Settings, Plus, Wind, Loader2, CheckCircle2, Sparkles } from "lucide-react";
+import { Home, Workflow, Zap, Settings, Plus, Wind, Loader2, CheckCircle2, Sparkles, LayoutGrid } from "lucide-react";
 import RoomCard from "./components/RoomCard";
 import DeviceTile, { airStatus, DEVICE_TYPES, defaultFieldsFor } from "./components/DeviceTile";
 import AddDeviceModal from "./components/AddDeviceModal";
@@ -10,6 +10,7 @@ import DeviceDetailSheet from "./components/DeviceDetailSheet";
 import AssignDiscoveredModal from "./components/AssignDiscoveredModal";
 import { StatusStrip, FavoritesGrid, RunningNow, ROOM_ICONS } from "./components/HomeWidgets";
 import ManageTab, { classifyVoiceCommand } from "./components/ManageTab";
+import RoomsList from "./components/RoomsList";
 import ProfilerTab from "./components/ProfilerTab";
 import ZigbeeStatusIndicator from "./components/ZigbeeStatusIndicator";
 import { useMode } from './hooks/useMode';
@@ -743,6 +744,16 @@ export default function SmartEstateApp() {
           </>
         )}
 
+        {tab === "rooms" && (
+          <RoomsList
+            rooms={rooms}
+            devices={devices}
+            onDeleteRoom={deleteRoom}
+            onEditRoom={(r) => setEditingRoom(r)}
+            onAddRoom={() => setShowAddRoom(true)}
+          />
+        )}
+
         {tab === "scenarios" && (
           <ScenariosTab scenarios={scenarios} onToggle={toggleScenario} onDelete={deleteScenario} onAdd={addScenario} />
         )}
@@ -787,6 +798,7 @@ export default function SmartEstateApp() {
       <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-glass-border bg-bg/80 backdrop-blur-md safe-bottom">
         <div className="max-w-[480px] mx-auto flex" style={{ padding: '10px 6px' }}>
           <button className={"se-nav-btn" + (tab === "home" ? " se-nav-btn--active" : "")} onClick={() => setTab("home")}><Home size={18} strokeWidth={1.6} /><span>Дом</span></button>
+          <button className={"se-nav-btn" + (tab === "rooms" ? " se-nav-btn--active" : "")} onClick={() => setTab("rooms")}><LayoutGrid size={18} strokeWidth={1.6} /><span>Комнаты</span></button>
           <button className={"se-nav-btn" + (tab === "scenarios" ? " se-nav-btn--active" : "")} onClick={() => setTab("scenarios")}><Workflow size={18} strokeWidth={1.6} /><span>Сценарии</span></button>
           <button className={"se-nav-btn" + (tab === "energy" ? " se-nav-btn--active" : "")} onClick={() => setTab("energy")}><Zap size={18} strokeWidth={1.6} /><span>Энергия</span></button>
           <button className={"se-nav-btn" + (tab === "manage" ? " se-nav-btn--active" : "")} onClick={() => setTab("manage")}><Settings size={18} strokeWidth={1.6} /><span>Управление</span></button>
