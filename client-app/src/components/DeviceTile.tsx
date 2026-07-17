@@ -1,7 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import { useDrag } from "react-dnd";
 import { useSwipeable } from "react-swipeable";
-import { Battery, Signal, DoorClosed, User, Activity, Droplets, Wind, Lightbulb, Plug as PlugIcon, Thermometer, Trash2, ArrowRight, Move, Clock } from "lucide-react";
+import { Battery, Signal, DoorClosed, User, Activity, Droplets, Wind, Lightbulb, Plug as PlugIcon, Thermometer, Trash2, ArrowRight, Edit3, Move, X, Clock } from "lucide-react";
 
 /* ———————————————————————— Constants ———————————————————————— */
 export const DEVICE_TYPES: Record<string, { label: string; category: string; icon: React.FC<{ size?: number; strokeWidth?: number }> }> = {
@@ -36,25 +36,25 @@ export function defaultFieldsFor(type: string): Record<string, any> {
   switch (type) {
     case "window_sensor":
     case "door_sensor":
-      return { contact: "closed", battery: 92, linkquality: 88 };
+      return { contact: "closed", battery: 92, linkquality: 88, last_seen: Date.now() - 60000 };
     case "presence_sensor":
     case "motion_sensor":
-      return { presence: false, lastSeenMin: 12, battery: 78, linkquality: 90 };
+      return { presence: false, lastSeenMin: 12, battery: 78, linkquality: 90, last_seen: Date.now() - 720000 };
     case "leak_sensor":
-      return { leak: false, battery: 95, linkquality: 82 };
+      return { leak: false, battery: 95, linkquality: 82, last_seen: Date.now() - 300000 };
     case "air_monitor":
-      return { temperature: 21.5, humidity: 44, co2: 620, formaldehyde: 0.02, voc: 110, battery: 100, linkquality: 95 };
+      return { temperature: 21.5, humidity: 44, co2: 620, formaldehyde: 0.02, voc: 110, battery: 100, linkquality: 95, last_seen: Date.now() - 120000 };
     case "temp_sensor":
-      return { temperature: 21.5, humidity: 44, battery: 100, linkquality: 95 };
+      return { temperature: 21.5, humidity: 44, battery: 100, linkquality: 95, last_seen: Date.now() - 180000 };
     case "light":
-      return { state: false, brightness: 70, linkquality: 97 };
+      return { state: false, brightness: 70, linkquality: 97, last_seen: Date.now() - 5000 };
     case "plug":
-      return { state: false, ratedPower: 340, energy: 2.1, current: 1.4, linkquality: 91 };
+      return { state: false, ratedPower: 340, energy: 2.1, current: 1.4, linkquality: 91, last_seen: Date.now() - 8000 };
     case "gate_controller":
     case "gate":
-      return { state: "closed", linkquality: 74 };
+      return { state: "closed", linkquality: 74, last_seen: Date.now() - 30000 };
     case "climate":
-      return { state: false, targetTemp: 22, currentTemp: 23.4, mode: "cool", linkquality: 89 };
+      return { state: false, targetTemp: 22, currentTemp: 23.4, mode: "cool", linkquality: 89, last_seen: Date.now() - 15000 };
     default:
       return {};
   }
@@ -70,6 +70,13 @@ function timeAgo(ts: number | string | undefined): string {
   return `${Math.round(diff / 3600000)}ч`;
 }
 
+function isOffline(ts: number | string | undefined): boolean {
+  if (!ts) return false;
+  const now = Date.now();
+  const t = typeof ts === "string" ? new Date(ts).getTime() : ts;
+  return (now - t) > 300000; // 5 min
+}
+
 /* ———————————————————————— DeviceTile ———————————————————————— */
 interface DeviceTileProps {
   device: any;
@@ -79,9 +86,10 @@ interface DeviceTileProps {
   onOpenDetail?: (device: any) => void;
   onDelete?: (id: string) => void;
   onMoveToRoom?: (id: string) => void;
+  onEditName?: (id: string, name: string) => void;
 }
 
-export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, onOpenDetail, onDelete, onMoveToRoom }: DeviceTileProps) {
+export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, onOpenDetail, onDelete, onMoveToRoom, onEditName }: DeviceTileProps) {
   const meta = DEVICE_TYPES[device.type];
   if (!meta) return null;
   const Icon = meta.icon;
@@ -127,9 +135,70 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
     collect: (monitor) => ({ isDragging: monitor.isDragging() }),
   }), [device.ieee_address, device.id]);
 
+  /* — long press → context menu — */
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [editNameVal, setEditNameVal] = useState(device.name || "");
+
+  const clearLongPress = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
+
+  const startLongPress = useCallback(() => {
+    if (contextOpen) return;
+    clearLongPress();
+    longPressTimer.current = setTimeout(() => {
+      setContextOpen(true);
+    }, 500);
+  }, [contextOpen, clearLongPress]);
+
+  const handleEditNameSubmit = useCallback(() => {
+    const trimmed = editNameVal.trim();
+    if (trimmed && trimmed !== device.name) {
+      onEditName?.(device.ieee_address || device.id, trimmed);
+    }
+    setEditingName(false);
+    setContextOpen(false);
+  }, [editNameVal, device, onEditName]);
+
+  useEffect(() => {
+    if (editingName) {
+      setEditNameVal(device.name || "");
+    }
+  }, [editingName, device.name]);
+
+  /* — battery & last_seen — */
   const hasBattery = "battery" in device;
   const hasLastSeen = "last_seen" in device || "lastSeen" in device;
   const lastSeenRaw = device.last_seen || device.lastSeen;
+  const offline = hasLastSeen && isOffline(lastSeenRaw);
+
+  /* — toggle helper — */
+  const handleToggle = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    e.stopPropagation();
+    onToggle?.(device.id, (device.type === "gate_controller" || device.type === "gate")
+      ? (device.state === "open" ? "closed" : "open")
+      : undefined);
+  }, [device, onToggle]);
+
+  /* — context menu actions — */
+  const handleDelete = useCallback(() => {
+    onDelete?.(device.ieee_address || device.id);
+    setContextOpen(false);
+  }, [device, onDelete]);
+
+  const handleMove = useCallback(() => {
+    onMoveToRoom?.(device.ieee_address || device.id);
+    setContextOpen(false);
+  }, [device, onMoveToRoom]);
+
+  const toggleState = (device.type === "gate_controller" || device.type === "gate")
+    ? device.state === "open"
+    : device.state;
 
   return (
     <div
@@ -138,7 +207,6 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
       style={{ touchAction: "pan-y" }}
     >
       {/* ── Swipe overlays ── */}
-      {/* Red — delete layer (visible when swiping left) */}
       <div
         className="absolute inset-y-0 right-0 flex items-center justify-start pl-3"
         style={{
@@ -146,15 +214,12 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
           background: "linear-gradient(90deg, transparent 0%, #7F1D1D 50%, #991B1B 100%)",
           opacity: swipedDir === "left" ? Math.min(1, swipedPct / 60) : 0,
           transition: swipedPct > 0 ? "none" : "opacity 0.3s",
-          pointerEvents: "none",
-          zIndex: 1,
+          pointerEvents: "none", zIndex: 1,
         }}
       >
         <Trash2 size={22} color="#FCA5A5" strokeWidth={1.8} />
         <span style={{ color: "#FCA5A5", fontSize: 12, fontWeight: 600, marginLeft: 6 }}>Удалить</span>
       </div>
-
-      {/* Green — move layer (visible when swiping right) */}
       <div
         className="absolute inset-y-0 left-0 flex items-center justify-end pr-3"
         style={{
@@ -162,19 +227,99 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
           background: "linear-gradient(270deg, transparent 0%, #065F46 50%, #047857 100%)",
           opacity: swipedDir === "right" ? Math.min(1, swipedPct / 60) : 0,
           transition: swipedPct > 0 ? "none" : "opacity 0.3s",
-          pointerEvents: "none",
-          zIndex: 1,
+          pointerEvents: "none", zIndex: 1,
         }}
       >
         <span style={{ color: "#A7F3D0", fontSize: 12, fontWeight: 600, marginRight: 6 }}>Переместить</span>
         <ArrowRight size={22} color="#A7F3D0" strokeWidth={1.8} />
       </div>
 
+      {/* ── Context Menu (long-press) ── */}
+      {contextOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center pb-8"
+          style={{ background: "rgba(0,0,0,0.55)" }}
+          onClick={() => setContextOpen(false)}
+        >
+          <div
+            className="rounded-2xl w-[90%] max-w-sm overflow-hidden"
+            style={{ background: "#1A1D1B", border: "1px solid #2A2D2B" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-center py-4 border-b border-[#2A2D2B]">
+              <div className="text-sm font-semibold text-[#E5E7EB]">{device.name}</div>
+              <div className="text-xs text-[#7F8A83] mt-0.5">{meta.label}</div>
+            </div>
+
+            {editingName ? (
+              <div className="px-4 py-3">
+                <input
+                  autoFocus
+                  className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                  style={{ background: "#0F1210", color: "#E5E7EB", border: "1px solid #3B82F6" }}
+                  value={editNameVal}
+                  onChange={(e) => setEditNameVal(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleEditNameSubmit(); if (e.key === "Escape") setEditingName(false); }}
+                />
+                <div className="flex gap-2 mt-2">
+                  <button
+                    className="flex-1 py-2 rounded-lg text-xs font-medium"
+                    style={{ background: "#2563EB", color: "#fff" }}
+                    onClick={handleEditNameSubmit}
+                  >Сохранить</button>
+                  <button
+                    className="py-2 px-4 rounded-lg text-xs"
+                    style={{ background: "#2A2D2B", color: "#9CA3AF" }}
+                    onClick={() => { setEditingName(false); setContextOpen(false); }}
+                  >Отмена</button>
+                </div>
+              </div>
+            ) : (
+              <div className="py-2">
+                <button
+                  className="w-full flex items-center gap-3 px-4 py-3 text-sm text-[#E5E7EB] hover:bg-[#2A2D2B] transition-colors"
+                  onClick={() => setEditingName(true)}
+                >
+                  <Edit3 size={16} strokeWidth={1.6} /> Редактировать
+                </button>
+                <button
+                  className="w-full flex items-center gap-3 px-4 py-3 text-sm text-[#D9695F] hover:bg-[#2A2D2B] transition-colors"
+                  onClick={handleDelete}
+                >
+                  <Trash2 size={16} strokeWidth={1.6} /> Удалить
+                </button>
+                <button
+                  className="w-full flex items-center gap-3 px-4 py-3 text-sm text-[#E5E7EB] hover:bg-[#2A2D2B] transition-colors"
+                  onClick={handleMove}
+                >
+                  <Move size={16} strokeWidth={1.6} /> Переместить в другую комнату
+                </button>
+              </div>
+            )}
+
+            <div className="border-t border-[#2A2D2B] py-2">
+              <button
+                className="w-full flex items-center justify-center gap-2 py-2 text-xs text-[#7F8A83]"
+                onClick={() => setContextOpen(false)}
+              >
+                <X size={14} /> Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Main tile ── */}
       <div
         {...handlers}
+        onTouchStart={startLongPress}
+        onTouchEnd={clearLongPress}
+        onTouchMove={clearLongPress}
+        onMouseDown={startLongPress}
+        onMouseUp={clearLongPress}
+        onMouseLeave={clearLongPress}
         className="relative bg-card border rounded-3xl p-5 active:scale-95 transition-all overflow-hidden touch-manipulation"
-        onClick={() => onOpenDetail?.(device)}
+        onClick={() => { if (!contextOpen) onOpenDetail?.(device); }}
         role="button"
         style={{
           transform: `translateX(${translateX}px)`,
@@ -188,31 +333,34 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
             : undefined,
         }}
       >
-        {/* ── Row 1: icon + name + toggle ── */}
-        <div className="flex items-center gap-3 mb-3">
-          <div className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "rgba(59,130,246,0.12)" }}>
-            <Icon size={20} strokeWidth={1.6} color="#60A5FA" />
+        {/* ── Row 1: large icon + name + big toggle ── */}
+        <div className="flex items-center gap-4 mb-3">
+          <div className="flex-shrink-0 w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: offline ? "rgba(185,28,28,0.12)" : "rgba(59,130,246,0.12)" }}>
+            <Icon size={32} strokeWidth={1.5} color={offline ? "#EF4444" : "#60A5FA"} />
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-base font-semibold text-[#E5E7EB] truncate">{device.name}</div>
-            <div className="text-xs text-[#7F8A83]">{meta.label}</div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-xs text-[#7F8A83]">{meta.label}</span>
+              {offline && <span className="text-xs font-medium text-[#EF4444]">Offline</span>}
+            </div>
           </div>
           {interactive && device.type !== "climate" && (
             <button
-              className="se-switch"
               style={{
-                minWidth: 56, height: 32, borderRadius: 16, position: "relative", flexShrink: 0,
-                background: ((device.type === "gate_controller" || device.type === "gate") ? device.state === "open" : device.state) ? "#2563EB" : "#2A2D2B",
+                minWidth: 60, height: 36, borderRadius: 18, position: "relative", flexShrink: 0,
+                background: toggleState ? "#2563EB" : "#2A2D2B",
                 transition: "background 0.2s",
                 cursor: "pointer", border: "none", outline: "none", padding: 0,
               }}
-              onClick={(e) => { e.stopPropagation(); onToggle?.(device.id, (device.type === "gate_controller" || device.type === "gate") ? (device.state === "open" ? "closed" : "open") : undefined); }}
+              onClick={(e) => { e.stopPropagation(); handleToggle(e); }}
+              onTouchEnd={(e) => { e.stopPropagation(); handleToggle(e); }}
               aria-label="переключить"
             >
               <span style={{
-                position: "absolute", top: 3,
-                left: ((device.type === "gate_controller" || device.type === "gate") ? device.state === "open" : device.state) ? 29 : 3,
-                width: 26, height: 26, borderRadius: 13,
+                position: "absolute", top: 4,
+                left: toggleState ? 32 : 4,
+                width: 28, height: 28, borderRadius: 14,
                 background: "#F3F4F6",
                 transition: "left 0.2s",
                 boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
@@ -222,7 +370,7 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
         </div>
 
         {/* ── Row 2: device-specific body ── */}
-        <div className="mb-2" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-3" onClick={(e) => e.stopPropagation()}>
           {device.type === "window_sensor" || device.type === "door_sensor" ? (
             <span className={"se-badge" + (device.contact === "open" ? " se-badge--alert" : "")}>
               {device.contact === "open" ? "Открыто" : "Закрыто"}
@@ -296,18 +444,20 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
         <div className="flex items-center gap-3 pt-2 border-t border-[#2A2D2B]/50">
           {hasBattery && (
             <span className="flex items-center gap-1">
-              <Battery size={12} strokeWidth={1.6} color={batteryColor(device.battery)} />
-              <span style={{ color: batteryColor(device.battery), fontSize: 11, fontWeight: 500 }}>{device.battery}%</span>
+              <Battery size={13} strokeWidth={1.6} color={batteryColor(device.battery)} />
+              <span style={{ color: batteryColor(device.battery), fontSize: 11, fontWeight: 600 }}>{device.battery}%</span>
             </span>
           )}
           <span className="flex items-center gap-1">
-            <Signal size={12} strokeWidth={1.6} color="#5A5F58" />
+            <Signal size={13} strokeWidth={1.6} color="#5A5F58" />
             <span style={{ fontSize: 11, color: "#7F8A83" }}>{device.linkquality}</span>
           </span>
           {hasLastSeen && (
             <span className="flex items-center gap-1 ml-auto">
-              <Clock size={10} strokeWidth={1.6} color="#5A5F58" />
-              <span style={{ fontSize: 10, color: "#7F8A83" }}>{timeAgo(lastSeenRaw)}</span>
+              <Clock size={11} strokeWidth={1.6} color={offline ? "#EF4444" : "#5A5F58"} />
+              <span style={{ fontSize: 11, color: offline ? "#EF4444" : "#7F8A83", fontWeight: offline ? 600 : 400 }}>
+                {offline ? "Offline" : timeAgo(lastSeenRaw)}
+              </span>
             </span>
           )}
         </div>
