@@ -100,6 +100,39 @@ function apiToScenario(s: any): any {
 const uid = () => Math.random().toString(36).slice(2, 9);
 
 /* ———————————————————————— App ———————————————————————— */
+/* ── Install PWA Prompt ── */
+function InstallPrompt() {
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+
+  useEffect(() => {
+    const handler = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  const handleInstall = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+      setDeferredPrompt(null);
+    }
+  };
+
+  if (!deferredPrompt) return null;
+
+  return (
+    <button
+      onClick={handleInstall}
+      className="fixed bottom-24 right-6 bg-primary text-white px-6 py-3 rounded-2xl shadow-xl flex items-center gap-2 z-50"
+    >
+      📲 Установить приложение
+    </button>
+  );
+}
+
 export default function SmartEstateApp() {
   const [rooms, setRooms] = useState<any[]>([]);
   const [devices, setDevices] = useState<any[]>([]);
@@ -805,6 +838,9 @@ export default function SmartEstateApp() {
           <button className={"se-nav-btn" + (tab === "profiles" ? " se-nav-btn--active" : "")} onClick={() => setTab("profiles")}><Sparkles size={18} strokeWidth={1.6} /><span>Профили</span></button>
         </div>
       </nav>
+
+      {/* Install PWA Prompt */}
+      <InstallPrompt />
 
       {showAddDevice && (
         <AddDeviceModal rooms={rooms.map((r: any) => ({ id: String(r.id), name: r.name }))}
