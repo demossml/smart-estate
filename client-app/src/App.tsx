@@ -672,29 +672,34 @@ export default function SmartEstateApp() {
   }
 
   return (
-    <div className="se-stage">
+    <div className="flex flex-col h-screen bg-bg overflow-hidden">
       <link rel="stylesheet" href={FONT_IMPORT} />
       <style>{css}</style>
 
-      <div className="se-app">
-        {/* header */}
-        <div className="se-header">
-          <div>
-            <div className="se-logo">УМНАЯ УСАДЬБА</div>
-            <div className="se-logo-sub">SmartEstate · {roomsWithDevices.length} комнат · {devices.length} устройств</div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <button className="se-mode-pill" onClick={async () => { await toggleMode(); await loadData(); }} disabled={modeLoading}>
-              <span className={"se-mode-dot" + (mode === "live" ? " se-mode-dot--live" : "")} />
-              {mode === "live" ? "Live" : "Demo"}
-            </button>
-            <button className="se-mode-pill" onClick={() => { localStorage.removeItem('apiKey'); window.location.reload(); }} title="Выйти и ввести новый ключ">
-              Выйти
-            </button>
-            <ZigbeeStatusIndicator />
+      {/* Fixed Header */}
+      <header className="fixed top-0 left-0 right-0 z-50 border-b border-glass-border bg-bg/80 backdrop-blur-md safe-top">
+        <div className="max-w-[480px] mx-auto">
+          <div className="se-header" style={{ padding: '14px 20px 8px' }}>
+            <div>
+              <div className="se-logo">УМНАЯ УСАДЬБА</div>
+              <div className="se-logo-sub">SmartEstate · {roomsWithDevices.length} комнат · {devices.length} устройств</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <button className="se-mode-pill" onClick={async () => { await toggleMode(); await loadData(); }} disabled={modeLoading}>
+                <span className={"se-mode-dot" + (mode === "live" ? " se-mode-dot--live" : "")} />
+                {mode === "live" ? "Live" : "Demo"}
+              </button>
+              <button className="se-mode-pill" onClick={() => { localStorage.removeItem('apiKey'); window.location.reload(); }} title="Выйти и ввести новый ключ">
+                Выйти
+              </button>
+              <ZigbeeStatusIndicator />
+            </div>
           </div>
         </div>
+      </header>
 
+      {/* Main Content */}
+      <main className="flex-1 overflow-y-auto pt-16 pb-20 safe-top overscroll-contain max-w-[480px] mx-auto w-full">
         {tab === "home" && (
           <>
             <StatusStrip devices={devices.map(apiToDevice)} />
@@ -776,16 +781,18 @@ export default function SmartEstateApp() {
           />
         )}
         {tab === "profiles" && <ProfilerTab />}
+      </main>
 
-        {/* bottom nav */}
-        <div className="se-nav">
+      {/* Fixed Bottom Navigation */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-glass-border bg-bg/80 backdrop-blur-md safe-bottom">
+        <div className="max-w-[480px] mx-auto flex" style={{ padding: '10px 6px' }}>
           <button className={"se-nav-btn" + (tab === "home" ? " se-nav-btn--active" : "")} onClick={() => setTab("home")}><Home size={18} strokeWidth={1.6} /><span>Дом</span></button>
           <button className={"se-nav-btn" + (tab === "scenarios" ? " se-nav-btn--active" : "")} onClick={() => setTab("scenarios")}><Workflow size={18} strokeWidth={1.6} /><span>Сценарии</span></button>
           <button className={"se-nav-btn" + (tab === "energy" ? " se-nav-btn--active" : "")} onClick={() => setTab("energy")}><Zap size={18} strokeWidth={1.6} /><span>Энергия</span></button>
           <button className={"se-nav-btn" + (tab === "manage" ? " se-nav-btn--active" : "")} onClick={() => setTab("manage")}><Settings size={18} strokeWidth={1.6} /><span>Управление</span></button>
           <button className={"se-nav-btn" + (tab === "profiles" ? " se-nav-btn--active" : "")} onClick={() => setTab("profiles")}><Sparkles size={18} strokeWidth={1.6} /><span>Профили</span></button>
         </div>
-      </div>
+      </nav>
 
       {showAddDevice && (
         <AddDeviceModal rooms={rooms.map((r: any) => ({ id: String(r.id), name: r.name }))}
