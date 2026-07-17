@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from "react";
+import { useDrag } from 'react-dnd';
 import { useSwipeable } from "react-swipeable";
 import { Battery, Signal, DoorClosed, User, Activity, Droplets, Wind, Lightbulb, Plug as PlugIcon, Thermometer, Trash2, ArrowRight } from "lucide-react";
 
@@ -106,8 +107,16 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
 
   const translateX = swipedDir === "left" ? -swipedPct : swipedDir === "right" ? swipedPct : 0;
 
+  const [{ isDragging }, dragRef] = useDrag({
+    type: 'DEVICE',
+    item: { ieee: device.ieee_address || device.id },
+    collect: (monitor) => ({
+      isDragging: monitor.isDragging(),
+    }),
+  });
+
   return (
-    <div className="relative overflow-hidden rounded-xl" style={{ touchAction: "pan-y" }}>
+    <div ref={dragRef} className="relative overflow-hidden rounded-xl" style={{ touchAction: "pan-y", opacity: isDragging ? 0.4 : 1 }}>
       {/* Delete layer (left swipe) */}
       <div
         className="absolute inset-y-0 right-0 flex items-center justify-start pl-3"

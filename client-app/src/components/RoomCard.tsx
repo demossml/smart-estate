@@ -1,5 +1,6 @@
 import React from "react";
-import { ChevronDown, AlertTriangle, Plus, Trash2, Home, DoorOpen, Sofa, Bed, UtensilsCrossed, TreePine, DoorClosed, Wind, Lightbulb, Droplets, Battery } from "lucide-react";
+import { useDrop } from 'react-dnd';
+import { ChevronDown, AlertTriangle, Home, DoorClosed, Wind, Lightbulb, Droplets, Battery, Move } from "lucide-react";
 import DeviceTile from "./DeviceTile";
 import { ROOM_ICONS } from "./HomeWidgets";
 
@@ -13,9 +14,10 @@ interface RoomCardProps {
   onAdjustTemp: (id: string, delta: number) => void;
   onSlider: (id: string, field: string, value: number) => void;
   onOpenDetail?: (device: any) => void;
+  onMoveDeviceToRoom?: (deviceIeee: string, roomId: string) => void;
 }
 
-export default function RoomCard({ room, devices, expanded, onExpand, onToggleDevice, onAdjustTemp, onSlider, onOpenDetail }: RoomCardProps) {
+export default function RoomCard({ room, devices, expanded, onExpand, onToggleDevice, onAdjustTemp, onSlider, onOpenDetail, onMoveDeviceToRoom }: RoomCardProps) {
   const RoomIcon = ROOM_ICONS[room.icon] || Home;
   const windows = devices.filter((d) => d.type === "window_sensor" || d.type === "door_sensor");
   const anyOpen = windows.some((d) => d.contact === "open");
@@ -27,6 +29,18 @@ export default function RoomCard({ room, devices, expanded, onExpand, onToggleDe
   const lowBattery = devices.some((d) => "battery" in d && d.battery <= 20);
   const alert = anyOpen || anyLeak;
 
+  // Drag & drop target
+  const [{ isOver, canDrop }, dropRef] = useDrop({
+    accept: 'DEVICE',
+    drop: (item: { ieee: string }) => {
+      onMoveDeviceToRoom?.(item.ieee, String(room.id));
+    },
+    collect: (monitor) => ({
+      isOver: monitor.isOver(),
+      canDrop: monitor.canDrop(),
+    }),
+  });
+
   // glance chips (status visible without expanding)
   const glances: { icon: any; text: string; tone: string }[] = [];
   if (tempDev) glances.push({ icon: Wind, text: `${tempDev.temperature}° · ${tempDev.humidity}%`, tone: "normal" });
@@ -36,7 +50,39 @@ export default function RoomCard({ room, devices, expanded, onExpand, onToggleDe
   if (lowBattery) glances.push({ icon: Battery, text: "батарея <20%", tone: "warn" });
 
   return (
-    <div className="se-room">
+    <div
+      ref={dropRef}
+      className="se-room"
+      style={{
+        borderColor: isOver
+          ? canDrop
+            ? '#3B82F6'
+            : undefined
+          : undefined,
+        boxShadow: isOver && canDrop
+          ? '0 0 0 2px #3B82F6, 0 0 16px rgba(59,130,246,0.3)'
+          : undefined,
+        transition: 'border-color 0.15s, box-shadow 0.15s',
+      }}
+    >
+      {/* Drop indicator overlay */}
+      {isOver && canDrop && (
+        <div
+          className="absolute inset-0 flex items-center justify-center"
+          style={{
+            background: 'rgba(59,130,246,0.08)',
+            borderRadius: 'inherit',
+            pointerEvents: 'none',
+            zIndex: 10,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#60A5FA', fontSize: 14, fontWeight: 600 }}>
+            <Move size={20} strokeWidth={1.6} />
+            Переместить сюда
+          </div>
+        </div>
+      )}
+
       <button className="se-room-head" onClick={onExpand} aria-expanded={expanded}>
         <div className="se-room-head-left">
           <div className={"se-room-icon" + (anyPresence ? " se-room-icon--live" : "")}><RoomIcon size={17} strokeWidth={1.5} /></div>

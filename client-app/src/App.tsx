@@ -356,6 +356,14 @@ export default function SmartEstateApp() {
     } catch (e: any) { console.error('Remove from room error:', e); }
   }, [loadData]);
 
+  // ── Move device to room (Drag & Drop) ──
+  const moveDeviceToRoom = useCallback(async (deviceIeee: string, roomId: string) => {
+    try {
+      await api(`/devices/${deviceIeee}`, { method: 'PATCH', body: JSON.stringify({ room_id: roomId }) });
+      await loadData();
+    } catch (e: any) { console.error('Move device to room error:', e); }
+  }, [loadData]);
+
   // ── Add device to room (RoomDevicesManager) — Модуль 8, Находка 24 ──
   const addDeviceToRoom = useCallback(async ({ type, name, roomId }: { type: string; name: string; params: Record<string, any>; roomId?: string | number }) => {
     try {
@@ -771,6 +779,7 @@ export default function SmartEstateApp() {
                   })}
                   onToggleDevice={toggleDevice} onAdjustTemp={adjustTemp} onSlider={setSlider}
                   onOpenDetail={setDetailDevice}
+                  onMoveDeviceToRoom={moveDeviceToRoom}
                 />
               ))}
             </div>
