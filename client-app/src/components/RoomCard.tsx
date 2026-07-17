@@ -14,10 +14,13 @@ interface RoomCardProps {
   onAdjustTemp: (id: string, delta: number) => void;
   onSlider: (id: string, field: string, value: number) => void;
   onOpenDetail?: (device: any) => void;
+  onDeleteDevice?: (id: string) => void;
+  onMoveToRoom?: (id: string) => void;
+  onEditDeviceName?: (id: string, name: string) => void;
   onMoveDeviceToRoom?: (deviceIeee: string, roomId: string) => void;
 }
 
-export default function RoomCard({ room, devices, expanded, onExpand, onToggleDevice, onAdjustTemp, onSlider, onOpenDetail, onMoveDeviceToRoom }: RoomCardProps) {
+export default function RoomCard({ room, devices, expanded, onExpand, onToggleDevice, onAdjustTemp, onSlider, onOpenDetail, onDeleteDevice, onMoveToRoom, onEditDeviceName, onMoveDeviceToRoom }: RoomCardProps) {
   const RoomIcon = ROOM_ICONS[room.icon] || Home;
   const windows = devices.filter((d) => d.type === "window_sensor" || d.type === "door_sensor");
   const anyOpen = windows.some((d) => d.contact === "open");
@@ -115,7 +118,7 @@ export default function RoomCard({ room, devices, expanded, onExpand, onToggleDe
           ) : (
             <div className="se-tile-grid">
               {devices.map((d) => (
-                <DeviceTile key={d.id} device={d} onToggle={onToggleDevice} onAdjustTemp={onAdjustTemp} onSlider={onSlider} onOpenDetail={onOpenDetail} />
+                <DeviceTile key={d.id} device={d} onToggle={onToggleDevice} onAdjustTemp={onAdjustTemp} onSlider={onSlider} onOpenDetail={onOpenDetail} onDelete={onDeleteDevice} onMoveToRoom={onMoveToRoom} onEditName={onEditDeviceName} />
               ))}
             </div>
           )}

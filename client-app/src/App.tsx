@@ -364,6 +364,32 @@ export default function SmartEstateApp() {
     } catch (e: any) { console.error('Move device to room error:', e); }
   }, [loadData]);
 
+  // ── Move device to another room (swipe action) ──
+  const moveDeviceToRoomAction = useCallback(async (id: string) => {
+    const roomNames = rooms.map((r: any) => ({ id: r.id, name: r.name }));
+    const msg = 'В какую комнату переместить?\n' + roomNames.map((r: any, i: number) => `${i + 1}. ${r.name}`).join('\n');
+    const answer = window.prompt(msg);
+    if (!answer) return;
+    const idx = parseInt(answer) - 1;
+    if (idx >= 0 && idx < roomNames.length) {
+      try {
+        await api(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify({ room_id: String(roomNames[idx].id) }) });
+        await loadData();
+        window.alert(`✅ Устройство перемещено в «${roomNames[idx].name}»`);
+      } catch (e: any) { console.error('Move device error:', e); window.alert('❌ Ошибка'); }
+    } else {
+      window.alert('❌ Неверный номер комнаты');
+    }
+  }, [loadData, rooms]);
+
+  // ── Edit device name ──
+  const editDeviceName = useCallback(async (id: string, name: string) => {
+    try {
+      await api(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify({ friendly_name: name }) });
+      await loadData();
+    } catch (e: any) { console.error('Edit device name error:', e); }
+  }, [loadData]);
+
   // ── Add device to room (RoomDevicesManager) — Модуль 8, Находка 24 ──
   const addDeviceToRoom = useCallback(async ({ type, name, roomId }: { type: string; name: string; params: Record<string, any>; roomId?: string | number }) => {
     try {
@@ -779,6 +805,9 @@ export default function SmartEstateApp() {
                   })}
                   onToggleDevice={toggleDevice} onAdjustTemp={adjustTemp} onSlider={setSlider}
                   onOpenDetail={setDetailDevice}
+                  onDeleteDevice={deleteDevice}
+                  onMoveToRoom={moveDeviceToRoomAction}
+                  onEditDeviceName={editDeviceName}
                   onMoveDeviceToRoom={moveDeviceToRoom}
                 />
               ))}
