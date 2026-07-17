@@ -107,7 +107,7 @@ export function RoomTileV2({ room, telemetryTick, onAddDevice }: RoomTileV2Props
           {devices.length === 0 ? (
             <div className="se-empty">В комнате пока нет устройств</div>
           ) : (
-            <div className="se-tile-grid">
+            <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
               {devices.map((d) => (
                 <DeviceTile
                   key={d.ieee_addr + (telemetryTick ?? 0)}
@@ -120,7 +120,7 @@ export function RoomTileV2({ room, telemetryTick, onAddDevice }: RoomTileV2Props
               ))}
             </div>
           )}
-          <button className="se-add-here" onClick={() => onAddDevice?.(room.id)}>
+          <button className="min-h-12 text-base active:bg-accent w-full text-center rounded-lg bg-surface-hover text-text-dim font-medium transition-colors" onClick={() => onAddDevice?.(room.id)}>
             + Добавить устройство в «{room.name}»
           </button>
         </div>
