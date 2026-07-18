@@ -17,12 +17,7 @@ export const DETAIL_FIELDS: Record<string, { key: string; label: string; unit: s
     { key: "todaySessions", label: "Количество входов", unit: "" },
   ],
   presence: [
-    { key: "presence", label: "Присутствие", unit: "", map: { "1": "👤 Есть", "0": "🚫 Нет" } },
-    { key: "detectionDistance", label: "Дальность", unit: "м" },
-    { key: "fadingTime", label: "Тайм-аут", unit: "сек" },
-    { key: "motionSensitivity", label: "Движение (чувств.)", unit: "" },
-    { key: "staticSensitivity", label: "Статика (чувств.)", unit: "" },
-    { key: "antiInterference", label: "Анти-интерференция", unit: "" },
+    { key: "presence", label: "Присутствие", unit: "", map: { "1": "Есть", "0": "Нет" } },
     { key: "lastSeenMin", label: "Не было", unit: "мин" },
   ],
   leak: [
@@ -131,6 +126,97 @@ export default function DeviceDetailSheet({ device, room, onClose, onToggle, onA
           )}
         </div>
 
+        {/* ── Presence sensor: большой статус + mmWave-шкалы ── */}
+        {(device.type === 'presence_sensor' || device.type === 'motion_sensor') && (() => {
+          const pTel = getTelValue('presence');
+          const present = pTel === 1;
+          const minAgo = device.last_presence_minutes;
+          const dist = getTelValue('detection_distance');
+          const fade = getTelValue('fading_time');
+          const moveSens = getTelValue('motion_detection_sensitivity');
+          const staticSens = getTelValue('static_detection_sensitivity');
+          const antiInt = getTelValue('anti_interference');
+
+          let statusLabel: string;
+          let statusColor: string;
+          if (present) {
+            statusLabel = 'В комнате';
+            statusColor = '#3B9F6E';
+          } else if (minAgo !== null && minAgo <= 3) {
+            statusLabel = `Вышел · ${minAgo} мин`;
+            statusColor = '#B8860B';
+          } else if (minAgo !== null) {
+            const h = Math.floor(minAgo / 60);
+            statusLabel = `Пусто · ${h >= 1 ? `${h} ч` : `${minAgo} мин`}`;
+            statusColor = '#5A5F58';
+          } else {
+            statusLabel = 'Нет данных';
+            statusColor = '#7F8A83';
+          }
+
+          // Шкала: заполненный сегмент пропорционален значению
+          const bar = (val: number | null, max: number) => {
+            const pct = val !== null ? Math.min(Math.round((val / max) * 100), 100) : 0;
+            return (
+              <div className="s-bar-track">
+                <div className="s-bar-fill" style={{ width: `${pct}%`, backgroundColor: statusColor }} />
+              </div>
+            );
+          };
+
+          return (
+            <div className="s-presence-section">
+              <div className="s-presence-main">
+                <span className="s-presence-dot" style={{ backgroundColor: statusColor }} />
+                <div>
+                  <div className="s-presence-status" style={{ color: statusColor }}>{statusLabel}</div>
+                  {present && minAgo !== null && minAgo > 1 && (
+                    <div className="s-presence-meta">{minAgo} мин</div>
+                  )}
+                  {!present && minAgo !== null && minAgo > 0 && (
+                    <div className="s-presence-meta">{minAgo} мин назад</div>
+                  )}
+                </div>
+              </div>
+
+              {dist !== null && (
+                <div className="s-mmwave">
+                  <div className="s-mmwave-label">Дальность</div>
+                  <div className="s-mmwave-val">{dist} м</div>
+                  {bar(dist, 20)}
+                </div>
+              )}
+              {fade !== null && (
+                <div className="s-mmwave">
+                  <div className="s-mmwave-label">Затухание</div>
+                  <div className="s-mmwave-val">{fade} с</div>
+                  {bar(fade, 300)}
+                </div>
+              )}
+              {moveSens !== null && (
+                <div className="s-mmwave">
+                  <div className="s-mmwave-label">Движение</div>
+                  <div className="s-mmwave-val">{moveSens}/10</div>
+                  {bar(moveSens, 10)}
+                </div>
+              )}
+              {staticSens !== null && (
+                <div className="s-mmwave">
+                  <div className="s-mmwave-label">Статика</div>
+                  <div className="s-mmwave-val">{staticSens}/10</div>
+                  {bar(staticSens, 10)}
+                </div>
+              )}
+              {antiInt !== null && (
+                <div className="s-mmwave">
+                  <div className="s-mmwave-label">Помехи</div>
+                  <div className="s-mmwave-val">{antiInt === 1 ? 'Вкл' : 'Выкл'}</div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {device.type === "light" && (
           <div className="se-detail-control">
             <label className="se-field-label">Яркость</label>
@@ -209,6 +295,17 @@ export default function DeviceDetailSheet({ device, room, onClose, onToggle, onA
           .se-detail-cell .se-label { font-size: 10.5px; color: #7A7F79; text-transform: uppercase; letter-spacing: 0.04em; }
           .se-value { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #E9E4D8; margin-top: 3px; }
           .se-value--alert { color: #D9695F; }
+          .s-presence-section { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+          .s-presence-main { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+          .s-presence-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+          .s-presence-status { font-family: 'Cormorant SC', serif; font-size: 16px; }
+          .s-presence-meta { font-size: 11px; color: #7A7F79; margin-top: 1px; }
+          .s-mmwave { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+          .s-mmwave:last-child { margin-bottom: 0; }
+          .s-mmwave-label { font-size: 10.5px; color: #7A7F79; min-width: 70px; }
+          .s-mmwave-val { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #C9A24B; min-width: 32px; text-align: right; }
+          .s-bar-track { flex: 1; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; }
+          .s-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; }
         `}</style>
       </div>
     </div>

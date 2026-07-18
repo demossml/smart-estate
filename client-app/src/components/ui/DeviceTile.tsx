@@ -75,9 +75,23 @@ function getDeviceStatus(device: DeviceData): StatusInfo | null {
   }
   if (device.type === 'presence_sensor' || device.type === 'motion_sensor') {
     const on = presenceTel.value === 1;
-    return on
-      ? { label: 'Есть', color: '#7FE0A8', alert: false }
-      : { label: device.last_presence_minutes !== null ? `Нет · ${device.last_presence_minutes} мин` : 'Нет', color: '#5A5F58', alert: false };
+    if (on) {
+      // Есть присутствие — зелёный
+      return { label: 'В комнате', color: '#3B9F6E', alert: false };
+    }
+    // Нет присутствия — смотрим last_presence_minutes
+    const minAgo = device.last_presence_minutes;
+    if (minAgo !== null && minAgo <= 3) {
+      // Вышел только что — жёлтый
+      return { label: `Вышел · ${minAgo} мин`, color: '#B8860B', alert: false };
+    }
+    if (minAgo !== null) {
+      // Вышел давно — серый
+      const hours = Math.floor(minAgo / 60);
+      const label = hours >= 1 ? `${hours} ч` : `${minAgo} мин`;
+      return { label: `Пусто · ${label}`, color: '#5A5F58', alert: false };
+    }
+    return { label: 'Нет данных', color: '#7F8A83', alert: false };
   }
   if (device.type === 'leak_sensor') {
     const leaking = leakTel.value === 1;
@@ -236,6 +250,16 @@ export function DeviceTile({
             {status.label}
           </div>
         ) : null}
+
+        {/* ── mmWave presence sensor metrics ── */}
+        {(device.type === 'presence_sensor' || device.type === 'motion_sensor') && (
+          <div className="flex items-center gap-2.5 mt-2 flex-wrap">
+            <span className="text-[10px] text-text-dim font-mono">distance {getTelemetry(device, 'detection_distance').value ?? '?'}м</span>
+            <span className="text-[10px] text-text-dim font-mono">fade {getTelemetry(device, 'fading_time').value ?? '?'}с</span>
+            <span className="text-[10px] text-text-dim font-mono">move {getTelemetry(device, 'motion_detection_sensitivity').value ?? '?'}</span>
+            <span className="text-[10px] text-text-dim font-mono">static {getTelemetry(device, 'static_detection_sensitivity').value ?? '?'}</span>
+          </div>
+        )}
 
         {/* Light brightness slider */}
         {device.type === 'light' && (

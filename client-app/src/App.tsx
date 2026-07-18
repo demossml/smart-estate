@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import { Home, Workflow, Zap, Settings, Plus, Wind, Loader2, CheckCircle2, Sparkles, LayoutGrid } from "lucide-react";
+import { Home, Workflow, Zap, Settings, Plus, Wind, Loader2, CheckCircle2, Sparkles, LayoutGrid, Download } from "lucide-react";
 import RoomCard from "./components/RoomCard";
 import DeviceTile, { airStatus, DEVICE_TYPES, defaultFieldsFor } from "./components/DeviceTile";
 import AddDeviceModal from "./components/AddDeviceModal";
@@ -14,6 +14,8 @@ import RoomsList from "./components/RoomsList";
 import ProfilerTab from "./components/ProfilerTab";
 import ZigbeeStatusIndicator from "./components/ZigbeeStatusIndicator";
 import { useMode } from './hooks/useMode';
+import { usePwaUpdate, UpdateBanner } from "./pwa-update";
+import { useEstateSocket } from './hooks/useEstateSocket';
 
 // ── CSRF ──
 let csrfToken = '';
@@ -128,12 +130,15 @@ function InstallPrompt() {
       onClick={handleInstall}
       className="fixed bottom-24 right-6 bg-primary text-white px-6 py-3 rounded-2xl shadow-xl flex items-center gap-2 z-50"
     >
-      📲 Установить приложение
+      <Download size={16} strokeWidth={2} /> Установить приложение
     </button>
   );
 }
 
 export default function SmartEstateApp() {
+  const { updateAvailable, applyUpdate } = usePwaUpdate();
+  const [telemetryVersion, setTelemetryVersion] = useState(0);
+  const lastLoadRef = useRef(0);
   const [rooms, setRooms] = useState<any[]>([]);
   const [devices, setDevices] = useState<any[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -209,6 +214,52 @@ export default function SmartEstateApp() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { loadData(); }, [loadData]);
+
+  // ── Live WebSocket — обновление при каждом MQTT-сообщении ──
+  const patchLiveTelemetry = useCallback((_topic: string, _payload: Record<string, any>) => {
+    setTelemetryVersion(v => v + 1);
+  }, []);
+  useEstateSocket(patchLiveTelemetry);
+
+  // Автоперезагрузка при телеметрии — не чаще раза в 2 секунды
+  useEffect(() => {
+    const now = Date.now();
+    if (now - lastLoadRef.current > 2000) {
+      lastLoadRef.current = now;
+      loadData();
+    }
+  }, [telemetryVersion, loadData]);
+
+  // Запасной периодический опрос каждые 30 секунд
+  useEffect(() => {
+    const interval = setInterval(() => loadData(), 30000);
+    return () => clearInterval(interval);
+  }, [loadData]);
+
+  // ── Push-уведомления ──
+  useEffect(() => {
+    const requestPushPermission = async () => {
+      if (!('Notification' in window) || !('serviceWorker' in navigator)) return;
+
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') return;
+
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: process.env.REACT_APP_VAPID_PUBLIC_KEY || process.env.VAPID_PUBLIC_KEY || ''
+      });
+
+      await fetch('/api/push/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(subscription)
+      });
+    };
+
+    requestPushPermission().catch(console.error);
+  }, []);
+
   useEffect(() => { loadPending(); }, []);
 
   /* ─── Air ─── */
@@ -745,7 +796,7 @@ export default function SmartEstateApp() {
       <style>{css}</style>
 
       {/* Fixed Header */}
-      <header className="fixed top-0 left-0 right-0 z-50 border-b border-glass-border bg-bg/80 backdrop-blur-md safe-top">
+      <header className="fixed top-0 left-0 right-0 z-50 border-b border-glass-border bg-bg/80 backdrop-blur-md" style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}>
         <div className="max-w-[480px] mx-auto">
           <div className="se-header" style={{ padding: '14px 20px 8px' }}>
             <div>
@@ -767,7 +818,7 @@ export default function SmartEstateApp() {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto pt-16 pb-20 safe-top overscroll-contain max-w-[480px] mx-auto w-full">
+      <main className="flex-1 overflow-y-auto pb-20 overscroll-contain max-w-[480px] mx-auto w-full" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 62px)' }}>
         {tab === "home" && (
           <>
             <StatusStrip devices={devices.map(apiToDevice)} />
@@ -788,6 +839,7 @@ export default function SmartEstateApp() {
                 </div>
               )}
               <FavoritesGrid devices={devices.map(apiToDevice)} onToggle={toggleDevice} onAdjustTemp={adjustTemp} onSlider={setSlider} onOpenDetail={setDetailDevice} />
+              {/* Присутствие отображается внутри плиток комнат — RoomTileV2 */}
               <RunningNow scenarios={scenarios} devices={devices.map(apiToDevice)} />
               <div className="se-section-label">Комнаты</div>
               {roomsWithDevices.map((room: any) => (
@@ -866,7 +918,7 @@ export default function SmartEstateApp() {
       </main>
 
       {/* Fixed Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-glass-border bg-bg/80 backdrop-blur-md safe-bottom">
+      <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-glass-border bg-bg/80 backdrop-blur-md" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
         <div className="max-w-[480px] mx-auto flex" style={{ padding: '10px 6px' }}>
           <button className={"se-nav-btn" + (tab === "home" ? " se-nav-btn--active" : "")} onClick={() => setTab("home")}><Home size={18} strokeWidth={1.6} /><span>Дом</span></button>
           <button className={"se-nav-btn" + (tab === "rooms" ? " se-nav-btn--active" : "")} onClick={() => setTab("rooms")}><LayoutGrid size={18} strokeWidth={1.6} /><span>Комнаты</span></button>
@@ -912,6 +964,9 @@ export default function SmartEstateApp() {
           <span>{toast}</span>
         </div>
       )}
+
+      {/* PWA update banner */}
+      <UpdateBanner visible={updateAvailable} onUpdate={applyUpdate} />
     </div>
   );
 }

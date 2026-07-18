@@ -542,6 +542,14 @@ function handleTelemetry(friendlyName: string, data: any) {
     tamper: { value: data.tamper, unit: 'bool' },
     water_leak: { value: data.water_leak ? 'leak' : 'dry', unit: 'bool' },
     linkquality: { value: data.linkquality, unit: 'lqi' },
+
+    // ── mmWave presence sensor fields ──
+    detection_distance: { value: data.detection_distance, unit: 'm' },
+    fading_time: { value: data.fading_time, unit: 's' },
+    motion_detection_sensitivity: { value: data.motion_detection_sensitivity, unit: '1-10' },
+    static_detection_sensitivity: { value: data.static_detection_sensitivity, unit: '1-10' },
+    anti_interference: { value: data.anti_interference === 'ON' ? 1 : 0, unit: 'bool' },
+    indicator: { value: data.indicator === 'ON' ? 1 : 0, unit: 'bool' },
   };
 
   let stored = 0;

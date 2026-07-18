@@ -129,7 +129,7 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
   const translateX = swipedDir === "left" ? -swipedPct : swipedDir === "right" ? swipedPct : 0;
 
   /* — drag & drop — */
-  const [{ isDragging }, drag] = useDrag(() => ({
+  const [{ isDragging }, dragRef] = useDrag(() => ({
     type: 'DEVICE',
     item: { ieee: device.ieee_address || device.id },
     collect: (monitor) => ({ isDragging: monitor.isDragging() }),
@@ -178,12 +178,9 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
   const offline = hasLastSeen && isOffline(lastSeenRaw);
 
   /* — toggle helper — */
-  const handleToggle = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    e.stopPropagation();
-    onToggle?.(device.id, (device.type === "gate_controller" || device.type === "gate")
-      ? (device.state === "open" ? "closed" : "open")
-      : undefined);
-  }, [device, onToggle]);
+  const toggleState = (device.type === "gate_controller" || device.type === "gate")
+    ? device.state === "open"
+    : device.state;
 
   /* — context menu actions — */
   const handleDelete = useCallback(() => {
@@ -196,16 +193,8 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
     setContextOpen(false);
   }, [device, onMoveToRoom]);
 
-  const toggleState = (device.type === "gate_controller" || device.type === "gate")
-    ? device.state === "open"
-    : device.state;
-
   return (
-    <div
-      ref={drag}
-      className={`relative overflow-hidden rounded-xl ${isDragging ? 'opacity-50' : ''}`}
-      style={{ touchAction: "pan-y" }}
-    >
+    <div ref={dragRef} className="relative overflow-hidden rounded-xl" style={{ touchAction: "pan-y", opacity: isDragging ? 0.4 : 1 }}>
       {/* ── Swipe overlays ── */}
       <div
         className="absolute inset-y-0 right-0 flex items-center justify-start pl-3"
@@ -309,7 +298,7 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
         </div>
       )}
 
-      {/* ── Main tile ── */}
+      {/* ── Main tile — slides with swipe ── */}
       <div
         {...handlers}
         onTouchStart={startLongPress}
@@ -318,7 +307,7 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
         onMouseDown={startLongPress}
         onMouseUp={clearLongPress}
         onMouseLeave={clearLongPress}
-        className="relative bg-card border rounded-3xl p-5 active:scale-95 transition-all overflow-hidden touch-manipulation"
+        className={"se-tile relative" + (interactive ? " se-tile--interactive" : "")}
         onClick={() => { if (!contextOpen) onOpenDetail?.(device); }}
         role="button"
         style={{
@@ -333,44 +322,23 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
             : undefined,
         }}
       >
-        {/* ── Row 1: large icon + name + big toggle ── */}
-        <div className="flex items-center gap-4 mb-3">
-          <div className="flex-shrink-0 w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: offline ? "rgba(185,28,28,0.12)" : "rgba(59,130,246,0.12)" }}>
-            <Icon size={32} strokeWidth={1.5} color={offline ? "#EF4444" : "#60A5FA"} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-base font-semibold text-[#E5E7EB] truncate">{device.name}</div>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-xs text-[#7F8A83]">{meta.label}</span>
-              {offline && <span className="text-xs font-medium text-[#EF4444]">Offline</span>}
-            </div>
-          </div>
+        {/* ── Top row: icon + name + switch ── */}
+        <div className="se-tile-top">
+          <div className="se-tile-icon"><Icon size={16} strokeWidth={1.6} /></div>
+          <div className="se-tile-name">{device.name}</div>
           {interactive && device.type !== "climate" && (
             <button
-              style={{
-                minWidth: 60, height: 36, borderRadius: 18, position: "relative", flexShrink: 0,
-                background: toggleState ? "#2563EB" : "#2A2D2B",
-                transition: "background 0.2s",
-                cursor: "pointer", border: "none", outline: "none", padding: 0,
-              }}
-              onClick={(e) => { e.stopPropagation(); handleToggle(e); }}
-              onTouchEnd={(e) => { e.stopPropagation(); handleToggle(e); }}
+              className={"se-switch" + (toggleState ? " se-switch--on" : "")}
+              onClick={(e) => { e.stopPropagation(); onToggle?.(device.id, (device.type === "gate_controller" || device.type === "gate") ? (device.state === "open" ? "closed" : "open") : undefined); }}
               aria-label="переключить"
             >
-              <span style={{
-                position: "absolute", top: 4,
-                left: toggleState ? 32 : 4,
-                width: 28, height: 28, borderRadius: 14,
-                background: "#F3F4F6",
-                transition: "left 0.2s",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
-              }} />
+              <span className="se-switch-knob" />
             </button>
           )}
         </div>
 
-        {/* ── Row 2: device-specific body ── */}
-        <div className="mb-3" onClick={(e) => e.stopPropagation()}>
+        {/* ── Body: device-specific content ── */}
+        <div className="se-tile-body" onClick={(e) => e.stopPropagation()}>
           {device.type === "window_sensor" || device.type === "door_sensor" ? (
             <span className={"se-badge" + (device.contact === "open" ? " se-badge--alert" : "")}>
               {device.contact === "open" ? "Открыто" : "Закрыто"}
@@ -381,6 +349,23 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
             <span className={"se-badge" + (device.presence ? " se-badge--ok" : "")}>
               {device.presence ? "Есть" : `Нет · ${device.lastSeenMin} мин`}
             </span>
+          ) : null}
+
+          {device.type === "presence_sensor" ? (
+            <div className="se-air-grid se-air-grid--3" style={{ marginTop: 4 }}>
+              {(device.detectionDistance ?? device.detection_distance) != null && (
+                <div><span className="se-mono">{device.detectionDistance ?? device.detection_distance} м</span><label>дальн.</label></div>
+              )}
+              {(device.fadingTime ?? device.fading_time) != null && (
+                <div><span className="se-mono">{device.fadingTime ?? device.fading_time} с</span><label>затух.</label></div>
+              )}
+              {(device.motionSensitivity ?? device.motion_detection_sensitivity) != null && (
+                <div><span className="se-mono">{device.motionSensitivity ?? device.motion_detection_sensitivity}</span><label>движ.</label></div>
+              )}
+              {(device.staticSensitivity ?? device.static_detection_sensitivity) != null && (
+                <div><span className="se-mono">{device.staticSensitivity ?? device.static_detection_sensitivity}</span><label>стат.</label></div>
+              )}
+            </div>
           ) : null}
 
           {device.type === "leak_sensor" ? (
@@ -441,21 +426,21 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
         </div>
 
         {/* ── Footer: battery + linkquality + last_seen ── */}
-        <div className="flex items-center gap-3 pt-2 border-t border-[#2A2D2B]/50">
+        <div className="se-tile-foot">
           {hasBattery && (
-            <span className="flex items-center gap-1">
-              <Battery size={13} strokeWidth={1.6} color={batteryColor(device.battery)} />
-              <span style={{ color: batteryColor(device.battery), fontSize: 11, fontWeight: 600 }}>{device.battery}%</span>
+            <span className="se-mini-metric">
+              <Battery size={11} strokeWidth={1.6} color={batteryColor(device.battery)} />
+              <span style={{ color: batteryColor(device.battery) }}>{device.battery}%</span>
             </span>
           )}
-          <span className="flex items-center gap-1">
-            <Signal size={13} strokeWidth={1.6} color="#5A5F58" />
-            <span style={{ fontSize: 11, color: "#7F8A83" }}>{device.linkquality}</span>
+          <span className="se-mini-metric">
+            <Signal size={11} strokeWidth={1.6} color="#5A5F58" />
+            <span>{device.linkquality}</span>
           </span>
           {hasLastSeen && (
-            <span className="flex items-center gap-1 ml-auto">
+            <span className="se-mini-metric" style={{ marginLeft: "auto" }}>
               <Clock size={11} strokeWidth={1.6} color={offline ? "#EF4444" : "#5A5F58"} />
-              <span style={{ fontSize: 11, color: offline ? "#EF4444" : "#7F8A83", fontWeight: offline ? 600 : 400 }}>
+              <span style={{ color: offline ? "#EF4444" : undefined, fontWeight: offline ? 600 : undefined }}>
                 {offline ? "Offline" : timeAgo(lastSeenRaw)}
               </span>
             </span>
@@ -465,3 +450,4 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
     </div>
   );
 }
+

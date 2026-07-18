@@ -52,6 +52,14 @@ export const MqttTelemetrySchema = z.object({
   tamper: z.boolean().optional(),
   battery_low: z.boolean().optional(),
 
+  // ── mmWave presence sensor fields (ZG-204ZK and similar) ──
+  detection_distance: z.number().min(0).max(20).optional(),
+  fading_time: z.number().min(0).max(600).optional(),
+  motion_detection_sensitivity: z.number().min(1).max(10).optional(),
+  static_detection_sensitivity: z.number().min(1).max(10).optional(),
+  anti_interference: z.union([z.literal('ON'), z.literal('OFF')]).optional(),
+  indicator: z.union([z.literal('ON'), z.literal('OFF')]).optional(),
+
   // ── Catch-all: allow unknown additional properties in the data ──
   // (Zigbee2MQTT emits many device-specific keys; we don't want to reject
   //  valid payloads just because they carry extra fields we don't enumerate.)

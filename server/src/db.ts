@@ -143,6 +143,13 @@ db.exec(`
     created_at      TEXT DEFAULT (datetime('now')),
     updated_at      TEXT DEFAULT (datetime('now'))
   );
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    endpoint      TEXT NOT NULL,
+    p256dh        TEXT NOT NULL,
+    auth          TEXT NOT NULL,
+    created_at    TEXT DEFAULT (datetime('now'))
+  );
   CREATE TABLE IF NOT EXISTS api_keys (
     key_name    TEXT PRIMARY KEY,
     key_value   TEXT NOT NULL,

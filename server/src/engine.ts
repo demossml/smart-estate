@@ -1,6 +1,7 @@
 import { query, logErrorWithLog, logScenarioExec } from './db';
 import { evaluateTriggers, parseTriggers, TriggerSet, TriggerCondition } from './triggers';
 import { executeActions, parseActions, ScenarioAction } from './actions';
+import webpush from 'web-push';
 import logger from './logger';
 
 // ── Scenario Engine ──────────────────────────────────────
@@ -245,6 +246,39 @@ async function enrichTelemetryMap(
       }
     })
   );
+}
+
+// ── Push-уведомления ──────────────────────────────────────
+
+/**
+ * Отправить push-уведомление всем подписанным устройствам.
+ * Невалидные подписки (HTTP 410) автоматически удаляются.
+ * @param title — заголовок уведомления
+ * @param body — текст уведомления
+ * @param icon — путь к иконке (по умолчанию /icons/icon-192.png)
+ */
+export async function sendPushNotification(title: string, body: string, icon = '/icons/icon-192.png') {
+  try {
+    const subscriptions = await query('SELECT * FROM push_subscriptions') as any[];
+    if (!subscriptions.length) return;
+
+    const payload = JSON.stringify({ title, body, icon });
+
+    for (const sub of subscriptions) {
+      try {
+        await webpush.sendNotification(sub, payload);
+      } catch (e: any) {
+        // HTTP 410 — подписка истекла, удаляем
+        if (e.statusCode === 410) {
+          await query('DELETE FROM push_subscriptions WHERE endpoint = ?', sub.endpoint);
+        } else {
+          logger.warn('[PUSH] Не удалось отправить уведомление:', e.message);
+        }
+      }
+    }
+  } catch (e: any) {
+    logger.error('[PUSH] Ошибка при отправке:', e.message);
+  }
 }
 
 // ── Force Reload ─────────────────────────────────────────

@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { ChevronDown, AlertTriangle, Home, Sofa, Bed, UtensilsCrossed, TreePine, DoorOpen } from 'lucide-react';
+import { ChevronDown, AlertTriangle, Home, Sofa, Bed, UtensilsCrossed, TreePine, DoorOpen, User, Clock } from 'lucide-react';
 import { DeviceTile, type DeviceData, DEVICE_TYPE_META, ROOM_ICONS } from './DeviceTile';
 import DeviceDetailSheet from '../DeviceDetailSheet';
 import { api } from '../../api/client';
@@ -16,6 +16,34 @@ interface RoomV2Data {
   open_windows?: { ieee_addr: string; friendly_name: string }[];
   has_open_windows?: boolean;
   air_quality?: any;
+}
+
+/* ── Helpers ─────────────────────────────────────────────── */
+
+/**
+ * Возвращает статус присутствия для комнаты:
+ * - status: 'present' | 'recent' | 'absent'
+ * - label: строка для отображения под названием комнаты
+ * - color: цвет рамки/фона иконки комнаты
+ */
+function roomPresenceSummary(devices: DeviceData[]): { status: 'present' | 'recent' | 'absent'; label: string | null; color: string } {
+  const presenceDevs = devices.filter(d => d.type === 'presence_sensor' || d.type === 'motion_sensor');
+  if (!presenceDevs.length) return { status: 'absent', label: null, color: '#5A5F58' };
+
+  let anyPresent = false;
+  let minAgo = Infinity;
+
+  for (const d of presenceDevs) {
+    const pTel = d.latest_telemetry?.find(t => t.property === 'presence');
+    if (pTel?.value === 1) { anyPresent = true; }
+    if (d.last_presence_minutes !== null && d.last_presence_minutes < minAgo) {
+      minAgo = d.last_presence_minutes;
+    }
+  }
+
+  if (anyPresent) return { status: 'present', label: 'Есть', color: '#3B9F6E' };
+  if (minAgo <= 15) return { status: 'recent', label: `Вышел · ${minAgo} мин`, color: '#B8860B' };
+  return { status: 'absent', label: null, color: '#5A5F58' };
 }
 
 interface RoomTileV2Props {
@@ -39,7 +67,6 @@ export function RoomTileV2({ room, telemetryTick, onAddDevice }: RoomTileV2Props
 
   const devices = room.devices || [];
 
-  // Проверка на alert (открытые окна/протечка)
   const anyOpen = devices.some(
     (d) => (d.type === 'window_sensor' || d.type === 'door_sensor') &&
       d.latest_telemetry?.some((t) => t.property === 'contact' && t.value === 1)
@@ -48,12 +75,11 @@ export function RoomTileV2({ room, telemetryTick, onAddDevice }: RoomTileV2Props
     (d) => d.type === 'leak_sensor' &&
       d.latest_telemetry?.some((t) => t.property === 'water_leak' && t.value === 1)
   );
-  const anyPresence = devices.some(
-    (d) => (d.type === 'presence_sensor' || d.type === 'motion_sensor') &&
-      d.latest_telemetry?.some((t) => t.property === 'presence' && t.value === 1)
-  );
   const airDev = devices.find((d) => d.type === 'air_monitor');
   const alert = anyOpen || anyLeak;
+
+  // Статус присутствия для этой комнаты
+  const roomPresence = roomPresenceSummary(devices);
 
   const handleToggle = useCallback(async (deviceId: string) => {
     const dev = devices.find(d => d.ieee_addr === deviceId);
@@ -77,13 +103,21 @@ export function RoomTileV2({ room, telemetryTick, onAddDevice }: RoomTileV2Props
     <div className="se-room">
       <button className="se-room-head" onClick={() => setOpen(!open)} aria-expanded={open}>
         <div className="se-room-head-left">
-          <div className={'se-room-icon' + (anyPresence ? ' se-room-icon--live' : '')}>
-            <RoomIcon size={17} strokeWidth={1.5} />
+          <div
+            className="se-room-icon"
+            style={{
+              borderColor: roomPresence.color,
+              backgroundColor: `${roomPresence.color}12`,
+            }}
+          >
+            {roomPresence.status === 'present' ? <User size={17} strokeWidth={1.5} color={roomPresence.color} /> : <RoomIcon size={17} strokeWidth={1.5} />}
           </div>
           <div>
             <div className="se-room-name">{room.name}</div>
             <div className="se-room-sub">
-              {devices.length} устройств{airDev && room.temperature != null ? ` · ${room.temperature}°` : ''}
+              <span>{devices.length} устройств</span>
+              {roomPresence.label && <span style={{ color: roomPresence.color }}> · {roomPresence.label}</span>}
+              {airDev && room.temperature != null && <span className="text-text-dim"> · {room.temperature}°</span>}
             </div>
           </div>
         </div>

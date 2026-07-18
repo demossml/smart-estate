@@ -1,5 +1,5 @@
-import React from "react";
-import { Thermometer, Lightbulb, ShieldCheck, Zap, Workflow, DoorOpen, Sofa, Bed, UtensilsCrossed, TreePine } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Thermometer, Lightbulb, ShieldCheck, Zap, Workflow, DoorOpen, Sofa, Bed, UtensilsCrossed, TreePine, User, Clock } from "lucide-react";
 import DeviceTile from "./DeviceTile";
 
 /* ---- ROOM_ICONS (shared) ---- */
@@ -115,6 +115,40 @@ export function RunningNow({ scenarios, devices }: RunningNowProps) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---- PresenceMonitor ---- */
+interface PresenceMonitorProps {
+  devices: any[];
+}
+export function PresenceMonitor({ devices }: PresenceMonitorProps) {
+  const presenceDevs = devices.filter((d: any) => d.type === "presence_sensor" || d.type === "motion_sensor");
+  if (!presenceDevs.length) return null;
+
+  return (
+    <div className="se-running-section" style={{ marginTop: 12 }}>
+      <div className="se-section-label">
+        <User size={12} strokeWidth={2} /> Присутствие
+      </div>
+      <div className="se-running-list">
+        {presenceDevs.map((d: any) => {
+          const nowPresent = d.presence;
+          const lastSeen = d.lastSeenMin != null ? `${d.lastSeenMin} мин` : null;
+          return (
+            <div className="se-running-row" key={d.id} style={{ justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="se-running-dot" style={{ background: nowPresent ? "#7FA98F" : "#5A5F58" }} />
+                <span className="se-running-text">{d.name}</span>
+              </div>
+              <span style={{ fontSize: 12, color: nowPresent ? "#7FA98F" : "#7F8A83", fontWeight: nowPresent ? 600 : 400 }}>
+                {nowPresent ? "👤 В комнате" : `🚪 Пусто · ${lastSeen || "—"}`}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

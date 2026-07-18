@@ -16,6 +16,16 @@ import { get as httpGet } from 'http';
 import mqtt from 'mqtt';
 import cookieParser from 'cookie-parser';
 import logger from './logger';
+import webpush from 'web-push';
+
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BHMSTOsIwqer48cZfRliJaLaT8FTHjFrvfVxs6b1mg4AHsFe0NuVN33AZRPbgNnRbCf4LtV9dSc7lIophaeLKhU';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '0QJq0jY_g72tkovZ3O5Tu5ymgt8CRoSuIG_U7J1U2do';
+
+webpush.setVapidDetails(
+  'mailto:admin@smart-estate.local',
+  VAPID_PUBLIC_KEY,
+  VAPID_PRIVATE_KEY
+);
 
 // Fix BigInt serialization for SQLite
 (BigInt.prototype as any).toJSON = function () { return Number(this); };
@@ -280,6 +290,54 @@ app.get('/api/status', async (_req, res) => {
   }
 });
 
+// ── Push-уведомления ────────────────────────────────────
+app.post('/api/push/subscribe', async (req, res) => {
+  try {
+    const { endpoint, keys } = req.body;
+    if (!endpoint || !keys?.p256dh || !keys?.auth) {
+      return res.status(400).json({ ok: false, error: 'Missing endpoint, keys.p256dh or keys.auth' });
+    }
+    await query(
+      'INSERT OR REPLACE INTO push_subscriptions (endpoint, p256dh, auth) VALUES (?, ?, ?)',
+      endpoint, keys.p256dh, keys.auth
+    );
+    res.json({ ok: true });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'push_subscribe');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/api/push/test', async (req, res) => {
+  try {
+    const subscriptions = await query('SELECT * FROM push_subscriptions');
+    const results: { endpoint: string; success: boolean; error?: string }[] = [];
+    for (const sub of subscriptions) {
+      try {
+        await webpush.sendNotification(sub, JSON.stringify({
+          title: 'Тестовое уведомление',
+          body: 'Push-уведомления работают!',
+          icon: '/icons/icon-192.png'
+        }));
+        results.push({ endpoint: sub.endpoint, success: true });
+      } catch (e: any) {
+        // Если подписка истекла (410) — удаляем
+        if (e.statusCode === 410) {
+          await query('DELETE FROM push_subscriptions WHERE endpoint = ?', sub.endpoint);
+          results.push({ endpoint: sub.endpoint, success: false, error: 'Subscription expired — removed' });
+        } else {
+          console.error('Push failed for', sub.endpoint, e.message);
+          results.push({ endpoint: sub.endpoint, success: false, error: e.message });
+        }
+      }
+    }
+    res.json({ ok: true, sent: results.filter(r => r.success).length, total: subscriptions.length, results });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'push_test');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── GET /api/zigbee/status — статус Zigbee-сети (Донгл, MQTT, permit_join) ──
 app.get('/api/zigbee/status', async (_req, res) => {
   try {
@@ -354,6 +412,14 @@ app.get('/api/devices', async (req, res) => {
     // Single query with correlated subquery — no N+1
     const sql = `
       SELECT d.*, r.name as room_name, r.icon as room_icon,
+        (SELECT t.value FROM telemetry t
+         WHERE t.device_ieee = d.ieee_addr AND t.property = 'temperature'
+         ORDER BY t.ts DESC LIMIT 1
+        ) as temperature,
+        (SELECT t.value FROM telemetry t
+         WHERE t.device_ieee = d.ieee_addr AND t.property = 'humidity'
+         ORDER BY t.ts DESC LIMIT 1
+        ) as humidity,
         (SELECT COALESCE(json_group_array(
           json_object('property', t.property, 'value', t.value, 'unit', t.unit)
         ), '[]')
@@ -361,7 +427,7 @@ app.get('/api/devices', async (req, res) => {
                SELECT property, value, unit,
                  ROW_NUMBER() OVER (PARTITION BY property ORDER BY ts DESC) as rn
                FROM telemetry WHERE device_ieee = d.ieee_addr
-             ) sub WHERE rn = 1 LIMIT 6) t
+             ) sub WHERE rn = 1 LIMIT 10) t
         ) as latest_telemetry
       FROM devices d LEFT JOIN rooms r ON d.room_id = r.id
       ${whereClause}
@@ -1353,7 +1419,7 @@ app.get('/api/rooms', async (_req, res) => {
           avgTemp = temp[0]?.avg_temp ? parseFloat(temp[0].avg_temp) : null;
         } catch {}
       }
-      return { ...room, avg_temperature: avgTemp };
+      return { ...room, temperature: avgTemp };
     }));
 
     res.json({ ok: true, rooms: enriched });
@@ -1908,6 +1974,107 @@ app.get('/api/scenarios/:id/executions', async (req, res) => {
     res.json({ ok: true, scenario_id: id, executions: rows, count: rows.length });
   } catch (e: any) {
     logErrorWithLog(null, 'api_error', e.message, 'scenario_executions');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── GET /api/presence/log — лог присутствия за последние N часов ──
+app.get('/api/presence/log', async (req, res) => {
+  try {
+    const hours = parseInt(req.query.hours as string) || 24;
+    const deviceIeee = req.query.device as string || null;
+    const limit = parseInt(req.query.limit as string) || 200;
+
+    let where = "p.ts >= datetime('now', ?)";
+    const params: any[] = [`-${hours} hours`];
+
+    if (deviceIeee) {
+      where += " AND p.device_ieee = ?";
+      params.push(deviceIeee);
+    }
+
+    // Находим переходы presence 0→1 (вошёл) и 1→0 (вышел)
+    const rows = await query(`
+      SELECT p.id, p.device_ieee, p.ts, p.value, p.raw_json,
+             d.friendly_name, d.type, d.room_id, r.name as room_name
+      FROM telemetry p
+      LEFT JOIN devices d ON d.ieee_addr = p.device_ieee
+      LEFT JOIN rooms r ON r.id = d.room_id
+      WHERE p.property = 'presence'
+        AND ${where}
+      ORDER BY p.ts DESC
+      LIMIT ?
+    `, ...params, limit);
+
+    // Текущий статус для каждого устройства
+    const currentStatus = await query(`
+      SELECT DISTINCT p.device_ieee, p.ts, p.value,
+             d.friendly_name, d.type, d.room_id, r.name as room_name
+      FROM telemetry p
+      JOIN (
+        SELECT device_ieee, MAX(ts) as max_ts
+        FROM telemetry WHERE property = 'presence' GROUP BY device_ieee
+      ) latest ON p.device_ieee = latest.device_ieee AND p.ts = latest.max_ts
+      LEFT JOIN devices d ON d.ieee_addr = p.device_ieee
+      LEFT JOIN rooms r ON r.id = d.room_id
+      WHERE p.property = 'presence'
+      ORDER BY p.ts DESC
+    `);
+
+    // Превращаем плоский список переходов в пары вход-выход и статистику по каждому
+    const transitions: any[] = [];
+    const sessions: any[] = [];
+    let enterTime: any = null;
+    let enterId: number | null = null;
+
+    for (const row of rows.reverse()) {
+      const isPresent = row.value === 1;
+      transitions.push({
+        id: row.id, device_ieee: row.device_ieee,
+        ts: row.ts, status: isPresent ? 'present' : 'absent',
+        friendly_name: row.friendly_name,
+        type: row.type, room_id: row.room_id,
+        room_name: row.room_name,
+      });
+
+      if (isPresent) {
+        enterTime = row;
+        enterId = row.id;
+      } else if (enterTime && enterTime.device_ieee === row.device_ieee) {
+        const enterDt = new Date(enterTime.ts + 'Z').getTime();
+        const exitDt = new Date(row.ts + 'Z').getTime();
+        const durationSec = Math.round((exitDt - enterDt) / 1000);
+        sessions.push({
+          device_ieee: row.device_ieee,
+          friendly_name: row.friendly_name,
+          room_name: row.room_name,
+          entered_at: enterTime.ts,
+          exited_at: row.ts,
+          duration_sec: durationSec,
+          duration_label: durationSec >= 60
+            ? `${Math.floor(durationSec / 60)} мин ${durationSec % 60} сек`
+            : `${durationSec} сек`,
+        });
+        enterTime = null;
+        enterId = null;
+      }
+    }
+
+    res.json({
+      ok: true,
+      hours,
+      current: currentStatus.map((r: any) => ({
+        device_ieee: r.device_ieee,
+        friendly_name: r.friendly_name,
+        room_name: r.room_name,
+        ts: r.ts,
+        status: r.value === 1 ? 'present' : 'absent',
+      })),
+      transitions: transitions.slice(-limit),
+      sessions: sessions.reverse(),
+    });
+  } catch (e: any) {
+    logErrorWithLog(null, 'api_error', e.message, 'presence_log');
     res.status(500).json({ ok: false, error: e.message });
   }
 });
