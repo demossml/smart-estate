@@ -8,7 +8,7 @@ import ScenariosTab from "./components/ScenariosTab";
 import EnergyTab from "./components/EnergyTab";
 import DeviceDetailSheet from "./components/DeviceDetailSheet";
 import AssignDiscoveredModal from "./components/AssignDiscoveredModal";
-import { StatusStrip, FavoritesGrid, RunningNow, ROOM_ICONS } from "./components/HomeWidgets";
+import { StatusStrip, GreetingSection, FavoritesGrid, QuickRooms, QuickScenarios, QuickWidgets, EmptyHomeState, ROOM_ICONS } from "./components/HomeWidgets";
 import ManageTab, { classifyVoiceCommand } from "./components/ManageTab";
 import RoomsList from "./components/RoomsList";
 import ProfilerTab from "./components/ProfilerTab";
@@ -151,6 +151,9 @@ export default function SmartEstateApp() {
   const [presetRoomId, setPresetRoomId] = useState<number | null>(null);
   const [detailDevice, setDetailDevice] = useState<any>(null);
   const { mode, toggle: toggleMode, loading: modeLoading } = useMode();
+  const [pinnedRooms, setPinnedRoomsState] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('se_pinned_rooms') || '[]'); } catch { return []; }
+  });
 
   // ── Discovery state — новая логика (14.07.2026) ──
   const [discoveredDevices, setDiscoveredDevices] = useState<any[]>([]);
@@ -821,48 +824,75 @@ export default function SmartEstateApp() {
       <main className="flex-1 overflow-y-auto pb-20 overscroll-contain max-w-[480px] mx-auto w-full" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 62px)' }}>
         {tab === "home" && (
           <>
-            <StatusStrip devices={devices.map(apiToDevice)} />
-            <div className="se-tab-pad se-tab-pad--rooms">
-              {/* Баннер: устройства без комнаты */}
-              {discoveredDevices.filter((d: any) => !d.room_id && d.is_added).length > 0 && (
-                <div className="se-banner-warning" style={{ marginBottom: 12 }}>
-                  <div className="se-banner-warning-content">
-                    <span>📡 Устройства без комнаты</span>
-                    <span className="se-banner-count">{discoveredDevices.filter((d: any) => !d.room_id && d.is_added).length}</span>
-                  </div>
-                  <button className="se-mini-btn" onClick={() => {
-                    const firstNoRoom = discoveredDevices.find((d: any) => !d.room_id && d.is_added);
-                    if (firstNoRoom) setAssigningDevice(firstNoRoom);
-                  }}>
-                    Назначить
-                  </button>
-                </div>
+            <div className="se-home-content">
+              {/* Greeting + security status */}
+              <GreetingSection
+                securityTone={devices.filter(
+                  (d: any) => ((d.type === "window_sensor" || d.type === "door_sensor") && d.contact === "open") || (d.type === "leak_sensor" && d.leak)
+                ).length > 0 ? "alert" : "ok"}
+                devices={devices.map(apiToDevice)}
+              />
+
+              {/* StatusStrip */}
+              <StatusStrip devices={devices.map(apiToDevice)} onChipClick={(key) => {
+                if (key === "energy") setTab("energy");
+                else setTab("rooms");
+              }} />
+
+              {/* Empty state vs full home */}
+              {rooms.length === 0 && devices.length === 0 ? (
+                <EmptyHomeState onAdd={() => setShowAddDevice(true)} />
+              ) : (
+                <>
+                  {/* Favorites 2×2 */}
+                  <FavoritesGrid
+                    devices={devices.map(apiToDevice)}
+                    onToggle={toggleDevice}
+                    onAdjustTemp={adjustTemp}
+                    onSlider={setSlider}
+                    onOpenDetail={setDetailDevice}
+                    onViewAll={() => setTab("manage")}
+                  />
+
+                  {/* Quick Rooms (horizontal scroll, max 4) */}
+                  <QuickRooms
+                    rooms={rooms}
+                    devices={devices.map(apiToDevice)}
+                    onRoomClick={(roomId) => {
+                      setExpanded({ [roomId]: true });
+                      setTab("rooms");
+                    }}
+                    onPinRoom={(roomId) => {
+                      const next = pinnedRooms.includes(roomId)
+                        ? pinnedRooms.filter((id: string) => id !== roomId)
+                        : [...pinnedRooms, roomId];
+                      setPinnedRoomsState(next);
+                      localStorage.setItem('se_pinned_rooms', JSON.stringify(next));
+                    }}
+                    pinnedRooms={pinnedRooms}
+                  />
+
+                  {/* Quick Scenarios 2×2 */}
+                  <QuickScenarios
+                    scenarios={scenarios}
+                    devices={devices.map(apiToDevice)}
+                    onRunScenario={(id) => {
+                      // Toggle first matching device as a simple action
+                      const s = scenarios.find((x) => x.id === id);
+                      if (s) {
+                        setToast(`🏃 Запущен: ${s.condition}`);
+                        setTimeout(() => setToast(null), 2000);
+                      }
+                    }}
+                  />
+
+                  {/* Quick Widgets 2×2 */}
+                  <QuickWidgets
+                    devices={devices.map(apiToDevice)}
+                    onNavigate={(tabId) => setTab(tabId)}
+                  />
+                </>
               )}
-              <FavoritesGrid devices={devices.map(apiToDevice)} onToggle={toggleDevice} onAdjustTemp={adjustTemp} onSlider={setSlider} onOpenDetail={setDetailDevice} />
-              {/* Присутствие отображается внутри плиток комнат — RoomTileV2 */}
-              <RunningNow scenarios={scenarios} devices={devices.map(apiToDevice)} />
-              <div className="se-section-label">Комнаты</div>
-              {roomsWithDevices.map((room: any) => (
-                <RoomCard
-                  key={room.id} room={room}
-                  devices={devices.filter((d: any) => String(d.room_id) === room.id).map(apiToDevice)}
-                  expanded={!!expanded[room.id]}
-                  onExpand={() => setExpanded((e: any) => {
-                    // Force a brand-new object to guarantee React re-render
-                    const next = { ...e };
-                    const wasExpanded = !!next[room.id];
-                    if (wasExpanded) delete next[room.id];
-                    else next[room.id] = true;
-                    return next;
-                  })}
-                  onToggleDevice={toggleDevice} onAdjustTemp={adjustTemp} onSlider={setSlider}
-                  onOpenDetail={setDetailDevice}
-                  onDeleteDevice={deleteDevice}
-                  onMoveToRoom={moveDeviceToRoomAction}
-                  onEditDeviceName={editDeviceName}
-                  onMoveDeviceToRoom={moveDeviceToRoom}
-                />
-              ))}
             </div>
           </>
         )}
