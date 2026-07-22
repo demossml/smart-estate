@@ -5,9 +5,6 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
   base: '/',
-  define: {
-    __BUILD_TIME__: JSON.stringify(new Date().toISOString().slice(0, 19)),
-  },
   build: {
     rollupOptions: {
       output: {

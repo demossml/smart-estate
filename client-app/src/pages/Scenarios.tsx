@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Clock, Trash2, X, ChevronDown, Layers, Home, Moon, Sun, Clouds, Briefcase, Luggage, Users } from 'lucide-react';
+import { Plus, Clock, Trash2, X, ChevronDown, Layers } from 'lucide-react';
 import { Skeleton } from '../components/ui/Skeleton';
 import { ConditionCard } from '../components/scenario/ConditionCard';
 import { ActionCard } from '../components/scenario/ActionCard';
@@ -24,22 +24,16 @@ export default function Scenarios() {
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
-  // House mode
-  const [houseMode, setHouseMode] = useState('home');
-  const [houseModes, setHouseModes] = useState<{ name: string; display_name: string; icon: string | null }[]>([]);
-
   const load = async () => {
     try {
-      const [s, d, rData, hm] = await Promise.all([
+      const [s, d, rData] = await Promise.all([
         api.getScenarios(),
         api.getDevices().catch(() => [] as Device[]),
         api.getRooms().catch(() => ({ ok: true, rooms: [] })),
-        api.getHouseMode().catch(() => ({ mode: 'home' })),
       ]);
       setScenarios(s);
       setDevices(d);
       setRooms((rData as any).rooms || []);
-      setHouseMode(hm.mode);
       setOffline(false);
     } catch {
       setOffline(true);
@@ -47,11 +41,6 @@ export default function Scenarios() {
       setLoading(false);
     }
   };
-
-  // Load house modes list
-  useEffect(() => {
-    api.getHouseModes().then(r => setHouseModes(r.modes)).catch(() => {});
-  }, []);
 
   useEffect(() => { load(); }, []);
 
@@ -123,55 +112,12 @@ export default function Scenarios() {
 
   const canSave = builder.name.trim() && builder.conditions.length > 0 && builder.actions.length > 0;
 
-  // House mode icons map
-  const MODE_ICONS: Record<string, any> = {
-    home: Home,
-    away: Luggage,
-    night: Moon,
-    sleep: Moon,
-    guest: Users,
-    vacation: Sun,
-    work: Briefcase,
-  };
-
-  const changeHouseMode = async (mode: string) => {
-    if (mode === houseMode) return;
-    setHouseMode(mode);
-    try {
-      await api.setHouseMode(mode);
-      await load();
-    } catch {
-      // Revert on error
-      const current = await api.getHouseMode().catch(() => ({ mode: 'home' }));
-      setHouseMode(current.mode);
-    }
-  };
-
   return (
     <div className="p-4 pb-24 animate-fade-in">
       <header className="flex items-center justify-between mb-4" style={{ minHeight: 64 }}>
         <div>
           <h1 className="text-xl font-bold text-text">Сценарии</h1>
           {offline && <p className="text-xs text-yellow mt-1">офлайн</p>}
-        </div>
-        <div className="flex items-center gap-1.5 overflow-x-auto -mr-2 pr-2">
-          {houseModes.map(m => {
-            const Icon = MODE_ICONS[m.name] || Home;
-            const isActive = houseMode === m.name;
-            return (
-              <button key={m.name} onClick={() => changeHouseMode(m.name)}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-semibold
-                  transition-all whitespace-nowrap tap-active border
-                  ${isActive
-                    ? 'bg-blue text-white border-blue'
-                    : 'bg-surface text-text-dim border-surface-hover hover:border-blue hover:text-blue'
-                  }`}
-                title={m.display_name}>
-                <Icon size={14} strokeWidth={2} />
-                <span>{m.display_name}</span>
-              </button>
-            );
-          })}
         </div>
       </header>
 
@@ -195,13 +141,7 @@ export default function Scenarios() {
                 <div className="flex-1 min-w-0" onClick={() => startEdit(s)}>
                   <div className="text-sm font-semibold text-text truncate">{s.name}</div>
                   <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-[10px] text-text-dim">{
-                      (() => {
-                        const p = parseTriggers(s.triggers_json);
-                        if (!p.conditions.length) return '—';
-                        return p.conditions.map(c => describeCondition(c, devices)).join(' · ');
-                      })()
-                    }</span>
+                    <span className="text-[10px] text-text-dim">{s.trigger}</span>
                   </div>
                 </div>
                 <button onClick={() => setDeleteConfirm(s.id)}
@@ -209,19 +149,13 @@ export default function Scenarios() {
                   <Trash2 size={16} />
                 </button>
               </div>
-              {(() => {
-                const acts = parseActions(s.actions_json);
-                if (!acts.length) return null;
-                return (
-                  <div className="px-4 pb-3 flex flex-wrap gap-1.5">
-                    {acts.map((a, i) => (
-                      <span key={i} className="text-[10px] bg-bg px-2 py-1 rounded-full text-text-dim">
-                        {describeAction(a, devices, rooms)}
-                      </span>
-                    ))}
-                  </div>
-                );
-              })()}
+              {s.actions.length > 0 && (
+                <div className="px-4 pb-3 flex flex-wrap gap-1.5">
+                  {s.actions.map((a, i) => (
+                    <span key={i} className="text-[10px] bg-bg px-2 py-1 rounded-full text-text-dim">{a}</span>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>

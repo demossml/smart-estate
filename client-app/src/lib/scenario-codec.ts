@@ -4,20 +4,19 @@ import { PROP_LABELS } from '../types/scenario-builder';
 // ── Build trigger JSON from conditions ─────────────
 
 export function buildTriggers(conditions: Condition[], logic: 'ANY' | 'ALL'): string {
-  if (!conditions.length) return '[]';
+  if (!conditions.length) return '{}';
 
   const triggerConditions = conditions.map(c => {
     switch (c.type) {
       case 'device':
-        return { type: 'device', device: c.device, property: c.property, operator: c.operator, value: c.value };
+        return { device: c.device, property: c.property, operator: c.operator, value: c.value };
       case 'time':
         return { type: 'schedule', kind: c.kind, offset_minutes: c.offsetMinutes, time: c.timeStr, cron: c.cronExpr };
       case 'state':
-        return { type: 'device', device: c.device, property: 'state', operator: '=', value: c.expectedState === 'open' || c.expectedState === 'on' ? 1 : 0 };
+        return { device: c.device, property: 'state', operator: '=', value: c.expectedState === 'open' || c.expectedState === 'on' ? 1 : 0 };
     }
   });
 
-  // Include logic as a separate parameter (used by server for evaluation)
   return JSON.stringify({ logic, conditions: triggerConditions });
 }
 
@@ -29,9 +28,9 @@ export function buildActions(actions: Action[]): string {
   const actionList = actions.map(a => {
     switch (a.type) {
       case 'device':
-        return { type: 'device_command', device: a.device, command: a.command, payload: a.brightness != null ? { brightness: a.brightness } : {} };
+        return { type: 'mqtt', device: a.device, command: a.command, payload: a.brightness != null ? { brightness: a.brightness } : {} };
       case 'group':
-        return { type: 'group_command', room_id: a.roomId, device_type: a.deviceType, command: a.command };
+        return { type: 'group', room_id: a.roomId, device_type: a.deviceType, command: a.command };
       case 'delay':
         return { type: 'delay', seconds: a.seconds };
       case 'scenario':
@@ -47,21 +46,6 @@ export function buildActions(actions: Action[]): string {
 export function parseTriggers(json: string): { conditions: Condition[]; logic: 'ANY' | 'ALL' } {
   try {
     const parsed = JSON.parse(json);
-    // NEW format: array of trigger objects (each has type: 'device' | 'schedule')
-    if (Array.isArray(parsed)) {
-      const conditions: Condition[] = parsed.map((c: any): Condition => {
-        if (c.type === 'schedule') {
-          return { type: 'time', kind: c.kind || 'time', offsetMinutes: c.offset_minutes, timeStr: c.time, cronExpr: c.cron };
-        }
-        if (c.property === 'state') {
-          const expected = c.value === 1 ? 'open' : 'closed';
-          return { type: 'state', device: c.device || '', expectedState: expected };
-        }
-        return { type: 'device', device: c.device || '', property: c.property || 'temperature', operator: c.operator || '>', value: c.value ?? 0 };
-      });
-      return { conditions, logic: 'ANY' };
-    }
-    // OLD format: { logic, conditions: [...] }
     if (!parsed || !Array.isArray(parsed.conditions)) return { conditions: [], logic: 'ANY' };
     const conditions: Condition[] = parsed.conditions.map((c: any): Condition => {
       if (c.type === 'schedule') {
@@ -87,14 +71,11 @@ export function parseActions(json: string): Action[] {
     return parsed.map((a: any): Action => {
       switch (a.type) {
         case 'group':
-        case 'group_command':
           return { type: 'group', roomId: a.room_id || '', deviceType: a.device_type || 'light', command: a.command || 'ON' };
         case 'delay':
           return { type: 'delay', seconds: a.seconds || 60 };
         case 'scenario_toggle':
           return { type: 'scenario', scenarioId: String(a.scenario_id || ''), enable: a.enable !== false };
-        case 'device_command':
-        case 'mqtt':
         default:
           return { type: 'device', device: a.device || '', command: a.command || 'ON', brightness: a.payload?.brightness };
       }

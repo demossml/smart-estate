@@ -237,18 +237,6 @@ function mapSetpoint(
 function parseTrigger(triggersJson: string): string {
   try {
     const t = JSON.parse(triggersJson);
-    // NEW format: array of trigger objects
-    if (Array.isArray(t) && t.length > 0) {
-      const c = t[0];
-      if (c.type === 'schedule') {
-        if (c.cron) return `CRON: ${c.cron}`;
-        if (c.kind === 'sunset') return `Закат${c.offset_minutes ? ` ${c.offset_minutes > 0 ? '+' : ''}${c.offset_minutes}мин` : ''}`;
-        if (c.kind === 'sunrise') return `Рассвет${c.offset_minutes ? ` ${c.offset_minutes > 0 ? '+' : ''}${c.offset_minutes}мин` : ''}`;
-        return `Время: ${c.time || '?'}`;
-      }
-      return `${c.device || '?'} ${c.property || ''} ${c.operator || '?'} ${c.value ?? ''}`;
-    }
-    // OLD format: { logic, conditions }
     if (t.conditions?.length) {
       const c = t.conditions[0];
       return `${c.device || '?'} ${c.property || ''} ${c.operator || '?'} ${c.value ?? ''}`;
@@ -273,11 +261,10 @@ function mapScenario(s: RawScenario): import('../types').Scenario {
 
 function parseClientActions(actionsJson: string): string[] {
   try {
-    const arr = JSON.parse(actionsJson) as { type: string; device?: string; command?: string; message?: string; seconds?: number }[];
+    const arr = JSON.parse(actionsJson) as { type: string; device?: string; command?: string; message?: string }[];
     return arr.map(a => {
       if (a.type === 'notify') return a.message || 'Уведомление';
-      if (a.type === 'device_command' || a.type === 'mqtt') return `${a.device || '?'}: ${a.command || '?'}`;
-      if (a.type === 'delay') return `Пауза ${a.seconds || '?'}с`;
+      if (a.type === 'mqtt') return `${a.device || '?'}: ${a.command || '?'}`;
       return `${a.type}: ${a.device || ''}`;
     });
   } catch {
@@ -513,28 +500,6 @@ export const api = {
   // ── Discovery status (permit_join + remaining) ──
   getDiscoveryStatus: () =>
     request<{ ok: boolean; permit_join: boolean; remaining: number }>('/discovery/status'),
-
-  // ── House Mode ──
-  getHouseMode: () =>
-    request<{ ok: boolean; mode: string }>('/house-mode'),
-
-  getHouseModes: () =>
-    request<{ ok: boolean; modes: { name: string; display_name: string; icon: string | null }[] }>('/house-modes'),
-
-  setHouseMode: (mode: string) =>
-    request<{ ok: boolean; mode: string }>('/house-mode', {
-      method: 'POST',
-      body: JSON.stringify({ mode }),
-    }),
-
-  // ── Blueprints ──
-  getBlueprints: () =>
-    request<{ ok: boolean; blueprints: any[] }>('/scenarios/blueprints'),
-
-  createFromBlueprint: (blueprintName: string) =>
-    request<{ ok: boolean; scenario: any }>(`/scenarios/blueprints/${encodeURIComponent(blueprintName)}/create`, {
-      method: 'POST',
-    }),
 };
 
 export interface ZigbeeStatus {

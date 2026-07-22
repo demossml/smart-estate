@@ -1,5 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { Battery, Signal, DoorClosed, User, Activity, Droplets, Wind, Lightbulb, Plug as PlugIcon, Thermometer, Trash2, Edit3, Move, X, Clock, ToggleLeft, Sun } from "lucide-react";
+import { useDrag } from "react-dnd";
+import { useSwipeable } from "react-swipeable";
+import { Battery, Signal, DoorClosed, User, Activity, Droplets, Wind, Lightbulb, Plug as PlugIcon, Thermometer, Trash2, ArrowRight, Edit3, Move, X, Clock, ToggleLeft, Sun } from "lucide-react";
 
 /* ———————————————————————— Constants ———————————————————————— */
 export const DEVICE_TYPES: Record<string, { label: string; category: string; icon: React.FC<{ size?: number; strokeWidth?: number }> }> = {
@@ -97,6 +99,46 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
   const Icon = meta.icon;
   const interactive = ["light", "plug", "gate_controller", "gate", "climate"].includes(device.type);
 
+  /* — swipe state — */
+  const [swipedDir, setSwipedDir] = useState<string | null>(null);
+  const [swipedPct, setSwipedPct] = useState(0);
+
+  const handlers = useSwipeable({
+    onSwipedLeft: () => {
+      if (window.confirm("Удалить устройство?")) {
+        onDelete?.(device.ieee_address || device.id);
+      }
+      setSwipedDir(null);
+      setSwipedPct(0);
+    },
+    onSwipedRight: () => {
+      onMoveToRoom?.(device.ieee_address || device.id);
+      setSwipedDir(null);
+      setSwipedPct(0);
+    },
+    onSwiping: (e) => {
+      const pct = Math.min(100, Math.abs(e.deltaX) / 2);
+      setSwipedPct(pct);
+      setSwipedDir(e.deltaX < 0 ? "left" : "right");
+    },
+    onSwiped: () => {
+      setSwipedDir(null);
+      setSwipedPct(0);
+    },
+    preventScrollOnSwipe: true,
+    trackMouse: true,
+    delta: 80,
+  });
+
+  const translateX = swipedDir === "left" ? -swipedPct : swipedDir === "right" ? swipedPct : 0;
+
+  /* — drag & drop — */
+  const [{ isDragging }, dragRef] = useDrag(() => ({
+    type: 'DEVICE',
+    item: { ieee: device.ieee_address || device.id },
+    collect: (monitor) => ({ isDragging: monitor.isDragging() }),
+  }), [device.ieee_address, device.id]);
+
   /* — long press → context menu — */
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [contextOpen, setContextOpen] = useState(false);
@@ -156,7 +198,35 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
   }, [device, onMoveToRoom]);
 
   return (
-    <div className="relative overflow-hidden rounded-xl" style={{ touchAction: "pan-y" }}>
+    <div ref={dragRef} className="relative overflow-hidden rounded-xl" style={{ touchAction: "pan-y", opacity: isDragging ? 0.4 : 1 }}>
+      {/* ── Swipe overlays ── */}
+      <div
+        className="absolute inset-y-0 right-0 flex items-center justify-start pl-3"
+        style={{
+          width: `${Math.min(100, swipedPct + (swipedDir === "left" ? 0 : -100))}%`,
+          background: "linear-gradient(90deg, transparent 0%, #7F1D1D 50%, #991B1B 100%)",
+          opacity: swipedDir === "left" ? Math.min(1, swipedPct / 60) : 0,
+          transition: swipedPct > 0 ? "none" : "opacity 0.3s",
+          pointerEvents: "none", zIndex: 1,
+        }}
+      >
+        <Trash2 size={22} color="#FCA5A5" strokeWidth={1.8} />
+        <span style={{ color: "#FCA5A5", fontSize: 12, fontWeight: 600, marginLeft: 6 }}>Удалить</span>
+      </div>
+      <div
+        className="absolute inset-y-0 left-0 flex items-center justify-end pr-3"
+        style={{
+          width: `${Math.min(100, swipedPct + (swipedDir === "right" ? 0 : -100))}%`,
+          background: "linear-gradient(270deg, transparent 0%, #065F46 50%, #047857 100%)",
+          opacity: swipedDir === "right" ? Math.min(1, swipedPct / 60) : 0,
+          transition: swipedPct > 0 ? "none" : "opacity 0.3s",
+          pointerEvents: "none", zIndex: 1,
+        }}
+      >
+        <span style={{ color: "#A7F3D0", fontSize: 12, fontWeight: 600, marginRight: 6 }}>Переместить</span>
+        <ArrowRight size={22} color="#A7F3D0" strokeWidth={1.8} />
+      </div>
+
       {/* ── Context Menu (long-press) ── */}
       {contextOpen && (
         <div
@@ -215,13 +285,13 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
                   className="w-full flex items-center gap-3 px-4 py-3 text-sm text-[#D9695F] hover:bg-[#2A2D2B] transition-colors"
                   onClick={handleDelete}
                 >
-                  <Trash2 size={16} strokeWidth={1.6} />
+                  <Trash2 size={16} strokeWidth={1.6} /> Удалить
                 </button>
                 <button
                   className="w-full flex items-center gap-3 px-4 py-3 text-sm text-[#E5E7EB] hover:bg-[#2A2D2B] transition-colors"
                   onClick={handleMove}
                 >
-                  <Move size={16} strokeWidth={1.6} />
+                  <Move size={16} strokeWidth={1.6} /> Переместить в другую комнату
                 </button>
               </div>
             )}
@@ -238,15 +308,16 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
         </div>
       )}
 
-      {/* ── Main tile ── */}
+      {/* ── Main tile — slides with swipe ── */}
       <div
+        {...handlers}
         onTouchStart={startLongPress}
         onTouchEnd={clearLongPress}
         onTouchMove={clearLongPress}
         onMouseDown={startLongPress}
         onMouseUp={clearLongPress}
         onMouseLeave={clearLongPress}
-        className={"se-tile" + (interactive ? " se-tile--interactive" : "")}
+        className={"se-tile relative" + (interactive ? " se-tile--interactive" : "")}
         onClick={() => {
           if (!contextOpen) {
             if (interactive && device.type !== 'climate') {
@@ -258,7 +329,17 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
           }
         }}
         role="button"
-        style={{ position: "relative", zIndex: 2 }}
+        style={{
+          transform: `translateX(${translateX}px)`,
+          transition: swipedPct > 0 ? "none" : "transform 0.3s ease-out",
+          position: "relative",
+          zIndex: 2,
+          background: swipedPct > 20
+            ? swipedDir === "left"
+              ? "linear-gradient(165deg, rgba(127,29,29,0.2), rgba(14,18,15,0.65))"
+              : "linear-gradient(165deg, rgba(6,95,70,0.2), rgba(14,18,15,0.65))"
+            : undefined,
+        }}
       >
         {/* ── Top row: icon + name + switch ── */}
         <div className="se-tile-top">
@@ -388,3 +469,4 @@ export default function DeviceTile({ device, onToggle, onAdjustTemp, onSlider, o
     </div>
   );
 }
+

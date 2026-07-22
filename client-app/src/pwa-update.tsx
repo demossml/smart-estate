@@ -38,7 +38,6 @@ export function usePwaUpdate() {
       };
       reg.addEventListener('updatefound', onUpdateFound);
 
-      // ⚡ Каждые 10 секунд проверяем обновление через reg.waiting
       const pollInterval = setInterval(async () => {
         const r = await navigator.serviceWorker.getRegistration();
         if (r?.waiting && r.waiting !== workerRef.current) {
@@ -48,23 +47,9 @@ export function usePwaUpdate() {
         }
       }, 10_000);
 
-      // ⚡ Каждые 30 секунд принудительно проверяем SW через reg.update()
-      // Это заставляет браузер скачивать /sw.js и сравнивать с текущим
-      const updateInterval = setInterval(async () => {
-        try {
-          const r = await navigator.serviceWorker.getRegistration();
-          if (r) {
-            await r.update();
-          }
-        } catch {
-          // игнорируем ошибки сети
-        }
-      }, 5_000);
-
       return () => {
         reg.removeEventListener('updatefound', onUpdateFound);
         clearInterval(pollInterval);
-        clearInterval(updateInterval);
       };
     };
 
@@ -90,53 +75,43 @@ export function usePwaUpdate() {
     if (navigator.vibrate) navigator.vibrate(15);
 
     try {
-      // ═══ 1. Чистим PWA-кеш ═══
-      const cacheNames = await caches.keys();
-      await Promise.all(
-        cacheNames.map((name) => caches.delete(name))
-      );
-
-      // ═══ 2. Обновляем service worker ═══
       const r = await navigator.serviceWorker.getRegistration();
-      if (r) {
-        // Принудительно проверяем SW — браузер скачает /sw.js
-        await r.update();
+      if (r?.waiting) {
+        // Отправляем SKIP_WAITING
+        r.waiting.postMessage({ type: 'SKIP_WAITING' });
 
-        // Ждём появления нового waiting
-        if (r.waiting) {
-          // Шлём SKIP_WAITING
-          r.waiting.postMessage({ type: 'SKIP_WAITING' });
+        // Ждём активации нового SW (statechange + activate)
+        const activated = await new Promise<boolean>((resolve) => {
+          const timeout = setTimeout(() => resolve(false), 5000);
 
-          // Ждём активации
-          const activated = await new Promise<boolean>((resolve) => {
-            const timeout = setTimeout(() => resolve(false), 5000);
-            const onStateChange = () => {
-              if (r.waiting?.state === 'activated') {
-                clearTimeout(timeout);
-                resolve(true);
-              }
-            };
+          const onStateChange = () => {
             if (r.waiting?.state === 'activated') {
               clearTimeout(timeout);
               resolve(true);
-              return;
             }
-            if (r.waiting) {
-              r.waiting.addEventListener('statechange', onStateChange);
-            } else {
-              clearTimeout(timeout);
-              resolve(false);
-            }
-          });
+          };
 
-          if (!activated) {
-            window.location.reload();
+          // Если waiting уже активирован
+          if (r.waiting?.state === 'activated') {
+            clearTimeout(timeout);
+            resolve(true);
+            return;
           }
-          // Если activated = true — controllerchange сам перезагрузит
-        } else {
-          // Нет waiting — возможно уже обновлён
+
+          if (r.waiting) {
+            r.waiting.addEventListener('statechange', onStateChange);
+          } else {
+            // Если waiting вдруг пропал — перезагружаемся
+            clearTimeout(timeout);
+            resolve(false);
+          }
+        });
+
+        if (!activated) {
+          // Если SW не активировался за 5 сек — форсим перезагрузку
           window.location.reload();
         }
+        // Если activated = true — controllerchange сам перезагрузит
       } else {
         window.location.reload();
       }

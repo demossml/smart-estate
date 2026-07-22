@@ -1,17 +1,12 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import { DndProvider } from 'react-dnd';
-import { HTML5Backend } from 'react-dnd-html5-backend';
-import { Home, Workflow, Zap, Settings, Plus, Wind, Loader2, CheckCircle2, Sparkles, LayoutGrid, Download, RefreshCw } from "lucide-react";
+import { Home, Workflow, Zap, Settings, Plus, Wind, Loader2, CheckCircle2, Sparkles, LayoutGrid, Download } from "lucide-react";
 import RoomCard from "./components/RoomCard";
 import DeviceTile, { airStatus, DEVICE_TYPES, defaultFieldsFor } from "./components/DeviceTile";
 import AddDeviceModal from "./components/AddDeviceModal";
 import AddRoomModal from "./components/AddRoomModal";
-import { ScenariosTab } from "./components/ui/ScenariosTab";
-import { api as clientApi } from "./api/client";
-import ScenarioEditor from "./components/ScenarioEditor";
+import ScenariosTab from "./components/ScenariosTab";
 import EnergyTab from "./components/EnergyTab";
 import DeviceDetailSheet from "./components/DeviceDetailSheet";
-import MoveDeviceModal from "./components/MoveDeviceModal";
 import AssignDiscoveredModal from "./components/AssignDiscoveredModal";
 import { StatusStrip, FavoritesGrid, RunningNow, ROOM_ICONS } from "./components/HomeWidgets";
 import ManageTab, { classifyVoiceCommand } from "./components/ManageTab";
@@ -21,8 +16,6 @@ import ZigbeeStatusIndicator from "./components/ZigbeeStatusIndicator";
 import { useMode } from './hooks/useMode';
 import { usePwaUpdate, UpdateBanner } from "./pwa-update";
 import { useEstateSocket } from './hooks/useEstateSocket';
-
-declare const __BUILD_TIME__: string;
 
 // ── CSRF ──
 let csrfToken = '';
@@ -73,10 +66,7 @@ function apiToDevice(d: any): any {
     linkquality: d.linkquality ?? tel.linkquality ?? null,
   };
   switch (d.type) {
-    case 'window_sensor': case 'door_sensor':
-      // ZG-102ZL и подобные имеют нормально-замкнутый контакт (закрыт=1, открыт=0)
-      base.contact = tel.contact === 0 || tel.contact === false ? 'open' : 'closed';
-      break;
+    case 'window_sensor': case 'door_sensor': base.contact = tel.contact === 1 || tel.contact === true ? 'open' : 'closed'; break;
     case 'presence_sensor': case 'motion_sensor':
       base.presence = tel.presence === 1 || tel.presence === true;
       base.lastSeenMin = d.last_presence_minutes;
@@ -158,25 +148,8 @@ export default function SmartEstateApp() {
   const [showAddDevice, setShowAddDevice] = useState(false);
   const [showAddRoom, setShowAddRoom] = useState(false);
   const [editingRoom, setEditingRoom] = useState<any>(null);
-  const [editingScenarioId, setEditingScenarioId] = useState<number | null>(null);
-
-  // Legacy format for RunningNow (condition/action pairs)
-  const legacyScenarios = useMemo(() =>
-    scenarios.map((s: any) => ({
-      id: String(s.id),
-      condition: s.name || '',
-      action: (() => {
-        try {
-          const actions = JSON.parse(s.actions_json || '[]');
-          return Array.isArray(actions) ? actions.map((a: any) => a.type || '').join(', ') : '';
-        } catch { return ''; }
-      })(),
-      active: s.active,
-    })),
-  [scenarios]);
   const [presetRoomId, setPresetRoomId] = useState<number | null>(null);
   const [detailDevice, setDetailDevice] = useState<any>(null);
-  const [moveDeviceModal, setMoveDeviceModal] = useState<{id: string; name: string} | null>(null);
   const { mode, toggle: toggleMode, loading: modeLoading } = useMode();
 
   // ── Discovery state — новая логика (14.07.2026) ──
@@ -185,7 +158,6 @@ export default function SmartEstateApp() {
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [assigningDevice, setAssigningDevice] = useState<any>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
   const timersRef = useRef<any[]>([]);
 
   // AI agent state
@@ -236,26 +208,12 @@ export default function SmartEstateApp() {
           state: d.state ?? tel.state,
         };
       }));
-      // Use clientApi for properly mapped scenario data
-      const mappedScenarios = await clientApi.getScenarios();
-      setScenarios(mappedScenarios);
+      setScenarios((scenariosData.scenarios || []).map(apiToScenario));
       // Комнаты раскрываются только по клику — не раскрываем автоматически
     } catch (e: any) { console.error('Load error:', e); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { loadData(); }, [loadData]);
-
-  // ── Online / offline listener ──
-  useEffect(() => {
-    const goOnline = () => setIsOnline(true);
-    const goOffline = () => setIsOnline(false);
-    window.addEventListener('online', goOnline);
-    window.addEventListener('offline', goOffline);
-    return () => {
-      window.removeEventListener('online', goOnline);
-      window.removeEventListener('offline', goOffline);
-    };
-  }, []);
 
   // ── Live WebSocket — обновление при каждом MQTT-сообщении ──
   const patchLiveTelemetry = useCallback((_topic: string, _payload: Record<string, any>) => {
@@ -431,12 +389,7 @@ export default function SmartEstateApp() {
     try {
       await api('/scenarios', { method: 'POST', body: JSON.stringify({ name: condition.slice(0, 60), description: `${condition} → ${action}`, triggers_json: '{}', actions_json: '{}' }) });
       await loadData();
-      setToast('✅ Сценарий добавлен');
-      setTimeout(() => setToast(null), 3000);
-    } catch (e: any) {
-      setToast(`❌ Ошибка: ${e.message}`);
-      setTimeout(() => setToast(null), 3000);
-    }
+    } catch {}
   };
   const toggleScenario = useCallback(async (id: string) => {
     try {
@@ -467,8 +420,6 @@ export default function SmartEstateApp() {
     try {
       await api(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify({ room_id: null }) });
       await loadData();
-      setToast('✅ Устройство убрано из комнаты');
-      setTimeout(() => setToast(null), 3000);
     } catch (e: any) { console.error('Remove from room error:', e); }
   }, [loadData]);
 
@@ -480,26 +431,23 @@ export default function SmartEstateApp() {
     } catch (e: any) { console.error('Move device to room error:', e); }
   }, [loadData]);
 
-  // ── Move device — подтверждение из модалки ──
-  const handleMoveConfirm = useCallback(async (roomId: string) => {
-    if (!moveDeviceModal) return;
-    try {
-      await api(`/devices/${moveDeviceModal.id}`, { method: 'PATCH', body: JSON.stringify({ room_id: roomId }) });
-      await loadData();
-      setToast(`✅ Устройство перемещено в «${rooms.find((r: any) => String(r.id) === roomId)?.name || '...'}»`);
-      setTimeout(() => setToast(null), 3000);
-    } catch (e: any) {
-      setToast(`❌ Ошибка: ${e.message}`);
-      setTimeout(() => setToast(null), 3000);
-    }
-    setMoveDeviceModal(null);
-  }, [moveDeviceModal, loadData, rooms]);
-
   // ── Move device to another room (swipe action) ──
   const moveDeviceToRoomAction = useCallback(async (id: string) => {
-    const device = devices.find((d: any) => d.ieee_addr === id);
-    setMoveDeviceModal({ id, name: device?.friendly_name || 'Устройство' });
-  }, [devices]);
+    const roomNames = rooms.map((r: any) => ({ id: r.id, name: r.name }));
+    const msg = 'В какую комнату переместить?\n' + roomNames.map((r: any, i: number) => `${i + 1}. ${r.name}`).join('\n');
+    const answer = window.prompt(msg);
+    if (!answer) return;
+    const idx = parseInt(answer) - 1;
+    if (idx >= 0 && idx < roomNames.length) {
+      try {
+        await api(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify({ room_id: String(roomNames[idx].id) }) });
+        await loadData();
+        window.alert(`✅ Устройство перемещено в «${roomNames[idx].name}»`);
+      } catch (e: any) { console.error('Move device error:', e); window.alert('❌ Ошибка'); }
+    } else {
+      window.alert('❌ Неверный номер комнаты');
+    }
+  }, [loadData, rooms]);
 
   // ── Edit device name ──
   const editDeviceName = useCallback(async (id: string, name: string) => {
@@ -730,7 +678,7 @@ export default function SmartEstateApp() {
 
   const acceptSuggestion = (id: string) => {
     const s = suggestions.find((x: any) => x.id === id);
-    if (s) setScenarios((prev) => [...prev, { id: uid(), name: s.text || s.condition || '', triggers_json: '[]', actions_json: '[]', active: true } as any]);
+    if (s) setScenarios((prev) => [...prev, { id: uid(), condition: s.condition || s.text, action: s.action || "", active: true }]);
     setSuggestions((prev) => prev.filter((x) => x.id !== id));
   };
   const dismissSuggestion = (id: string) => setSuggestions((prev) => prev.filter((x) => x.id !== id));
@@ -740,8 +688,8 @@ export default function SmartEstateApp() {
     const kw = (formatted.filter((d: any) => d.type === "plug" && d.state).reduce((s: number, p: any) => s + p.ratedPower, 0) / 1000).toFixed(1);
     const openIssues = formatted.filter((d: any) => (d.type === "window_sensor" || d.type === "door_sensor") && d.contact === "open").length;
     const lightsOn = formatted.filter((d: any) => d.type === "light" && d.state).length;
-    return `Сейчас дом потребляет ${kw} кВт, ${openIssues ? `открыто окон/дверей: ${openIssues}` : "все окна и двери закрыты"}, света горит: ${lightsOn}. За сегодня сработало автоматизаций: ${legacyScenarios.filter((s) => s.active).length}, активных подсказок: ${suggestions.length + pendingActions.length}.`;
-  }, [devices, legacyScenarios, suggestions, pendingActions]);
+    return `Сейчас дом потребляет ${kw} кВт, ${openIssues ? `открыто окон/дверей: ${openIssues}` : "все окна и двери закрыты"}, света горит: ${lightsOn}. За сегодня сработало автоматизаций: ${scenarios.filter((s) => s.active).length}, активных подсказок: ${suggestions.length + pendingActions.length}.`;
+  }, [devices, scenarios, suggestions, pendingActions]);
 
   /* ── Auth state ── */
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
@@ -804,23 +752,19 @@ export default function SmartEstateApp() {
               onKeyDown={e => { if (e.key === 'Enter' && authKey.trim()) {
                 setAuthChecking(true);
                 setAuthError('');
-                fetch('/api/login', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ key: authKey.trim() }),
-                })
-                  .then(r => { if (!r.ok) throw new Error('Неверный ключ'); return r.json(); })
+                fetch('/api/mode', { headers: { 'X-API-Key': authKey.trim() } })
+                  .then(r => r.json())
                   .then(d => {
-                    if (d?.ok === true) {
+                    if (d?.ok === true || d?.mode) {
                       localStorage.setItem('apiKey', authKey.trim());
-                      window.location.reload();
+                      window.location.reload(); // перезагрузить — loadData сработает с верным ключом
                     } else {
                       setAuthError('Неверный ключ');
                       setAuthChecking(false);
                     }
                   })
                   .catch(() => {
-                    setAuthError('Неверный ключ');
+                    setAuthError('Ошибка подключения к серверу');
                     setAuthChecking(false);
                   });
               }}}
@@ -838,14 +782,9 @@ export default function SmartEstateApp() {
                 setAuthChecking(true);
                 setAuthError('');
                 try {
-                  const r = await fetch('/api/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ key: authKey.trim() }),
-                  });
-                  if (!r.ok) throw new Error('Неверный ключ');
+                  const r = await fetch('/api/mode', { headers: { 'X-API-Key': authKey.trim() } });
                   const d = await r.json();
-                  if (d?.ok === true) {
+                  if (d?.ok === true || d?.mode) {
                     localStorage.setItem('apiKey', authKey.trim());
                     window.location.reload();
                   } else {
@@ -853,7 +792,7 @@ export default function SmartEstateApp() {
                     setAuthChecking(false);
                   }
                 } catch {
-                  setAuthError('Неверный ключ');
+                  setAuthError('Ошибка подключения к серверу');
                   setAuthChecking(false);
                 }
               }}
@@ -868,7 +807,6 @@ export default function SmartEstateApp() {
   }
 
   return (
-    <DndProvider backend={HTML5Backend}>
     <div className="flex flex-col h-screen bg-bg overflow-hidden">
       <link rel="stylesheet" href={FONT_IMPORT} />
       <style>{css}</style>
@@ -886,28 +824,14 @@ export default function SmartEstateApp() {
               <button className="se-mode-pill" onClick={() => { localStorage.removeItem('apiKey'); window.location.reload(); }} title="Выйти и ввести новый ключ">
                 Выйти
               </button>
-              <button className="se-mode-pill se-update-btn" onClick={() => {
-                if (navigator.vibrate) navigator.vibrate(10);
-                applyUpdate();
-              }} title="Проверить обновления (текущая сборка: {__BUILD_TIME__})">
-                <RefreshCw size={14} className={isApplying ? 'se-spin' : ''} strokeWidth={1.5} style={{ verticalAlign: 'middle', marginRight: 2 }} />
-                {isApplying ? '…' : 'Обн'}
-              </button>
               <ZigbeeStatusIndicator />
             </div>
           </div>
         </div>
       </header>
 
-      {/* Offline banner */}
-      {!isOnline && (
-        <div className="se-offline-banner">
-          <span>📡 Нет подключения к интернету — данные могут быть устаревшими</span>
-        </div>
-      )}
-
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto pb-24 overscroll-contain max-w-[480px] mx-auto w-full" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 62px)' }}>
+      <main className="flex-1 overflow-y-auto pb-20 overscroll-contain max-w-[480px] mx-auto w-full" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 62px)' }}>
         {tab === "home" && (
           <>
             <StatusStrip devices={devices.map(apiToDevice)} />
@@ -929,9 +853,8 @@ export default function SmartEstateApp() {
               )}
               <FavoritesGrid devices={devices.map(apiToDevice)} onToggle={toggleDevice} onAdjustTemp={adjustTemp} onSlider={setSlider} onOpenDetail={setDetailDevice} />
               {/* Присутствие отображается внутри плиток комнат — RoomTileV2 */}
-              <RunningNow scenarios={legacyScenarios} devices={devices.map(apiToDevice)} />
+              <RunningNow scenarios={scenarios} devices={devices.map(apiToDevice)} />
               <div className="se-section-label">Комнаты</div>
-              <div className="flex flex-col gap-2">
               {roomsWithDevices.map((room: any) => (
                 <RoomCard
                   key={room.id} room={room}
@@ -953,7 +876,6 @@ export default function SmartEstateApp() {
                   onMoveDeviceToRoom={moveDeviceToRoom}
                 />
               ))}
-              </div>
             </div>
           </>
         )}
@@ -969,33 +891,7 @@ export default function SmartEstateApp() {
         )}
 
         {tab === "scenarios" && (
-          editingScenarioId != null ? (
-            <ScenarioEditor
-              scenarioId={editingScenarioId}
-              onBack={() => setEditingScenarioId(null)}
-              onSaved={loadData}
-            />
-          ) : (
-            <ScenariosTab
-              scenarios={scenarios}
-              onEdit={(id) => setEditingScenarioId(id)}
-              onToggle={(id) => toggleScenario(String(id))}
-              onDelete={(id) => deleteScenario(String(id))}
-              onCreateEmpty={async () => {
-                try {
-                  await clientApi.createScenario(
-                    'Новый сценарий',
-                    JSON.stringify([{ type: 'schedule', kind: 'sunset' }]),
-                    JSON.stringify([{ type: 'notify', message: 'Сценарий сработал' }]),
-                  );
-                  loadData();
-                } catch (e: any) {
-                  alert('❌ Ошибка создания сценария: ' + (e?.message || e));
-                }
-              }}
-              onRefresh={loadData}
-            />
-          )
+          <ScenariosTab scenarios={scenarios} onToggle={toggleScenario} onDelete={deleteScenario} onAdd={addScenario} />
         )}
 
         {tab === "energy" && <EnergyTab devices={devices.map(apiToDevice)} />}
@@ -1009,7 +905,6 @@ export default function SmartEstateApp() {
             onRemoveFromRoom={removeDeviceFromRoom}
             onDeleteDevice={deleteDevice}
             onAddDevice={addDeviceToRoom}
-            onRenameDevice={editDeviceName}
             discovering={discovering} discoveredDevices={discoveredDevices} secondsLeft={secondsLeft}
             onStartDiscovery={startDiscovery} onStopDiscovery={stopDiscovery}
             onAssignDiscovered={(d) => setAssigningDevice(d)} onDismissDiscovered={dismissDiscovered}
@@ -1037,13 +932,13 @@ export default function SmartEstateApp() {
 
       {/* Fixed Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-glass-border bg-bg/80 backdrop-blur-md" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
-        <div className="max-w-[480px] mx-auto flex" style={{ padding: '6px 8px 10px' }}>
-          <button className={"se-nav-btn" + (tab === "home" ? " se-nav-btn--active" : "")} onClick={() => { if (navigator.vibrate) navigator.vibrate(8); setTab("home"); }}><Home size={20} strokeWidth={1.6} /><span>Дом</span></button>
-          <button className={"se-nav-btn" + (tab === "rooms" ? " se-nav-btn--active" : "")} onClick={() => { if (navigator.vibrate) navigator.vibrate(8); setTab("rooms"); }}><LayoutGrid size={20} strokeWidth={1.6} /><span>Комнаты</span></button>
-          <button className={"se-nav-btn" + (tab === "scenarios" ? " se-nav-btn--active" : "")} onClick={() => { if (navigator.vibrate) navigator.vibrate(8); setTab("scenarios"); }}><Workflow size={20} strokeWidth={1.6} /><span>Сценарии</span></button>
-          <button className={"se-nav-btn" + (tab === "energy" ? " se-nav-btn--active" : "")} onClick={() => { if (navigator.vibrate) navigator.vibrate(8); setTab("energy"); }}><Zap size={20} strokeWidth={1.6} /><span>Энергия</span></button>
-          <button className={"se-nav-btn" + (tab === "manage" ? " se-nav-btn--active" : "")} onClick={() => { if (navigator.vibrate) navigator.vibrate(8); setTab("manage"); }}><Settings size={20} strokeWidth={1.6} /><span>Управление</span></button>
-          <button className={"se-nav-btn" + (tab === "profiles" ? " se-nav-btn--active" : "")} onClick={() => { if (navigator.vibrate) navigator.vibrate(8); setTab("profiles"); }}><Sparkles size={20} strokeWidth={1.6} /><span>Профили</span></button>
+        <div className="max-w-[480px] mx-auto flex" style={{ padding: '8px 4px' }}>
+          <button className={"se-nav-btn" + (tab === "home" ? " se-nav-btn--active" : "")} onClick={() => setTab("home")}><Home size={16} strokeWidth={1.6} /><span>Дом</span></button>
+          <button className={"se-nav-btn" + (tab === "rooms" ? " se-nav-btn--active" : "")} onClick={() => setTab("rooms")}><LayoutGrid size={16} strokeWidth={1.6} /><span>Комнаты</span></button>
+          <button className={"se-nav-btn" + (tab === "scenarios" ? " se-nav-btn--active" : "")} onClick={() => setTab("scenarios")}><Workflow size={16} strokeWidth={1.6} /><span>Сценарии</span></button>
+          <button className={"se-nav-btn" + (tab === "energy" ? " se-nav-btn--active" : "")} onClick={() => setTab("energy")}><Zap size={16} strokeWidth={1.6} /><span>Энергия</span></button>
+          <button className={"se-nav-btn" + (tab === "manage" ? " se-nav-btn--active" : "")} onClick={() => setTab("manage")}><Settings size={16} strokeWidth={1.6} /><span>Управление</span></button>
+          <button className={"se-nav-btn" + (tab === "profiles" ? " se-nav-btn--active" : "")} onClick={() => setTab("profiles")}><Sparkles size={16} strokeWidth={1.6} /><span>Профили</span></button>
         </div>
       </nav>
 
@@ -1072,18 +967,6 @@ export default function SmartEstateApp() {
           room={rooms.find((r: any) => r.id === detailDevice.roomId)}
           onClose={() => setDetailDevice(null)}
           onToggle={toggleDevice} onAdjustTemp={adjustTemp} onSlider={setSlider}
-          onRemoveFromRoom={removeDeviceFromRoom}
-          onMoveToRoom={moveDeviceToRoomAction}
-        />
-      )}
-
-      {/* Move device modal */}
-      {moveDeviceModal && (
-        <MoveDeviceModal
-          deviceName={moveDeviceModal.name}
-          rooms={rooms.map((r: any) => ({ id: String(r.id), name: r.name }))}
-          onConfirm={handleMoveConfirm}
-          onClose={() => setMoveDeviceModal(null)}
         />
       )}
 
@@ -1098,14 +981,13 @@ export default function SmartEstateApp() {
       {/* PWA update banner */}
       <UpdateBanner visible={updateAvailable} onUpdate={applyUpdate} isApplying={isApplying} />
     </div>
-    </DndProvider>
   );
 }
 
 const css = `
 * { box-sizing: border-box; }
 .se-stage { min-height: 100vh; width: 100%; background: #0A0C0B; display: flex; justify-content: center; font-family: 'Inter', sans-serif; padding: 0; }
-.se-app { width: 420px; max-width: 100%; min-height: 100vh; background: linear-gradient(180deg, #0D110E, #0A0C0B 40%); position: relative; padding-bottom: 82px; }
+.se-app { width: 420px; max-width: 100%; min-height: 100vh; background: linear-gradient(180deg, #0D110E, #0A0C0B 40%); position: relative; padding-bottom: 78px; }
 
 .se-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 20px 4px; }
 .se-logo { font-family: 'Cormorant SC', serif; font-size: 16px; letter-spacing: 0.12em; color: #E9E4D8; font-weight: 600; }
@@ -1125,16 +1007,16 @@ const css = `
 }
 
 .se-status-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 0 20px 12px; }
-.se-status-chip { display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 7px 6px; color: #B7BDB4; min-height: 44px; }
+.se-status-chip { display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 7px 6px; color: #B7BDB4; }
 .se-status-chip--alert { border-color: rgba(217,105,95,0.35); background: rgba(217,105,95,0.06); color: #D9695F; }
 .se-status-chip--ok { color: #7FE0A8; }
 .se-status-chip--on { color: #E9C989; }
-.se-status-val { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.2; white-space: nowrap; }
+.se-status-val { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.2; }
 .se-status-label { font-size: 8px; text-transform: uppercase; letter-spacing: 0.03em; color: #5A5F58; margin-top: 1px; }
 
-.se-section-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #7A7F79; display: flex; align-items: center; gap: 5px; margin: 6px 0 6px 14px; }
-.se-fav-section { display: flex; flex-direction: column; gap: 8px; }
-.se-running-section { display: flex; flex-direction: column; gap: 8px; }
+.se-section-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #7A7F79; display: flex; align-items: center; gap: 5px; margin: 2px 0 -4px; }
+.se-fav-section { display: flex; flex-direction: column; gap: 6px; }
+.se-running-section { display: flex; flex-direction: column; gap: 6px; }
 .se-running-idle { font-size: 11px; color: #5A5F58; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 8px 12px; }
 .se-running-list { display: flex; flex-direction: column; gap: 6px; }
 .se-running-row { display: flex; align-items: center; gap: 9px; background: rgba(95,201,138,0.06); border: 1px solid rgba(95,201,138,0.25); border-radius: 10px; padding: 8px 10px; }
@@ -1212,8 +1094,7 @@ const css = `
 .se-outline-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .se-nav { position: absolute; bottom: 0; left: 0; right: 0; display: flex; background: rgba(10,12,11,0.9); backdrop-filter: blur(14px); border-top: 1px solid rgba(201,162,75,0.14); padding: 8px 4px 10px; }
-.se-nav-btn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; background: transparent; border: none; color: #5A5F58; cursor: pointer; font-family: inherit; font-size: 10px; letter-spacing: 0.02em; padding: 8px 4px; border-radius: 12px; transition: all 0.15s ease; -webkit-tap-highlight-color: transparent; touch-action: manipulation; user-select: none; -webkit-user-select: none; }
-.se-nav-btn:active { transform: scale(0.92); background: rgba(255,255,255,0.05); }
+.se-nav-btn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; background: transparent; border: none; color: #5A5F58; cursor: pointer; font-family: inherit; font-size: 9px; }
 .se-nav-btn--active { color: #C9A24B; }
 
 .se-scn-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 18px; }
@@ -1249,7 +1130,6 @@ const css = `
 .se-room-manager-btns { display: flex; gap: 6px; }
 .se-room-manager-protected { font-size: 11px; color: #5A5F58; font-style: italic; }
 .se-mini-btn--danger { color: #D9695F; border-color: rgba(217,105,95,0.3); }
-.se-mini-btn--icon { background: transparent; border: 1px solid rgba(255,255,255,0.08); padding: 4px 6px; font-size: 14px; line-height: 1; }
 .se-room-manage-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .se-room-manage-row { display: flex; align-items: center; gap: 9px; background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 9px 11px; }
 .se-room-manage-name { flex: 1; font-size: 12.5px; color: #D8D3C6; }
@@ -1361,28 +1241,4 @@ const css = `
 .se-zigbee-popover-val { font-family: 'JetBrains Mono', monospace; font-size: 10px; }
 .se-zigbee-popover-val--ok { color: #7FE0A8; }
 .se-zigbee-popover-val--bad { color: #D9695F; }
-
-/* ── Offline banner ── */
-.se-offline-banner {
-  position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 52px);
-  left: 0;
-  right: 0;
-  z-index: 9998;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 7px 14px;
-  font-size: 11px;
-  color: #E9C989;
-  background: rgba(201,162,75,0.12);
-  border-bottom: 1px solid rgba(201,162,75,0.25);
-  backdrop-filter: blur(8px);
-  animation: se-offline-in 0.3s ease-out;
-}
-@keyframes se-offline-in {
-  from { opacity: 0; transform: translateY(-8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
 `;

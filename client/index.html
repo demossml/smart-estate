@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0D1117">
+<link rel="manifest" href="/manifest.json">
+<title>Умная Усадьба</title>
+<style>
+:root {
+  --bg-primary: #0D1117;
+  --bg-secondary: #161B22;
+  --bg-tertiary: #21262D;
+  --text-primary: #E6EDF3;
+  --text-secondary: #8B949E;
+  --text-tertiary: #484F58;
+  --accent-blue: #00B4FF;
+  --accent-green: #00FF9D;
+  --accent-orange: #FF8C00;
+  --accent-red: #FF3860;
+  --accent-yellow: #FFD700;
+  --accent-purple: #B060FF;
+  --border: rgba(255,255,255,0.06);
+  --border-active: rgba(0,180,255,0.25);
+  --radius-card: 16px;
+  --radius-btn: 12px;
+  --radius-tile: 12px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+  --mono: 'SF Mono', 'JetBrains Mono', 'Cascadia Code', monospace;
+  --tab-h: 56px;
+  --header-h: 48px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: var(--bg-primary); color: var(--text-primary);
+  font-family: var(--font); font-size: 15px; line-height: 1.4;
+  height: 100vh; height: 100dvh; overflow: hidden;
+  -webkit-tap-highlight-color: transparent; -webkit-user-select: none; user-select: none;
+}
+button { font-family: var(--font); cursor: pointer; }
+
+#app { display:flex; flex-direction:column; height:100%; max-width:480px; margin:0 auto; position:relative; }
+
+/* HEADER */
+.header {
+  height: var(--header-h); display:flex; align-items:center; justify-content:space-between;
+  padding:0 16px; border-bottom:1px solid var(--border); flex-shrink:0;
+  background: var(--bg-primary);
+}
+.header h1 { font-size:17px; font-weight:600; }
+.header-right { display:flex; align-items:center; gap:6px; }
+.dot { width:8px; height:8px; border-radius:50%; display:inline-block; animation:pulse 2s infinite; }
+.dot.online { background: var(--accent-green); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+.mode-pill {
+  font-size:10px; font-weight:700; letter-spacing:0.5px; padding:3px 10px; border-radius:6px;
+  border:1px solid; border:none; cursor:pointer;
+}
+.mode-demo { background:rgba(255,215,0,0.12); color:var(--accent-yellow); }
+.mode-live { background:rgba(0,255,157,0.12); color:var(--accent-green); }
+
+/* TAB BAR */
+.tabbar {
+  height: calc(var(--tab-h) + var(--safe-b)); padding-bottom: var(--safe-b);
+  display:flex; background:var(--bg-secondary); border-top:1px solid var(--border);
+  flex-shrink:0;
+}
+.tab {
+  flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:3px; border:none; background:none; color:var(--text-tertiary);
+  font-size:10px; font-weight:600; position:relative; padding:4px 0;
+}
+.tab.active { color: var(--accent-blue); }
+.tab.active::after {
+  content:''; position:absolute; top:0; left:12px; right:12px; height:3px;
+  background:var(--accent-blue); border-radius:0 0 3px 3px;
+}
+.tab-icon { font-size:20px; line-height:1; }
+
+/* MAIN CONTENT */
+.main { flex:1; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; padding:0 16px 12px; }
+.main::-webkit-scrollbar { display:none; }
+
+/* SKELETON */
+.skeleton { background:var(--bg-tertiary); border-radius:8px; animation:shimmer 1.5s infinite; }
+@keyframes shimmer { 0%{opacity:0.5} 50%{opacity:0.8} 100%{opacity:0.5} }
+.skel-card { height:80px; margin-bottom:12px; border-radius:var(--radius-card); }
+.skel-stat { height:100px; margin-bottom:12px; border-radius:var(--radius-card); }
+.skel-h { height:20px; width:60%; margin-bottom:12px; }
+.skel-row { height:52px; margin-bottom:8px; border-radius:var(--radius-tile); }
+
+/* STATES */
+.state-empty { text-align:center; padding:48px 20px; color:var(--text-secondary); }
+.state-empty .icon { font-size:48px; margin-bottom:12px; }
+.state-empty .text { font-size:15px; margin-bottom:8px; }
+.state-empty .sub { font-size:13px; color:var(--text-tertiary); }
+.state-error { text-align:center; padding:48px 20px; }
+.state-error .msg { color:var(--accent-red); font-size:14px; margin-bottom:12px; }
+.retry-btn {
+  background:var(--bg-tertiary); color:var(--accent-blue); border:1px solid var(--border-active);
+  padding:10px 24px; border-radius:var(--radius-btn); font-size:14px; font-weight:600;
+}
+.retry-btn:active { opacity:0.7; }
+
+/* CARD */
+.card {
+  background:var(--bg-secondary); border-radius:var(--radius-card);
+  border:1px solid var(--border); padding:16px; margin-bottom:12px;
+}
+.card-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.card-title { font-size:13px; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.5px; }
+.card-subtitle { font-size:12px; color:var(--text-tertiary); }
+
+/* --- DASHBOARD --- */
+.dash-stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:12px; }
+.stat-tile {
+  background:var(--bg-tertiary); border-radius:var(--radius-tile); padding:14px 12px;
+  text-align:center; cursor:pointer;
+}
+.stat-tile:active { opacity:0.8; }
+.stat-value { font-size:22px; font-weight:700; font-family:var(--mono); margin-bottom:2px; }
+.stat-label { font-size:11px; color:var(--text-secondary); }
+
+.room-preview {
+  display:flex; align-items:center; gap:10px; padding:10px 0;
+  border-bottom:1px solid var(--border); cursor:pointer;
+}
+.room-preview:last-child { border-bottom:none; }
+.room-preview:active { opacity:0.7; }
+.room-pv-icon { font-size:24px; width:36px; text-align:center; flex-shrink:0; }
+.room-pv-info { flex:1; }
+.room-pv-name { font-size:14px; font-weight:600; }
+.room-pv-meta { font-size:11px; color:var(--text-secondary); }
+.room-pv-temp { font-family:var(--mono); font-weight:600; color:var(--accent-blue); }
+.green { color:var(--accent-green); }
+.red { color:var(--accent-red); }
+
+/* --- DEVICES --- */
+.filter-tabs { display:flex; gap:6px; margin-bottom:12px; }
+.filter-tab {
+  padding:6px 14px; border-radius:20px; font-size:12px; font-weight:600;
+  border:1px solid var(--border); background:transparent; color:var(--text-secondary);
+}
+.filter-tab.active { background:var(--accent-blue); color:#000; border-color:var(--accent-blue); }
+
+.room-group { margin-bottom:12px; }
+.room-group-header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 0 6px; cursor:pointer;
+}
+.room-group-name { font-size:14px; font-weight:700; }
+.room-group-count { font-size:11px; color:var(--text-secondary); }
+
+.device-tile {
+  display:flex; align-items:center; gap:12px; padding:12px;
+  background:var(--bg-tertiary); border-radius:var(--radius-tile);
+  margin-bottom:6px; height:64px;
+}
+.device-tile:active { opacity:0.7; }
+.dt-icon { font-size:24px; width:32px; text-align:center; flex-shrink:0; }
+.dt-info { flex:1; min-width:0; }
+.dt-name { font-size:14px; font-weight:600; }
+.dt-meta { font-size:11px; color:var(--text-secondary); }
+.dt-value { font-family:var(--mono); font-size:13px; font-weight:600; }
+
+/* TOGGLE */
+.toggle {
+  width:51px; height:31px; border-radius:16px; border:none; cursor:pointer;
+  position:relative; transition:background .2s; flex-shrink:0; padding:0;
+}
+.toggle.off { background:var(--bg-tertiary); border:1px solid var(--border); }
+.toggle.on { background:var(--accent-green); }
+.toggle::after {
+  content:''; position:absolute; top:3px; width:25px; height:25px;
+  border-radius:50%; background:#fff; transition:transform .2s ease;
+}
+.toggle.off::after { transform:translateX(2px); }
+.toggle.on::after { transform:translateX(22px); }
+
+/* --- CLIMATE --- */
+.climate-room { margin-bottom:16px; }
+.climate-header { display:flex; align-items:center; gap:6px; margin-bottom:8px; }
+.climate-current { font-family:var(--mono); font-size:36px; font-weight:700; }
+.climate-current .unit { font-size:20px; color:var(--text-secondary); }
+
+.slider-group { margin:8px 0 12px; }
+.slider-label { display:flex; justify-content:space-between; font-size:12px; color:var(--text-secondary); margin-bottom:4px; }
+.slider {
+  -webkit-appearance:none; width:100%; height:6px; border-radius:3px;
+  background:var(--bg-tertiary); outline:none;
+}
+.slider::-webkit-slider-thumb {
+  -webkit-appearance:none; width:28px; height:28px; border-radius:50%;
+  background:var(--accent-blue); box-shadow:0 2px 8px rgba(0,180,255,0.3);
+  cursor:pointer; border:none;
+}
+.slider::-moz-range-thumb { width:28px; height:28px; border-radius:50%; background:var(--accent-blue); border:none; cursor:pointer; }
+.climate-value { text-align:center; font-family:var(--mono); font-size:17px; font-weight:600; color:var(--accent-blue); margin-top:4px; }
+
+.climate-mode-btn {
+  padding:8px 16px; border-radius:20px; border:1px solid var(--border);
+  background:transparent; color:var(--text-secondary); font-size:13px; font-weight:600;
+  margin-right:6px;
+}
+.climate-mode-btn.active { background:var(--accent-blue); color:#000; border-color:var(--accent-blue); }
+
+.status-badge {
+  display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600;
+  padding:4px 10px; border-radius:6px; letter-spacing:0.5px;
+}
+.status-badge.ok { color:var(--accent-green); border:1px solid rgba(0,255,157,0.25); }
+.status-badge.heat { color:var(--accent-orange); border:1px solid rgba(255,140,0,0.25); }
+.status-badge.cool { color:var(--accent-blue); border:1px solid rgba(0,180,255,0.25); }
+
+/* --- GATES --- */
+.gate-btn {
+  width:100%; padding:20px; border-radius:var(--radius-btn); font-size:18px; font-weight:700;
+  border:none; margin-bottom:10px; transition:transform .15s;
+  display:flex; align-items:center; justify-content:center; gap:10px;
+}
+.gate-btn:active { transform:scale(0.97); }
+.gate-open { background:var(--accent-green); color:#000; }
+.gate-close { background:var(--accent-red); color:#fff; }
+.gate-status { text-align:center; font-size:12px; color:var(--text-secondary); margin-bottom:16px; }
+
+.log-item {
+  display:flex; align-items:center; gap:8px; padding:10px 0;
+  border-bottom:1px solid var(--border); font-size:13px;
+}
+.log-time { font-family:var(--mono); font-size:11px; color:var(--text-tertiary); width:48px; flex-shrink:0; }
+.log-action { flex:1; }
+
+/* --- SCENARIOS --- */
+.scenario-card {
+  background:var(--bg-tertiary); border-radius:var(--radius-tile); padding:14px;
+  margin-bottom:8px; display:flex; align-items:center; gap:12px;
+}
+.sc-active { border:1px solid rgba(0,255,157,0.2); }
+.sc-inactive { opacity:0.5; }
+.sc-info { flex:1; min-width:0; }
+.sc-name { font-size:14px; font-weight:600; margin-bottom:2px; }
+.sc-desc { font-size:12px; color:var(--text-secondary); }
+
+/* --- EVENTS --- */
+.event-item {
+  display:flex; align-items:flex-start; gap:8px; padding:10px 0;
+  border-bottom:1px solid var(--border); font-size:13px;
+}
+.event-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; margin-top:6px; }
+.dot-cmd { background:var(--accent-blue); }
+.dot-err { background:var(--accent-red); }
+.dot-state { background:var(--accent-yellow); }
+.dot-sys { background:var(--accent-green); }
+.event-body { flex:1; }
+.event-time { font-family:var(--mono); font-size:11px; color:var(--text-tertiary); margin-top:2px; }
+.day-divider {
+  text-align:center; font-size:11px; color:var(--text-tertiary); font-weight:600;
+  padding:12px 0 4px; letter-spacing:1px;
+}
+
+/* TOAST */
+.toast {
+  position:fixed; bottom:calc(var(--tab-h) + var(--safe-b) + 24px);
+  left:50%; transform:translateX(-50%); z-index:200;
+  background:var(--bg-secondary); border:1px solid var(--border-active);
+  padding:12px 20px; border-radius:var(--radius-btn); font-size:13px; font-weight:500;
+  animation:slideUp .3s ease; pointer-events:none; white-space:nowrap;
+}
+@keyframes slideUp { from{opacity:0;transform:translateX(-50%) translateY(10px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
+
+/* OFF BADGE */
+.offline-banner { padding:8px 16px; text-align:center; background:var(--accent-red); color:#fff; font-size:11px; font-weight:600; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <h1>🏠 Умная Усадьба</h1>
+    <div class="header-right">
+      <span id="hdot" class="dot online"></span>
+      <button id="modeBtn" class="mode-pill mode-demo" onclick="toggleMode()">🧪 DEMO</button>
+    </div>
+  </div>
+  <div id="offlineBanner" style="display:none" class="offline-banner">Нет соединения с сервером</div>
+  <div class="main" id="main"></div>
+  <div class="tabbar" id="tabbar">
+    <button class="tab active" data-tab="dashboard"><span class="tab-icon">🏠</span>Главная</button>
+    <button class="tab" data-tab="devices"><span class="tab-icon">💡</span>Устройства</button>
+    <button class="tab" data-tab="climate"><span class="tab-icon">🌡️</span>Климат</button>
+    <button class="tab" data-tab="gates"><span class="tab-icon">🚪</span>Ворота</button>
+    <button class="tab" data-tab="scenarios"><span class="tab-icon">⏱️</span>Сценарии</button>
+    <button class="tab" data-tab="events"><span class="tab-icon">🔒</span>События</button>
+  </div>
+</div>
+<script>
+// ═══════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════
+const API = '';
+let tab = 'dashboard';
+let mode = 'demo';
+let online = true;
+let cache = { devices:[], rooms:[], climate:null, energy:null, events:null, scenarios:null, gates:[], gateLog:[], dashboard:null, status:null };
+let refreshTimer = null;
+
+// ═══════════════════════════════════════════════
+// API
+// ═══════════════════════════════════════════════
+async function get(url) {
+  try { const r = await fetch(API+url); if(!r.ok) throw new Error(r.status); return await r.json(); }
+  catch(e) { console.warn(url,e.message); return null; }
+}
+async function post(url,body) {
+  try { const r = await fetch(API+url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); if(!r.ok) throw new Error(r.status); return await r.json(); }
+  catch(e) { console.warn('POST',url,e.message); return null; }
+}
+
+async function loadAll() {
+  const [st,db,cl,en,ev,sc,ro,dv,ga,gl] = await Promise.all([
+    get('/api/status'), get('/api/dashboard'), get('/api/climate'), get('/api/energy'),
+    get('/api/events?limit=20'), get('/api/scenarios'), get('/api/rooms'), get('/api/devices'),
+    get('/api/gates'), get('/api/gates/access-log?limit=20')
+  ]);
+  if (st?.ok) cache.status = st;
+  if (db?.ok) cache.dashboard = db;
+  if (cl?.ok) cache.climate = cl;
+  if (en?.ok) cache.energy = en;
+  if (ev?.ok) cache.events = ev;
+  if (sc?.ok) cache.scenarios = sc;
+  if (ro?.ok) cache.rooms = ro.rooms || [];
+  if (dv?.ok) cache.devices = dv.devices || [];
+  if (ga?.ok) cache.gates = ga.gates || [];
+  if (gl?.ok) cache.gateLog = gl.log || [];
+  online = !!st;
+  document.getElementById('offlineBanner').style.display = online ? 'none' : '';
+  document.getElementById('hdot').className = 'dot ' + (online ? 'online' : '');
+}
+
+// ═══════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => setTab(b.dataset.tab));
+function setTab(t) { tab = t; document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active',b.dataset.tab===t)); render(); }
+
+async function toggleMode() {
+  const m = mode==='demo'?'live':'demo';
+  const r = await post('/api/mode',{mode:m});
+  if (r?.ok) { mode = m; updateModeBtn(); toast(r.message); await loadAll(); render(); }
+}
+function updateModeBtn() {
+  const b = document.getElementById('modeBtn');
+  b.textContent = mode==='demo' ? '🧪 DEMO' : '🟢 LIVE';
+  b.className = 'mode-pill ' + (mode==='demo'?'mode-demo':'mode-live');
+}
+
+// ═══════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════
+let _dataLoading = false;
+async function render() {
+  const m = document.getElementById('main');
+  if (!online && !_dataLoading) { m.innerHTML = skelScreen(); _dataLoading = true; await loadAll(); _dataLoading = false; }
+  
+  m.innerHTML = skelScreen();
+  if (!online && !cache.status) { m.innerHTML = '<div class="state-error"><div class="msg">⚠️ Нет связи с сервером</div><button class="retry-btn" onclick="refresh()">Повторить</button></div>'; return; }
+
+  if (!cache.status) { await loadAll(); if (!online) { m.innerHTML = '<div class="state-error"><div class="msg">⚠️ Сервер не отвечает</div><button class="retry-btn" onclick="refresh()">Повторить</button></div>'; return; } }
+  
+  switch(tab) {
+    case 'dashboard': renderDashboard(); break;
+    case 'devices': renderDevices(); break;
+    case 'climate': renderClimate(); break;
+    case 'gates': renderGates(); break;
+    case 'scenarios': renderScenarios(); break;
+    case 'events': renderEvents(); break;
+  }
+}
+
+function skelScreen() {
+  return '<div class="skel-card skeleton"></div><div class="skel-stat skeleton"></div><div class="skel-card skeleton"></div><div class="skel-row skeleton"></div><div class="skel-row skeleton"></div><div class="skel-row skeleton"></div>';
+}
+
+// ── DASHBOARD ──────────────────────────────────
+function renderDashboard() {
+  const m = document.getElementById('main');
+  const d = cache.dashboard;
+  if (!d) { m.innerHTML = '<div class="state-error"><div class="msg">Нет данных</div><button class="retry-btn" onclick="refresh()">Повторить</button></div>'; return; }
+
+  let h = '';
+
+  // Quick stats
+  h += '<div class="dash-stats">';
+  h += statTile('🌡️', (d.rooms?.[0]?.temperature||'—')+'°C', 'Температура');
+  h += statTile('💡', (d.rooms?.filter(r=>r.lightOn).length||0)+' вкл.', 'Освещение');
+  h += statTile('⚡', (d.todayEnergy||0)+' кВт·ч', 'Энергия');
+  h += statTile('🔒', d.security?.armed?'На охране':'⚠️ Тревога', 'Охрана', d.security?.armed?'green':'red');
+  h += '</div>';
+
+  // Climate card
+  h += '<div class="card"><div class="card-header"><span class="card-title">🌡️ Климат</span></div>';
+  for (const r of (d.rooms||[]).slice(0,3)) {
+    h += `<div class="room-preview" onclick="setTab('climate')">
+      <div class="room-pv-icon">${r.icon||'🏠'}</div>
+      <div class="room-pv-info"><div class="room-pv-name">${esc(r.name)}</div><div class="room-pv-meta">${r.lightOn?'💡 Вкл':'🌙 Выкл'} · ${r.status||'—'}</div></div>
+      <div class="room-pv-temp">${r.temperature||'—'}°C</div>
+    </div>`;
+  }
+  h += '</div>';
+
+  // Lights card
+  h += '<div class="card"><div class="card-header"><span class="card-title">💡 Освещение</span><span style="font-family:var(--mono);font-size:13px;color:var(--accent-blue)">'+(d.rooms?.filter(r=>r.lightOn).length||0)+' вкл.</span></div>';
+  h += `<button style="width:100%;padding:14px;border-radius:${getComputedStyle(document.body).getPropertyValue('--radius-btn')};background:var(--accent-green);color:#000;font-size:15px;font-weight:700;border:none" onclick="allLightsOff()">ВЫКЛЮЧИТЬ ВЕСЬ СВЕТ</button>`;
+  h += '</div>';
+
+  // Security
+  h += '<div class="card"><div class="card-header"><span class="card-title">🔒 Охрана</span></div>';
+  h += `<div style="display:flex;align-items:center;gap:10px"><div class="dot ${d.security?.armed?'online':''}" style="background:${d.security?.armed?'var(--accent-green)':'var(--accent-red)'}"></div><span style="font-size:15px;font-weight:600">${d.security?.armed?'● НА СВЯЗИ':'⚠️ ТРЕВОГА'}</span></div>`;
+  if (!d.security?.armed && d.security?.openPoints?.length) {
+    h += `<div style="margin-top:8px;font-size:12px;color:var(--accent-red)">Открыто: ${d.security.openPoints.join(', ')}</div>`;
+  }
+  if (d.nextEvent) h += `<div style="margin-top:8px;font-size:12px;color:var(--text-secondary)">Следующее: ${d.nextEvent}</div>`;
+  h += '</div>';
+
+  m.innerHTML = h;
+}
+
+// ── DEVICES ────────────────────────────────────
+let devicesFilter = 'all';
+function renderDevices(filter) {
+  if (filter) devicesFilter = filter;
+  const m = document.getElementById('main');
+  let h = '<div class="filter-tabs">';
+  ['all','online','offline'].forEach(f => {
+    h += `<button class="filter-tab${devicesFilter===f?' active':''}" onclick="devicesFilter='${f}';renderDevices()">${f==='all'?'Все':f==='online'?'🟢 Вкл':'🔴 Выкл'}</button>`;
+  });
+  h += '</div>';
+
+  // Group by room
+  const rooms = cache.rooms;
+  const devices = cache.devices;
+  
+  const deviceRooms = new Set(devices.map(d => d.room_id));
+  const filteredRooms = rooms.filter(r => deviceRooms.has(r.id));
+
+  if (!filteredRooms.length) { h += '<div class="state-empty"><div class="icon">🔌</div><div class="text">Нет устройств</div><div class="sub">Подключите устройства через Zigbee</div></div>'; m.innerHTML = h; return; }
+
+  for (const room of filteredRooms) {
+    let roomDevices = devices.filter(d => String(d.room_id) === String(room.id));
+    if (devicesFilter === 'online') roomDevices = roomDevices.filter(d => d.status === 'online');
+    if (devicesFilter === 'offline') roomDevices = roomDevices.filter(d => d.status !== 'online');
+    if (!roomDevices.length) continue;
+
+    h += `<div class="room-group"><div class="room-group-header"><span class="room-group-name">${room.icon||'🏠'} ${esc(room.name)}</span><span class="room-group-count">${roomDevices.length} устр.</span></div>`;
+
+    for (const d of roomDevices) {
+      const isLight = d.type === 'light' || d.type === 'plug';
+      const stateT = d.latest_telemetry?.find(t => t.property === 'state');
+      const isOn = stateT && stateT.value > 0;
+      const temp = d.latest_telemetry?.find(t => t.property === 'temperature');
+      const hum = d.latest_telemetry?.find(t => t.property === 'humidity');
+      const power = d.latest_telemetry?.find(t => t.property === 'power');
+      const co2 = d.latest_telemetry?.find(t => t.property === 'co2');
+      const occ = d.latest_telemetry?.find(t => t.property === 'occupancy');
+      const leak = d.latest_telemetry?.find(t => t.property === 'water_leak');
+
+      let meta = '', icon = '📡';
+      if (d.type === 'light') { icon = isOn ? '💡' : '🌑'; meta = isOn ? 'ВКЛ' : 'ВЫКЛ'; }
+      else if (d.type === 'plug') { icon = '🔌'; meta = power ? power.value + power.unit : '—'; }
+      else if (d.type === 'sensor') {
+        if (temp) meta += `🌡 ${temp.value}${temp.unit} `;
+        if (hum) meta += `💧 ${hum.value}% `;
+        if (co2) { meta += `🫁 ${co2.value}ppm `; icon = '🫁'; }
+        else if (occ !== undefined) { meta += occ > 0 ? '👤 Движение' : '○ Пусто'; icon = '👁️'; }
+        else if (leak !== undefined) { meta += leak > 0 ? '⚠️ Протечка!' : '✅ Сухо'; icon = '💧'; }
+        else if (temp) icon = '🌡️';
+      }
+
+      h += `<div class="device-tile">
+        <div class="dt-icon">${icon}</div>
+        <div class="dt-info"><div class="dt-name">${esc(d.friendly_name)}</div><div class="dt-meta">${meta||d.type}</div></div>
+        ${isLight ? `<button class="toggle ${isOn?'on':'off'}" onclick="toggleDevice('${d.ieee_addr}',${isOn})"></button>` : `<span class="dt-value">${temp?temp.value+temp.unit:power?power.value+'W':co2?co2.value+'ppm':'—'}</span>`}
+      </div>`;
+    }
+    h += '</div>';
+  }
+  m.innerHTML = h;
+}
+
+// ── CLIMATE ────────────────────────────────────
+function renderClimate() {
+  const m = document.getElementById('main');
+  const sp = cache.climate?.setpoints || [];
+
+  if (!sp.length) { m.innerHTML = '<div class="state-empty"><div class="icon">🌡️</div><div class="text">Нет климат-устройств</div><div class="sub">Добавьте термостаты через Zigbee</div></div>'; return; }
+
+  let h = '';
+  for (const s of sp) {
+    const dev = cache.devices.find(d => d.ieee_addr === s.device_ieee);
+    const name = dev?.friendly_name || s.device_ieee;
+    const temp = s.current_temp || '—';
+    const target = s.target_temp || 20;
+
+    h += `<div class="card climate-room">
+      <div class="climate-header">
+        <span style="font-size:16px;font-weight:600">${dev?.room_name?'🏠 '+esc(dev.room_name)+' · ':''}${esc(name)}</span>
+        <span class="status-badge ${s.action==='heat'?'heat':s.action==='cool'?'cool':'ok'}">${s.action==='heat'?'🔥 Нагрев':s.action==='cool'?'❄️ Охлаждение':'✅ В норме'}</span>
+      </div>
+      <div class="climate-current">${temp}<span class="unit">°C</span></div>
+      <div class="slider-group">
+        <div class="slider-label"><span>Заданная</span><span>${target}°C</span></div>
+        <input type="range" class="slider" min="${s.min_temp||16}" max="${s.max_temp||30}" step="0.5" value="${target}" oninput="this.nextElementSibling.textContent=this.value+'°C'" onchange="setClimate('${s.device_ieee}',parseFloat(this.value))">
+        <div class="climate-value">${target}°C</div>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="climate-mode-btn${s.mode==='heat'?' active':''}" onclick="setClimateMode('${s.device_ieee}','heat')">🔥 Обогрев</button>
+        <button class="climate-mode-btn${s.mode==='cool'?' active':''}" onclick="setClimateMode('${s.device_ieee}','cool')">❄️ Охлаждение</button>
+        <button class="climate-mode-btn${s.mode==='auto'?' active':''}" onclick="setClimateMode('${s.device_ieee}','auto')">🔄 Авто</button>
+      </div>
+    </div>`;
+  }
+  m.innerHTML = h;
+}
+
+// ── GATES ──────────────────────────────────────
+function renderGates() {
+  const m = document.getElementById('main');
+  const gates = cache.gates;
+  const log = cache.gateLog;
+
+  let h = '';
+  for (const g of gates) {
+    const isClosed = g.status === 'closed' || g.status === 'offline';
+    h += `<div class="card" style="text-align:center">
+      <div style="font-size:40px;margin-bottom:8px">${g.friendly_name?.includes('Калит')?'🚶':'🚪'}</div>
+      <div style="font-size:20px;font-weight:700;margin-bottom:4px">${esc(g.friendly_name)}</div>
+      <div class="gate-status">${isClosed ? '🔒 ЗАКРЫТО' : '🔓 ОТКРЫТО'} · ${g.status==='offline'?'⚠️ Нет связи':''}</div>
+      <button class="gate-btn ${isClosed?'gate-open':'gate-close'}" onclick="toggleGate('${g.ieee_addr}','${isClosed}','${esc(g.friendly_name)}')">${isClosed?'🔓 Открыть':'🔒 Закрыть'}</button>
+    </div>`;
+  }
+
+  // Access log
+  if (log.length) {
+    h += '<div class="card"><div class="card-header"><span class="card-title">📋 Журнал доступа</span></div>';
+    let lastDay = '';
+    for (const l of log.slice(0,15)) {
+      const d = new Date(l.ts);
+      const day = d.toLocaleDateString('ru-RU');
+      if (day !== lastDay) { h += `<div class="day-divider">${day}</div>`; lastDay = day; }
+      h += `<div class="log-item"><span class="log-time">${d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}</span><span class="log-action">${l.action==='open'?'🔓 Открыто':'🔒 Закрыто'} · ${l.source||'—'}</span></div>`;
+    }
+    h += '</div>';
+  }
+
+  if (!gates.length && !log.length) {
+    h += '<div class="state-empty"><div class="icon">🚪</div><div class="text">Нет ворот</div><div class="sub">Добавьте устройства типа «ворота»</div></div>';
+  }
+
+  m.innerHTML = h;
+}
+
+// ── SCENARIOS ──────────────────────────────────
+function renderScenarios() {
+  const m = document.getElementById('main');
+  const scs = cache.scenarios?.scenarios || [];
+
+  if (!scs.length) { m.innerHTML = '<div class="state-empty"><div class="icon">⏱️</div><div class="text">Нет сценариев</div><div class="sub">Создайте сценарии автоматизации</div></div>'; return; }
+
+  let h = '';
+  for (const s of scs) {
+    h += `<div class="scenario-card ${s.active?'sc-active':'sc-inactive'}">
+      <span style="font-size:24px">${s.active?'🟢':'🔴'}</span>
+      <div class="sc-info"><div class="sc-name">${esc(s.name)}</div><div class="sc-desc">${esc(s.description||'')}</div></div>
+      <button class="toggle ${s.active?'on':'off'}" onclick="toggleScenario(${s.id},${s.active})"></button>
+    </div>`;
+  }
+  m.innerHTML = h;
+}
+
+// ── EVENTS ─────────────────────────────────────
+function renderEvents() {
+  const m = document.getElementById('main');
+  const ev = cache.events;
+  if (!ev) { m.innerHTML = '<div class="state-empty"><div class="icon">🔒</div><div class="text">Всё спокойно</div></div>'; return; }
+
+  let h = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div class="dot online"></div><span style="font-size:15px;font-weight:600">🟢 Дом под охраной</span></div>`;
+
+  h += '<div class="card"><div class="card-header"><span class="card-title">📋 ПОСЛЕДНИЕ 24 ЧАСА</span></div>';
+
+  // Merge commands, state_changes, errors into timeline
+  let items = [];
+  for (const c of (ev.commands||[])) items.push({ts:c.sent_at, text:`${c.command}: ${c.device_ieee}`, dot:'dot-cmd', src:c.source});
+  for (const s of (ev.state_changes||[])) items.push({ts:s.ts, text:`${s.from_state} → ${s.to_state}: ${s.device_ieee}`, dot:'dot-state', src:s.source});
+  for (const e of (ev.errors||[])) items.push({ts:e.ts, text:`Ошибка: ${e.message}`, dot:'dot-err'});
+  items.sort((a,b) => new Date(b.ts) - new Date(a.ts));
+  items = items.slice(0,30);
+
+  let lastDay = '';
+  for (const item of items) {
+    const d = new Date(item.ts);
+    const day = d.toLocaleDateString('ru-RU');
+    if (day !== lastDay) { h += `<div class="day-divider">${day}</div>`; lastDay = day; }
+    h += `<div class="event-item">
+      <span class="event-dot ${item.dot}"></span>
+      <div class="event-body"><div>${esc(item.text)}</div><div class="event-time">${d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})} · ${item.src||'—'}</div></div>
+    </div>`;
+  }
+
+  if (!items.length) h += '<div class="state-empty"><div class="icon">✅</div><div class="text">Всё спокойно</div></div>';
+  h += '</div>';
+  m.innerHTML = h;
+}
+
+// ── ACTIONS ────────────────────────────────────
+async function toggleDevice(ieee, isOn) {
+  const action = isOn ? 'off' : 'on';
+  // Optimistic UI — flip immediately
+  const tile = event.target.closest('.device-tile');
+  if (tile) {
+    const btn = tile.querySelector('.toggle');
+    if (btn) { btn.className = `toggle ${isOn?'off':'on'}`; }
+    const icon = tile.querySelector('.dt-icon');
+    if (icon) icon.textContent = isOn ? '🌑' : '💡';
+    const meta = tile.querySelector('.dt-meta');
+    if (meta) meta.textContent = isOn ? 'ВЫКЛ' : 'ВКЛ';
+  }
+  const r = await post(`/api/devices/${ieee}/${action}`);
+  if (r?.ok) { toast(isOn?'Выключено':'Включено'); await loadAll(); }
+  else { toast('Ошибка. Попробуйте ещё раз.'); refresh(); }
+}
+
+async function allLightsOff() {
+  const lights = cache.devices.filter(d => d.type==='light' && d.latest_telemetry?.find(t=>t.property==='state'&&t.value>0));
+  for (const l of lights) await post(`/api/devices/${l.ieee_addr}/off`);
+  toast(`Выключено: ${lights.length} светильников`);
+  await loadAll(); render();
+}
+
+async function setClimate(ieee, target) {
+  await post(`/api/climate/${ieee}`,{target_temp:target});
+  toast(`Уставка: ${target}°C`);
+}
+async function setClimateMode(ieee, mode) {
+  await post(`/api/climate/${ieee}`,{mode});
+  toast(`Режим: ${mode}`);
+  await loadAll(); render();
+}
+
+async function toggleGate(ieee, isClosed, name) {
+  if (!isClosed && !confirm('Точно закрыть ворота?')) return;
+  const action = isClosed ? 'open' : 'close';
+  const r = await post(`/api/gates/${ieee}/${action}`,{reason:'manual'});
+  if (r?.ok) { toast(isClosed?'Ворота открываются':'Ворота закрываются'); await loadAll(); render(); }
+  else toast('Ошибка управления воротами');
+}
+
+async function toggleScenario(id, active) {
+  const r = await post(`/api/scenarios/${id}/toggle`);
+  if (r?.ok) { toast(active?'Сценарий выключен':'Сценарий включён'); await loadAll(); render(); }
+}
+
+// ── HELPERS ────────────────────────────────────
+function statTile(icon, value, label, colorClass) {
+  return `<div class="stat-tile" onclick="setTab('${label==='Освещение'?'devices':label==='Энергия'?'dashboard':label==='Охрана'?'events':'climate'}')"><div style="font-size:24px;margin-bottom:4px">${icon}</div><div class="stat-value${colorClass?' '+colorClass:''}">${value}</div><div class="stat-label">${label}</div></div>`;
+}
+function esc(s) { return s?.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')||''; }
+function toast(msg) {
+  const el = document.createElement('div'); el.className='toast'; el.textContent=msg;
+  document.body.appendChild(el); setTimeout(()=>el.remove(),2500);
+}
+async function refresh() { await loadAll(); render(); }
+
+// ═══════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════
+async function init() {
+  // Load mode first
+  const m = await get('/api/mode');
+  if (m?.ok) { mode = m.mode; updateModeBtn(); }
+  
+  await loadAll();
+  if (!online) { document.getElementById('main').innerHTML = '<div class="state-error"><div class="msg">⚠️ Сервер не отвечает</div><button class="retry-btn" onclick="refresh()">Повторить</button></div>'; }
+  else render();
+
+  // Auto-refresh every 5s (passive — only if no user interaction)
+  refreshTimer = setInterval(async () => { await loadAll(); if (tab==='dashboard'||tab==='devices') render(); }, 5000);
+}
+init().catch(e => { document.getElementById('main').innerHTML = `<div class="state-error"><div class="msg">⚠️ Ошибка: ${esc(e.message)}</div><button class="retry-btn" onclick="refresh()">Повторить</button></div>`; });
+</script></body></html>

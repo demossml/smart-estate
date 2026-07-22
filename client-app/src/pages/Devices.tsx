@@ -17,6 +17,12 @@ interface PendingDevice {
   friendly_name: string;
   model: string;
   vendor: string;
+  // НАХОДКА (Модуль 8): поле раньше называлось type, но реальный бэкенд
+  // (после фикса Модуля 7 — /api/devices/pending читает discovery_events)
+  // возвращает suggested_type, который может быть null, если тип не
+  // удалось однозначно определить по exposes. Раньше это несовпадение имён
+  // означало, что d.type был всегда undefined → каждое импортированное
+  // устройство молча получало 'sensor' независимо от реального типа.
   suggested_type: string | null;
   exposes?: any[] | null;
 }
@@ -41,6 +47,9 @@ export default function Devices() {
   const [modal, setModal] = useState<ModalKind>(null);
   const [rooms, setRooms] = useState<{ id: number; name: string; icon: string }[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
+  // НАХОДКА (Модуль 8): addDevice/saveEdit/removeDevice/importSelected раньше
+  // имели catch {} — полностью молчаливый провал без единого следа даже в
+  // консоли. Теперь ошибки логируются и показываются пользователю.
   const [formError, setFormError] = useState('');
 
   const [formName, setFormName] = useState('');
@@ -56,8 +65,6 @@ export default function Devices() {
   const [discoverMsg, setDiscoverMsg] = useState('');
   const [selectedPending, setSelectedPending] = useState<Set<string>>(new Set());
   const pollRef = useRef<number | null>(null);
-
-  const editNameRef = useRef<HTMLInputElement>(null);
 
   // ── Discovery status polling (каждые 5 сек) ──
   const [discoverySecondsLeft, setDiscoverySecondsLeft] = useState<number | null>(null);
@@ -93,6 +100,7 @@ export default function Devices() {
   useEffect(() => {
     loadDevices();
     api.getRooms().then(r => setRooms(r.rooms)).catch(() => {});
+    // Auto-show pending devices from Zigbee2MQTT on mount
     api.getPendingDevices()
       .then(res => {
         if (res.pending && res.pending.length > 0) {
@@ -107,6 +115,7 @@ export default function Devices() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Reload devices when mode changes (demo ↔ live)
   const { mode } = useMode();
   useEffect(() => {
     loadDevices();
@@ -136,7 +145,7 @@ export default function Devices() {
   };
 
   const saveEdit = async () => {
-    if (!editDevice || !editDevice.name.trim()) return;
+    if (!editDevice) return;
     setBusy('edit');
     setFormError('');
     try {
@@ -166,7 +175,16 @@ export default function Devices() {
     } finally { setBusy(null); }
   };
 
-  const DISCOVER_WINDOW_MS = 25_000;
+  // НАХОДКА (Модуль 8, СЕРЬЁЗНАЯ): раньше здесь ожидался res.discovered/
+  // res.reason — но реальный POST /api/discovery/start возвращает только
+  // {ok, permit_join, time} (проверено построчно в api.ts). Обращение к
+  // res.discovered.length на undefined кидало TypeError, попадавший в catch
+  // и ВСЕГДА показывавший "Ошибка сканирования" — независимо от того,
+  // сработал ли permit_join на самом деле. Устройства в Zigbee2MQTT
+  // появляются асинхронно (по мере физического нажатия кнопки на датчике),
+  // поэтому правильный флоу — включить permit_join, затем ПОЛЛИНГОМ
+  // опрашивать /api/devices/pending, пока окно сопряжения открыто.
+  const DISCOVER_WINDOW_MS = 25_000; // окно поиска в UI (backend permit_join держит дольше — 254с)
   const POLL_INTERVAL_MS = 2_000;
 
   const startDiscover = async () => {
@@ -176,7 +194,7 @@ export default function Devices() {
     if (pollRef.current) window.clearInterval(pollRef.current);
 
     try {
-      await api.discoverDevices();
+      await api.discoverDevices(); // только включает permit_join, ничего не возвращает по сути
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Не удалось включить сопряжение';
       setDiscoverMsg(msg);
@@ -197,7 +215,7 @@ export default function Devices() {
       }
     };
 
-    await poll();
+    await poll(); // первая проверка сразу
     pollRef.current = window.setInterval(poll, POLL_INTERVAL_MS);
     window.setTimeout(() => {
       if (pollRef.current) { window.clearInterval(pollRef.current); pollRef.current = null; }
@@ -212,6 +230,11 @@ export default function Devices() {
     for (const d of pendingDevices) {
       if (!selectedPending.has(d.ieee_address)) continue;
       try {
+        // НАХОДКА: используем suggested_type, посчитанный бэкендом через
+        // реальный анализ exposes (mapZ2MTypeToInternal в mqtt-ws.ts) —
+        // не локальный грубый мэппер (см. ниже, почему он удалён). Если
+        // suggested_type пуст — не подставляем 'sensor' по умолчанию молча,
+        // а требуем ручного выбора (тот же принцип, что в Модуле 3).
         if (!d.suggested_type) {
           logClient('warn', `Тип для ${d.friendly_name} не определён автоматически — пропущено, отредактируйте вручную после импорта`);
         }
@@ -225,13 +248,7 @@ export default function Devices() {
     if (count > 0) await loadDevices();
   };
 
-  const openEdit = (d: Device) => {
-    setEditDevice({ ...d });
-    setModal('edit');
-    setFormError('');
-    // Фокус на поле ввода названия через микротаск
-    setTimeout(() => editNameRef.current?.focus(), 100);
-  };
+  const openEdit = (d: Device) => { setEditDevice({ ...d }); setModal('edit'); setFormError(''); };
   const resetAddForm = () => { setFormName(''); setFormType('light'); setFormRoom(1); setFormAddr(''); setFormError(''); };
 
   const handleCreateRoomFromPicker = async (name: string, iconKey: string) => {
@@ -253,19 +270,12 @@ export default function Devices() {
     (acc[d.room || '—'] ||= []).push(d); return acc;
   }, {} as Record<string, Device[]>);
 
-  // ── Mobile keyboard workaround ──
-  const scrollSaveIntoView = () => {
-    setTimeout(() => {
-      const btn = document.querySelector('.se-save-btn');
-      btn?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 300);
-  };
-
   return (
     <div className="p-4 pb-24 animate-fade-in">
       <header className="mb-4" style={{ minHeight: 64 }}>
         <h1 className="text-xl font-bold text-text">Устройства</h1>
         {offline && <p className="text-xs text-yellow mt-1">офлайн</p>}
+        {/* Discovery status bar */}
         {discoverySecondsLeft !== null && discoverySecondsLeft > 0 ? (
           <div className="mt-2 flex items-center gap-2 bg-green/5 border border-green/20 rounded-card px-3 py-2">
             <span className="w-2 h-2 rounded-full bg-green animate-pulse" />
@@ -307,6 +317,7 @@ export default function Devices() {
                       <div className="text-sm font-medium text-text truncate">{d.name}</div>
                       <div className="flex items-center gap-2 mt-0.5">
                         <StatusBadge status={d.online ? 'online' : 'offline'} />
+                        {/* last_seen: красный если > 5 минут */}
                         {d.last_seen && (
                           <span className={`inline-flex items-center gap-1 text-[11px] ${
                             isLastSeenOld(d.last_seen) ? 'text-red-400' : 'text-text-dim'
@@ -315,6 +326,7 @@ export default function Devices() {
                             {formatLastSeen(d.last_seen)}
                           </span>
                         )}
+                        {/* battery_level < 20%: предупреждение */}
                         {d.battery_level !== null && d.battery_level !== undefined && d.battery_level <= 20 && (
                           <span className="inline-flex items-center gap-1 text-[11px] text-yellow-400">
                             <Battery size={11} strokeWidth={1.6} />
@@ -358,15 +370,15 @@ export default function Devices() {
           <label className="block text-xs text-text-dim mb-1">Название</label>
           <input type="text" value={formName} onChange={e => setFormName(e.target.value)}
             placeholder="Например: Датчик движения" autoFocus
-            className="w-full bg-bg border border-surface-hover rounded-card px-3 py-3 text-text text-sm mb-3 outline-none focus:border-blue" />
+            className="w-full bg-bg border border-surface-hover rounded-card px-3 py-2.5 text-text text-sm mb-3 outline-none focus:border-blue" />
 
           <label className="block text-xs text-text-dim mb-1">Тип</label>
           <div className="grid grid-cols-3 gap-2 mb-3">
             {Object.entries(DEVICE_TYPE_ICONS).map(([value, Icon]) => (
               <button key={value} onClick={() => setFormType(value)}
-                className={`py-2.5 px-2 rounded-btn text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 tap-highlight
+                className={`py-2 px-2 rounded-btn text-xs font-medium transition-colors flex items-center justify-center gap-1.5
                   ${formType === value ? 'bg-blue text-white' : 'bg-bg text-text-dim border border-surface-hover hover:border-blue'}`}>
-                <Icon size={15} /> {DEVICE_TYPE_LABELS[value] || value}
+                <Icon size={14} /> {DEVICE_TYPE_LABELS[value] || value}
               </button>
             ))}
           </div>
@@ -382,7 +394,7 @@ export default function Devices() {
           <label className="block text-xs text-text-dim mb-1">IEEE-адрес (авто)</label>
           <input type="text" value={formAddr} onChange={e => setFormAddr(e.target.value)}
             placeholder="manual:…"
-            className="w-full bg-bg border border-surface-hover rounded-card px-3 py-3 text-text text-sm mb-4 outline-none focus:border-blue font-mono" />
+            className="w-full bg-bg border border-surface-hover rounded-card px-3 py-2.5 text-text text-sm mb-4 outline-none focus:border-blue font-mono" />
 
           {formError && (
             <p className="text-xs text-red-400 mb-3 flex items-center gap-1.5">
@@ -391,7 +403,7 @@ export default function Devices() {
           )}
 
           <button onClick={addDevice} disabled={!formName.trim() || busy === 'add'}
-            className={`se-save-btn w-full min-h-[56px] rounded-btn font-semibold text-base flex items-center justify-center gap-2 transition-colors
+            className={`w-full min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 transition-colors
               ${formName.trim() ? 'bg-blue text-white tap-active' : 'bg-surface-hover text-text-dim cursor-not-allowed'}`}>
             {busy === 'add' ? 'Добавление…' : 'Добавить устройство'}
           </button>
@@ -400,25 +412,24 @@ export default function Devices() {
 
       {/* ═══ EDIT MODAL ═══ */}
       {modal === 'edit' && editDevice && (
-        <Modal onClose={() => { setEditDevice(null); setModal(null); }} title="Редактировать устройство">
-          <label className="block text-xs text-text-dim mb-1.5 font-semibold">Название</label>
-          <input ref={editNameRef} type="text" value={editDevice.name} autoFocus
-            onChange={e => { setEditDevice({ ...editDevice, name: e.target.value }); scrollSaveIntoView(); }}
-            onFocus={scrollSaveIntoView}
-            className="w-full bg-bg border-2 border-blue/40 rounded-card px-4 py-3.5 text-text text-base mb-4 outline-none focus:border-blue" />
+        <Modal onClose={() => { setEditDevice(null); setModal(null); }} title="Редактировать">
+          <label className="block text-xs text-text-dim mb-1">Название</label>
+          <input type="text" value={editDevice.name} autoFocus
+            onChange={e => setEditDevice({ ...editDevice, name: e.target.value })}
+            className="w-full bg-bg border border-surface-hover rounded-card px-3 py-2.5 text-text text-sm mb-3 outline-none focus:border-blue" />
 
-          <label className="block text-xs text-text-dim mb-1.5 font-semibold">Тип</label>
-          <div className="grid grid-cols-3 gap-2 mb-4">
+          <label className="block text-xs text-text-dim mb-1">Тип</label>
+          <div className="grid grid-cols-3 gap-2 mb-3">
             {Object.entries(DEVICE_TYPE_ICONS).map(([value, Icon]) => (
               <button key={value} onClick={() => setEditDevice({ ...editDevice, type: value })}
-                className={`py-3 px-2 rounded-btn text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 tap-highlight min-h-[44px]
+                className={`py-2 px-2 rounded-btn text-xs font-medium transition-colors flex items-center justify-center gap-1.5
                   ${editDevice.type === value ? 'bg-blue text-white' : 'bg-bg text-text-dim border border-surface-hover hover:border-blue'}`}>
-                <Icon size={16} /> {DEVICE_TYPE_LABELS[value] || value}
+                <Icon size={14} /> {DEVICE_TYPE_LABELS[value] || value}
               </button>
             ))}
           </div>
 
-          <label className="block text-xs text-text-dim mb-1.5 font-semibold">Комната</label>
+          <label className="block text-xs text-text-dim mb-1">Комната</label>
           <RoomPicker
             rooms={rooms}
             value={rooms.find(r => r.name === editDevice.room)?.id || ''}
@@ -428,32 +439,21 @@ export default function Devices() {
             onCreateRoom={() => setShowAddRoom(true)}
           />
 
-          <div className="text-xs text-text-dim mt-3 mb-4 px-1 flex items-center gap-2">
-            <code className="bg-surface-hover px-2 py-1 rounded-md text-text font-mono text-[11px]">{editDevice.id}</code>
+          <div className="text-xs text-text-dim mb-4 px-1">
+            IEEE: <code className="text-text font-mono">{editDevice.id}</code>
           </div>
 
           {formError && (
-            <p className="text-xs text-red-400 mb-3 flex items-center gap-1.5 bg-red/5 border border-red/20 rounded-card px-3 py-2">
-              <AlertTriangle size={14} /> {formError}
+            <p className="text-xs text-red-400 mb-3 flex items-center gap-1.5">
+              <AlertTriangle size={13} /> {formError}
             </p>
           )}
 
-          <div className="flex gap-3 mt-2">
-            <button onClick={() => { setEditDevice(null); setModal(null); }}
-              className="flex-1 min-h-[56px] rounded-btn font-semibold text-base bg-surface-hover text-text-dim tap-active border border-surface-hover">
-              Отмена
-            </button>
-            <button
-              id="edit-save-btn"
-              onClick={saveEdit}
-              disabled={!editDevice.name.trim() || busy === 'edit'}
-              className={`se-save-btn flex-1 min-h-[56px] rounded-btn font-semibold text-base flex items-center justify-center gap-2 transition-colors tap-highlight
-                ${editDevice.name.trim() && busy !== 'edit' ? 'bg-blue text-white tap-active' : 'bg-surface-hover text-text-dim cursor-not-allowed'}`}>
-              {busy === 'edit' ? (
-                <><Loader2 size={18} className="animate-spin" /> Сохранение…</>
-              ) : 'Сохранить'}
-            </button>
-          </div>
+          <button onClick={saveEdit} disabled={!editDevice.name.trim() || busy === 'edit'}
+            className={`w-full min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 transition-colors
+              ${editDevice.name.trim() ? 'bg-blue text-white tap-active' : 'bg-surface-hover text-text-dim cursor-not-allowed'}`}>
+            {busy === 'edit' ? 'Сохранение…' : 'Сохранить'}
+          </button>
         </Modal>
       )}
 
@@ -482,7 +482,7 @@ export default function Devices() {
                             ${selected ? 'border-blue bg-blue/5' : 'border-surface-hover hover:border-blue/50'}`}>
                           <input type="checkbox" checked={selected}
                             onChange={() => { const next = new Set(selectedPending); selected ? next.delete(d.ieee_address) : next.add(d.ieee_address); setSelectedPending(next); }}
-                            className="accent-blue w-5 h-5" />
+                            className="accent-blue w-4 h-4" />
                           <div className="flex-1 min-w-0">
                             <div className="text-sm font-medium text-text truncate">{d.friendly_name}</div>
                             <div className="text-xs text-text-dim">{d.vendor} · {d.model}</div>
@@ -496,22 +496,22 @@ export default function Devices() {
                   </div>
                   <div className="flex gap-2">
                     <button onClick={() => setSelectedPending(new Set(pendingDevices.map(d => d.ieee_address)))}
-                      className="flex-1 px-3 py-3 rounded-btn text-sm border border-surface-hover text-text-dim font-semibold tap-active">Выбрать все</button>
+                      className="flex-1 px-3 py-2 rounded-btn text-xs border border-surface-hover text-text-dim">Выбрать все</button>
                     <button onClick={importSelected} disabled={selectedPending.size === 0 || busy === 'import'}
-                      className={`flex-1 min-h-[52px] rounded-btn font-semibold flex items-center justify-center gap-2 transition-colors
+                      className={`flex-1 min-h-[48px] rounded-btn font-semibold flex items-center justify-center gap-2 transition-colors
                         ${selectedPending.size > 0 ? 'bg-green text-white tap-active' : 'bg-surface-hover text-text-dim cursor-not-allowed'}`}>
                       {busy === 'import' ? 'Импорт…' : `Добавить (${selectedPending.size})`}
                     </button>
                   </div>
                   <button onClick={startDiscover}
-                    className="w-full mt-3 py-3 rounded-btn text-sm text-text-dim border border-surface-hover hover:border-green transition-colors flex items-center justify-center gap-1.5 tap-active min-h-[48px]">
-                    <RefreshCw size={16} /> Сканировать заново
+                    className="w-full mt-2 py-2.5 rounded-btn text-sm text-text-dim border border-surface-hover hover:border-green transition-colors flex items-center justify-center gap-1.5">
+                    <RefreshCw size={14} /> Сканировать заново
                   </button>
                 </>
               ) : (
                 <button onClick={startDiscover}
-                  className="w-full min-h-[52px] rounded-btn font-semibold bg-green text-white tap-active flex items-center justify-center gap-2 text-base">
-                  <Radar size={20} /> Сканировать заново
+                  className="w-full min-h-[48px] rounded-btn font-semibold bg-green text-white tap-active flex items-center justify-center gap-2">
+                  <Radar size={18} /> Сканировать заново
                 </button>
               )}
             </>
@@ -528,28 +528,16 @@ export default function Devices() {
 }
 function Modal({ children, onClose, title }: { children: React.ReactNode; onClose: () => void; title: string }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/70" />
-      <div
-        className="relative w-full sm:max-w-lg bg-surface border border-surface-hover rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 animate-slide-up sm:animate-fade-in max-h-[92dvh] overflow-y-auto"
-        style={{ maxWidth: 500 }}
+    <div className="fixed inset-0 z-50 flex items-start justify-center sm:items-center pt-8 sm:pt-0" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60" />
+      <div className="relative w-full max-w-md bg-surface border border-surface-hover rounded-2xl p-5 mx-4 animate-fade-in max-h-[85dvh] overflow-y-auto"
         onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4 sticky top-0 bg-surface z-10 pb-2" style={{ backdropFilter: 'blur(8px)' }}>
+        <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold text-text">{title}</h2>
-          <button onClick={onClose} className="p-2.5 rounded-lg hover:bg-surface-hover tap-active"><X size={22} className="text-text-dim" /></button>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-surface-hover"><X size={20} className="text-text-dim" /></button>
         </div>
         {children}
       </div>
-      <style>{`
-        .tap-highlight { -webkit-tap-highlight-color: transparent; }
-        @keyframes slideUp {
-          from { transform: translateY(100%); }
-          to { transform: translateY(0); }
-        }
-        .animate-slide-up {
-          animation: slideUp 0.25s ease-out;
-        }
-      `}</style>
     </div>
   );
 }

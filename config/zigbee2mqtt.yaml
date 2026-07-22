@@ -1,0 +1,17 @@
+homeassistant:
+  enabled: false
+mqtt:
+  server: mqtt://mosquitto:1883
+  base_topic: zigbee2mqtt
+serial:
+  port: /dev/ttyUSB0
+  adapter: ezsp
+frontend:
+  enabled: true
+  port: 8080
+advanced:
+  log_level: warning
+  pan_id: 6754
+  channel: 11
+device_options: {}
+version: 5

@@ -1,5 +1,5 @@
 import React from "react";
-import { X, Move, Trash2 } from "lucide-react";
+import { X } from "lucide-react";
 import { DEVICE_TYPES, batteryColor } from "./DeviceTile";
 import { getActiveAirFields, formatAirValue, getAirColor, getAirStatus, STATUS_COLORS } from "../lib/air-utils";
 
@@ -56,10 +56,8 @@ interface DeviceDetailSheetProps {
   onToggle: (id: string, explicitValue?: string) => void;
   onAdjustTemp: (id: string, delta: number) => void;
   onSlider: (id: string, field: string, value: number) => void;
-  onRemoveFromRoom?: (id: string) => void;
-  onMoveToRoom?: (id: string) => void;
 }
-export default function DeviceDetailSheet({ device, room, onClose, onToggle, onAdjustTemp, onSlider, onRemoveFromRoom, onMoveToRoom }: DeviceDetailSheetProps) {
+export default function DeviceDetailSheet({ device, room, onClose, onToggle, onAdjustTemp, onSlider }: DeviceDetailSheetProps) {
   const meta = DEVICE_TYPES[device.type];
   // НАХОДКА (Модуль 8): раньше при нераспознанном device.type (например,
   // если бэкенд не смог определить тип по exposes и специально оставил
@@ -124,24 +122,6 @@ export default function DeviceDetailSheet({ device, room, onClose, onToggle, onA
               onClick={() => onToggle(device.id, isGate ? (device.state === "open" ? "closed" : "open") : undefined)}
             >
               <span className="se-switch-knob" />
-            </button>
-          )}
-        </div>
-
-        {/* ── Управление комнатой ── */}
-        <div className="se-detail-room-actions">
-          <button
-            className="se-detail-btn se-detail-btn--move"
-            onClick={() => { onMoveToRoom?.(device.ieee_address || device.id); onClose(); }}
-          >
-            <Move size={15} strokeWidth={1.8} />
-          </button>
-          {room && (
-            <button
-              className="se-detail-btn se-detail-btn--remove"
-              onClick={() => { onRemoveFromRoom?.(device.ieee_address || device.id); onClose(); }}
-            >
-              <Trash2 size={15} strokeWidth={1.8} />
             </button>
           )}
         </div>
@@ -326,11 +306,6 @@ export default function DeviceDetailSheet({ device, room, onClose, onToggle, onA
           .s-mmwave-val { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #C9A24B; min-width: 32px; text-align: right; }
           .s-bar-track { flex: 1; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; }
           .s-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; }
-          .se-detail-room-actions { display: flex; gap: 8px; margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
-          .se-detail-btn { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 12px; cursor: pointer; border: 1px solid; transition: opacity 0.15s; }
-          .se-detail-btn:active { opacity: 0.7; }
-          .se-detail-btn--move { background: rgba(37,99,235,0.08); border-color: rgba(37,99,235,0.3); color: #60A5FA; }
-          .se-detail-btn--remove { background: rgba(217,105,95,0.08); border-color: rgba(217,105,95,0.3); color: #D9695F; }
         `}</style>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, Shield, DoorClosed, DoorOpen, Lock, Unlock } from 'lucide-react';
+import { ChevronDown, Shield, ShieldAlert, DoorClosed, DoorOpen, Lock, Unlock } from 'lucide-react';
 import { api } from '../../api/client';
 import { StatusBadge } from './StatusBadge';
 import { logClient } from '../../lib/logger';
@@ -82,10 +82,11 @@ export function SecurityCard({ openPoints }: SecurityCardProps) {
   const anythingOpen = hasOpenDoors || hasOpenGates;
   const allClosed = !anythingOpen;
 
-  const headerBg = allClosed ? 'bg-green/10 border border-green/20' : 'bg-red/10 border border-red/20';
-  const headerIconColor = allClosed ? 'text-green' : 'text-red';
-  const headerText = allClosed ? 'Всё закрыто' : 'Открыто!';
-  const headerTextColor = allClosed ? 'text-green' : 'text-red';
+  let headerBg = allClosed ? 'bg-green/10 border border-green/20' : 'bg-red/10 border border-red/20';
+  let headerIcon = allClosed ? Shield : ShieldAlert;
+  let headerIconColor = allClosed ? 'text-green' : 'text-red';
+  let headerText = allClosed ? 'Всё закрыто' : 'Открыто!';
+  let headerTextColor = allClosed ? 'text-green' : 'text-red';
 
   // Build open items summary for collapsed state
   const openSummary: string[] = [];
@@ -98,21 +99,16 @@ export function SecurityCard({ openPoints }: SecurityCardProps) {
       <button onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-4 px-4 py-4 min-h-[56px] text-left tap-active"
         aria-expanded={open}>
-        <div className="relative w-[22px] h-[22px] flex items-center justify-center shrink-0">
-          <Shield size={22} className={`${headerIconColor} transition-colors`} />
-          {!allClosed && (
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red animate-ping" />
-          )}
-        </div>
+        <headerIcon size={open ? 24 : 28} className={`${headerIconColor} shrink-0 transition-all`} />
         <div className="flex-1 min-w-0">
-          <div className={`font-bold text-lg ${headerTextColor}`}>
+          <div className={`font-bold ${open ? 'text-base' : 'text-lg'} ${headerTextColor}`}>
             {headerText}
           </div>
-          <div className={`text-xs ${allClosed ? 'text-green/50' : 'text-red/70'} mt-0.5 truncate ${
-            allClosed ? 'visible' : ''
-          }`}>
-            {allClosed ? 'Все двери и окна закрыты' : openSummary.join(', ')}
-          </div>
+          {!allClosed && (
+            <div className="text-xs text-red/70 mt-0.5 truncate">
+              {openSummary.join(', ')}
+            </div>
+          )}
         </div>
         <ChevronDown size={18}
           className={`text-text-dim transition-transform duration-300 ${open ? 'rotate-180' : ''}`} />

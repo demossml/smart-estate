@@ -87,7 +87,6 @@ interface ManageTabProps {
   onRemoveFromRoom: (id: string) => void;
   onDeleteDevice: (id: string) => void;
   onAddDevice: (device: { type: string; name: string; params: Record<string, any> }) => void;
-  onRenameDevice?: (id: string, name: string, type?: string) => void;
   discovering: boolean;
   discoveredDevices: any[];
   secondsLeft: number;
@@ -104,8 +103,8 @@ interface ManageTabProps {
 }
 
 export default function ManageTab({
-  rooms, devices, onAddRoom, onEditRoom, onDeleteRoom, onAddDeviceManually,
-  onSaveParams, onRemoveFromRoom, onDeleteDevice, onAddDevice, onRenameDevice,
+  rooms, devices, onAddRoom, onDeleteRoom, onAddDeviceManually,
+  onSaveParams, onRemoveFromRoom, onDeleteDevice, onAddDevice,
   discovering, discoveredDevices, secondsLeft,
   onStartDiscovery, onStopDiscovery, onAssignDiscovered, onDismissDiscovered,
   aiConfig, onAiChange, onTestConnection, onDisconnectAi, onToggleAiScenarios,
@@ -129,11 +128,11 @@ export default function ManageTab({
               <span className="se-room-manager-name">{room.name}</span>
               {String(room.id) !== '1' && (
                 <div className="se-room-manager-btns">
-                  <button className="se-mini-btn se-mini-btn--icon" onClick={() => onEditRoom?.(room)}>
-                    ✏️
+                  <button className="se-mini-btn" onClick={() => onEditRoom?.(room)} title="Редактировать">
+                    ✏️ Редактировать
                   </button>
-                  <button className="se-mini-btn se-mini-btn--danger se-mini-btn--icon" onClick={() => onDeleteRoom(String(room.id))}>
-                    🗑️
+                  <button className="se-mini-btn se-mini-btn--danger" onClick={() => onDeleteRoom(String(room.id))} title="Удалить комнату">
+                    🗑️ Удалить
                   </button>
                 </div>
               )}

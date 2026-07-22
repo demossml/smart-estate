@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Trash2, Plus, X, Check, ChevronRight, Move } from "lucide-react";
+import { Settings, Trash2, Plus, X, Check, ChevronRight } from "lucide-react";
 
 /* ————————————————————————————————————————————————————————————————
    ИДЕЯ: у каждого типа устройства — своя PARAM_SCHEMA (данные, не код).
@@ -166,56 +166,19 @@ function ParamField({ param, value, onChange }: ParamFieldProps) {
 
 /* ———————————————————————— панель настройки устройства (модалка снизу) ———————————————————————— */
 
-import { DEVICE_TYPE_ICONS, DEVICE_TYPE_LABELS } from "../lib/icon-map";
-
 interface DeviceConfigSheetProps {
   device: any;
   onClose: () => void;
   onSave: (id: string, params: Record<string, any>) => void;
   onRemoveFromRoom: (id: string) => void;
   onDelete: (id: string) => void;
-  onRenameDevice?: (id: string, name: string, type?: string) => void;
 }
 
-function DeviceConfigSheet({ device, onClose, onSave, onRemoveFromRoom, onDelete, onRenameDevice }: DeviceConfigSheetProps) {
+function DeviceConfigSheet({ device, onClose, onSave, onRemoveFromRoom, onDelete }: DeviceConfigSheetProps) {
   const schema = PARAM_SCHEMAS[device.type] || { label: device.type, params: [] };
   const [draft, setDraft] = useState<Record<string, any>>({ ...defaultParamsFor(device.type), ...device.params });
-  const [editName, setEditName] = useState(device.name || "");
-  const [editType, setEditType] = useState(device.type || "");
-  const [savingName, setSavingName] = useState(false);
-  const [busyDelete, setBusyDelete] = useState(false);
 
   const setParam = (key: string, value: any) => setDraft((prev) => ({ ...prev, [key]: value }));
-
-  const handleSaveName = async () => {
-    if (!editName.trim() || !onRenameDevice) return;
-    setSavingName(true);
-    try {
-      await onRenameDevice(device.id, editName.trim(), editType !== device.type ? editType : undefined);
-    } finally {
-      setSavingName(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (busyDelete) return;
-    const confirmMsg = `Удалить устройство «${device.name}»?\n\nДанные телеметрии будут потеряны.`;
-    if (!window.confirm(confirmMsg)) return;
-    setBusyDelete(true);
-    try {
-      await onDelete(device.id);
-      onClose();
-    } finally {
-      setBusyDelete(false);
-    }
-  };
-
-  // Типы датчиков для выбора иконки
-  const deviceTypes = Object.entries(DEVICE_TYPE_ICONS).map(([type, Icon]) => ({
-    type,
-    Icon,
-    label: DEVICE_TYPE_LABELS[type] || type,
-  }));
 
   return (
     <div className="se-modal-overlay" onClick={onClose}>
@@ -226,80 +189,30 @@ function DeviceConfigSheet({ device, onClose, onSave, onRemoveFromRoom, onDelete
         </div>
         <div className="se-modal-sub">{schema.label}</div>
 
-        {/* ── Редактирование названия и типа ── */}
-        <div className="dc-rename-section">
-          <label className="se-field-label">Название</label>
-          <input
-            className="se-input"
-            value={editName}
-            onChange={(e) => setEditName(e.target.value)}
-            placeholder="Название устройства"
-          />
-
-          <label className="se-field-label" style={{ marginTop: 12 }}>Тип / Иконка</label>
-          <div className="dc-type-grid">
-            {deviceTypes.map(({ type, Icon, label }) => (
-              <button
-                key={type}
-                className={"dc-type-btn" + (editType === type ? " dc-type-btn--active" : "")}
-                onClick={() => setEditType(type)}
-                title={label}
-              >
-                <Icon size={16} strokeWidth={1.6} />
-              </button>
-            ))}
-          </div>
-
-          {(editName !== device.name || editType !== device.type) && (
-            <button
-              className="se-primary-btn"
-              onClick={handleSaveName}
-              disabled={!editName.trim() || savingName}
-              style={{ marginTop: 10 }}
-            >
-              {savingName ? (
-                <><span className="se-spin">⟳</span> Сохранение…</>
-              ) : (
-                <><Check size={14} strokeWidth={2} /> Сохранить название</>
-              )}
-            </button>
-          )}
-        </div>
-
-        {/* ── Параметры устройства ── */}
         {schema.params.length === 0 ? (
-          <div className="se-briefing" style={{ marginTop: 12 }}>
+          <div className="se-briefing" style={{ marginTop: 4 }}>
             У этого устройства нет настраиваемых параметров — только показания
-            и диагностика (батарея, сигнал).
+            и диагностика (батарея, сигнал). Настроить можно только его название
+            и комнату.
           </div>
         ) : (
-          <div className="dc-params" style={{ marginTop: 16 }}>
+          <div className="dc-params">
             {schema.params.map((p: any) => (
               <ParamField key={p.key} param={p} value={draft[p.key]} onChange={(v) => setParam(p.key, v)} />
             ))}
           </div>
         )}
 
-        {/* ── Кнопки действий ── */}
-        <div className="dc-actions" style={{ marginTop: 18 }}>
+        <div className="dc-actions">
           {schema.params.length > 0 && (
             <button className="se-primary-btn" onClick={() => onSave(device.id, draft)}>
               <Check size={14} strokeWidth={2} /> Сохранить настройки
             </button>
           )}
-          <div className="dc-actions-row">
-            <button className="se-outline-btn" onClick={() => onRemoveFromRoom(device.id)} style={{ flex: 1 }}>
-              <Move size={13} strokeWidth={1.8} /> Переместить
-            </button>
-            <button
-              className="se-outline-btn se-outline-btn--danger"
-              onClick={handleDelete}
-              disabled={busyDelete}
-              style={{ flex: 1 }}
-            >
-              <Trash2 size={13} strokeWidth={1.8} /> {busyDelete ? "Удаление…" : "Удалить"}
-            </button>
-          </div>
+          <button className="se-outline-btn" onClick={() => onRemoveFromRoom(device.id)}>Убрать из комнаты</button>
+          <button className="se-outline-btn se-outline-btn--danger" onClick={() => onDelete(device.id)}>
+            <Trash2 size={13} strokeWidth={1.8} /> Удалить устройство совсем
+          </button>
         </div>
       </div>
     </div>
@@ -333,10 +246,9 @@ interface RoomDevicesManagerProps {
   onSaveParams: (id: string, params: Record<string, any>) => void;
   onRemoveFromRoom: (id: string) => void;
   onDeleteDevice: (id: string) => void;
-  onRenameDevice?: (id: string, name: string, type?: string) => void;
 }
 
-export default function RoomDevicesManager({ room, devices, onAddDevice, onSaveParams, onRemoveFromRoom, onDeleteDevice, onRenameDevice }: RoomDevicesManagerProps) {
+export default function RoomDevicesManager({ room, devices, onAddDevice, onSaveParams, onRemoveFromRoom, onDeleteDevice }: RoomDevicesManagerProps) {
   const [configDevice, setConfigDevice] = useState<any>(null);
   const [showAdd, setShowAdd] = useState(false);
 
@@ -364,7 +276,6 @@ export default function RoomDevicesManager({ room, devices, onAddDevice, onSaveP
           onSave={(id, params) => { onSaveParams(id, params); setConfigDevice(null); }}
           onRemoveFromRoom={(id) => { onRemoveFromRoom(id); setConfigDevice(null); }}
           onDelete={(id) => { onDeleteDevice(id); setConfigDevice(null); }}
-          onRenameDevice={onRenameDevice}
         />
       )}
 
@@ -455,14 +366,4 @@ const css = `
   /* — Actions — */
   .dc-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }
   .dc-actions .se-outline-btn { margin-top: 0; }
-  .dc-actions-row { display: flex; gap: 8px; }
-
-  /* — Rename section — */
-  .dc-rename-section { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 12px; margin-bottom: 14px; }
-
-  /* — Type grid for icon selection — */
-  .dc-type-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 6px; }
-  .dc-type-btn { display: flex; align-items: center; justify-content: center; min-height: 40px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.02); color: #7A7F79; cursor: pointer; transition: all 0.15s; }
-  .dc-type-btn:hover { border-color: rgba(201,162,75,0.4); color: #C9A24B; }
-  .dc-type-btn--active { border-color: #C9A24B; background: rgba(201,162,75,0.12); color: #C9A24B; }
 `;
