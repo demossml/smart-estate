@@ -1,0 +1,29 @@
+{
+  "id": "good-morning",
+  "name": "Доброе утро",
+  "displayName": "Доброе утро",
+  "description": "Включает свет в заданной комнате в заданное время",
+  "note": "Требуется хотя бы один светильник (light)",
+  "required_params": [
+    {
+      "key": "room",
+      "type": "room",
+      "label": "Комната"
+    },
+    {
+      "key": "time",
+      "type": "time",
+      "default": "07:00",
+      "label": "Время включения"
+    },
+    {
+      "key": "light_brightness",
+      "type": "number",
+      "default": 80,
+      "label": "Яркость (%)"
+    }
+  ],
+  "schedule_json": "{\"type\": \"cron\", \"value\": \"0 7 * * *\"}",
+  "triggers_json": "[{\"type\": \"schedule\", \"kind\": \"time\", \"time\": \"{{param:time}}\"}]",
+  "actions_json": "[{\"type\": \"group_command\", \"room_id\": \"{{param:room}}\", \"device_type\": \"light\", \"command\": \"ON\"}]"
+}

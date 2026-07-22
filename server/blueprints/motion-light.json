@@ -1,0 +1,36 @@
+{
+  "id": "motion-light",
+  "name": "Свет по датчику движения",
+  "displayName": "Свет по датчику движения",
+  "description": "Включает свет в комнате, когда датчик движения обнаруживает присутствие, и выключает через N минут после ухода",
+  "note": "Требуется датчик движения (presence) и светильник (light) в одной комнате",
+  "required_params": [
+    {
+      "key": "motion_device",
+      "type": "device",
+      "device_class": "occupancy",
+      "label": "Датчик движения"
+    },
+    {
+      "key": "light_device",
+      "type": "device",
+      "device_class": "light",
+      "label": "Светильник"
+    },
+    {
+      "key": "room",
+      "type": "room",
+      "label": "Комната"
+    },
+    {
+      "key": "off_delay",
+      "type": "number",
+      "default": 300,
+      "label": "Задержка выключения (сек)"
+    }
+  ],
+  "triggers_json": "[{\"type\": \"device\", \"device\": \"{{param:motion_device}}\", \"property\": \"occupancy\", \"operator\": \"=\", \"value\": 1, \"id\": \"motion_on\"}]",
+  "actions_json_on": "[{\"type\": \"device_command\", \"device\": \"{{param:light_device}}\", \"command\": \"ON\"}, {\"type\": \"timer\", \"after_event\": \"motion_on\", \"duration_ms\": \"{{param:off_delay|multiply:1000}}\"}]",
+  "triggers_json_off": "[{\"type\": \"timer\", \"after_event\": \"motion_on\", \"duration_ms\": \"{{param:off_delay|multiply:1000}}\"}]",
+  "actions_json_off": "[{\"type\": \"device_command\", \"device\": \"{{param:light_device}}\", \"command\": \"OFF\"}]"
+}

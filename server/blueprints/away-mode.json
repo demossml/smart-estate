@@ -1,0 +1,10 @@
+{
+  "id": "away-mode",
+  "name": "Уход из дома → выключить всё",
+  "displayName": "Уход из дома → выключить всё",
+  "description": "При смене режима на 'Отсутствует' выключает все светильники и переводит дом в энергосберегающий режим",
+  "required_params": [],
+  "triggers_json": "[]",
+  "actions_json": "[{\"type\": \"group_command\", \"room_id\": 0, \"device_type\": \"light\", \"command\": \"OFF\"}]",
+  "condition": "mode:away"
+}
